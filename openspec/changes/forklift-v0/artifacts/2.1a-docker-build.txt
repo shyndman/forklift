@@ -1,0 +1,64 @@
+#0 building with "default" instance using docker driver
+
+#1 [internal] load build definition from Dockerfile
+#1 transferring dockerfile: 2.42kB done
+#1 DONE 0.0s
+
+#2 resolve image config for docker-image://docker.io/docker/dockerfile:1.6
+#2 DONE 0.4s
+
+#3 docker-image://docker.io/docker/dockerfile:1.6@sha256:ac85f380a63b13dfcefa89046420e1781752bab202122f8f50032edf31be0021
+#3 CACHED
+
+#4 [internal] load metadata for docker.io/library/ubuntu:24.04
+#4 DONE 0.2s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 68B done
+#5 DONE 0.0s
+
+#6 [ 1/12] FROM docker.io/library/ubuntu:24.04@sha256:cd1dba651b3080c3686ecf4e3c4220f026b521fb76978881737d24f200828b2b
+#6 DONE 0.0s
+
+#7 [internal] load build context
+#7 transferring context: 63B done
+#7 DONE 0.0s
+
+#8 [ 2/12] RUN apt-get update &&     apt-get install -y --no-install-recommends     git     build-essential     cmake     pkg-config     python3     python3-venv     python3-pip     curl     wget     unzip     ca-certificates     openssl     libssl-dev     libffi-dev     libbz2-dev     libreadline-dev     libsqlite3-dev     zlib1g-dev     liblzma-dev     jq     ripgrep     fd-find     tree     make     bash-completion     npm     nodejs     sudo     gnupg     xz-utils &&     ln -s /usr/bin/fdfind /usr/local/bin/fd &&     rm -rf /var/lib/apt/lists/*
+#8 CACHED
+
+#9 [ 8/12] RUN useradd -m -u 1000 -U forklift &&     mkdir -p /opt/forklift/harness &&     chown -R forklift:forklift /opt/forklift "/opt/cargo" "/opt/rustup" "/opt/bun" "/opt/n"
+#9 CACHED
+
+#10 [ 3/12] RUN npm install -g n &&     n lts
+#10 CACHED
+
+#11 [11/12] RUN chmod +x /opt/forklift/harness/run.sh &&     chown -R forklift:forklift /opt/forklift
+#11 CACHED
+
+#12 [ 9/12] RUN cat <<'EOF' >/etc/profile.d/forklift.sh
+#12 CACHED
+
+#13 [10/12] COPY harness/ /opt/forklift/harness/
+#13 CACHED
+
+#14 [ 6/12] RUN git clone https://github.com/pyenv/pyenv.git "/opt/pyenv"
+#14 CACHED
+
+#15 [ 4/12] RUN curl -fsSL https://bun.sh/install | bash
+#15 CACHED
+
+#16 [ 5/12] RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+#16 CACHED
+
+#17 [ 7/12] RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi
+#17 CACHED
+
+#18 [12/12] WORKDIR /workspace
+#18 CACHED
+
+#19 exporting to image
+#19 exporting layers done
+#19 writing image sha256:8da2de502b28ddb9280952755656e4e2b69d5db7d795ecc2c4d9e48b91e9ebd9 done
+#19 naming to docker.io/forklift/kitchen-sink:latest done
+#19 DONE 0.0s

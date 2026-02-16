@@ -1,0 +1,14 @@
+# Ownership check for /home/shyndman/forklift/runs/forklift_20260215_141337
+total 23
+drwxrwxr-x 2 1000 1000  2 Feb 15 14:13 harness-state
+-rw-rw-r-- 1 1000 1000 95 Feb 15 14:13 metadata.json
+drwxrwxr-x 4 1000 1000  7 Feb 15 14:13 workspace
+
+# Ownership inside workspace
+total 19
+-rw-rw-r-- 1 1000 1000  29 Feb 15 14:13 README.md
+-rw-rw-r-- 1 1000 1000 364 Feb 15 14:13 pyproject.toml
+drwxrwxr-x 3 1000 1000   3 Feb 15 14:13 src
+
+# Ownership of harness-state
+total 0

@@ -1,1 +1,79 @@
-The future home of Forklift.
+# Forklift
+
+Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `~/forklift/runs/<project>_<timestamp>`, launches an isolated "kitchen-sink" container for at most eight minutes, and either opens a pull request or leaves a `STUCK.md` explaining what blocked progress.
+
+## Requirements
+
+- A Git repository with `origin` (your fork) and `upstream` (source) remotes configured
+- [Docker](https://docs.docker.com/get-started/) available on the host
+- [uv](https://docs.astral.sh/uv/) for running the Python CLI (`pip install uv` if needed)
+
+## Building the container once
+
+```bash
+docker build -t forklift/kitchen-sink:latest docker/kitchen-sink
+```
+
+The image contains Ubuntu 24.04 plus Git, build-essential, Python 3, Node (via `n`), Bun, Rust (via rustup), jq, ripgrep, fd, tree, and the harness script located at `/opt/forklift/harness/run.sh`.
+
+## Running Forklift
+
+```bash
+uv run forklift --verbose
+```
+
+What happens:
+
+1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both.
+2. It creates `~/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` with:
+   - `workspace/` – shared-clone copy of your repo with remotes removed
+   - `harness-state/` – writable directory the container uses for logs and instructions
+   - `metadata.json` – records source repo, timestamp, main branch, and upstream SHA
+3. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
+4. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The harness prints default instructions into `/harness-state/instructions.txt`, echoes the FORK.md contents (or notes the absence), and logs any agent command it executes.
+5. The agent has eight minutes. If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/main main` and prompts you to push + create a PR. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
+
+### Environment overrides
+
+- `FORKLIFT_DOCKER_IMAGE` – alternate container image (defaults to `forklift/kitchen-sink:latest`)
+- `FORKLIFT_DOCKER_COMMAND` – custom command executed inside the harness after instructions print (useful for smoke tests)
+- `FORKLIFT_TIMEOUT_SECONDS` – adjust the watchdog (default 480 seconds / 8 minutes)
+
+## Outputs to inspect
+
+- Successful run: commits under `workspace/` plus host-side PR instructions in the log
+- Blocked run: `workspace/STUCK.md` describing what the agent needs
+- Always: `/harness-state/instructions.txt` with rendered guidance and optional `/harness-state/fork-context.md`
+
+Old run directories remain under `~/forklift/runs/` for auditing. Safe to delete when no longer needed.
+
+## FORK.md guidance
+
+Add a `FORK.md` at the repo root to explain what makes your fork special. Recommended sections:
+
+```
+# Fork Context
+
+## Mission / Themes
+- Why this fork exists
+- Non-negotiable behaviors or files
+
+## Test & Verification Guidance
+- Commands to run (npm test, uv run pytest, etc.)
+- Long-running suites that can be skipped
+
+## Risky Areas
+- Directories or files that should stay untouched
+- Any vendor or generated assets to preserve
+
+## Contacts
+- Who to mention in STUCK.md for help
+```
+
+Forklift copies this file into every workspace and appends its contents to the harness instructions, so keep it short, high-signal, and updated.
+
+## Development
+
+- Run type checking: `uv run basedpyright`
+- Build container changes: `docker build -t forklift/kitchen-sink:latest docker/kitchen-sink`
+- Use `FORKLIFT_DOCKER_COMMAND` to run targeted commands inside the sandbox (e.g., smoke tests).

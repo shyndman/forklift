@@ -1,0 +1,27 @@
+2026-02-15 18:32:37,234 [INFO] Starting Forklift orchestration in /home/shyndman/dev/projects/forklift
+2026-02-15 18:32:37,234 [DEBUG] Running command: git remote -v
+2026-02-15 18:32:37,238 [INFO] Detected remote origin -> git@github.com:shyndman/forklift.git
+2026-02-15 18:32:37,238 [INFO] Detected remote upstream -> git@github.com:shyndman/forklift.git
+2026-02-15 18:32:37,238 [INFO] Fetching origin (git@github.com:shyndman/forklift.git)
+2026-02-15 18:32:37,238 [DEBUG] Running command: git fetch origin --prune
+2026-02-15 18:32:38,014 [INFO] Fetching upstream (git@github.com:shyndman/forklift.git)
+2026-02-15 18:32:38,014 [DEBUG] Running command: git fetch upstream --prune
+2026-02-15 18:32:38,753 [INFO] Fetch output for origin: up to date
+2026-02-15 18:32:38,754 [INFO] Fetch output for upstream: up to date
+2026-02-15 18:32:38,754 [INFO] Remote discovery and fetch complete.
+2026-02-15 18:32:38,754 [INFO] Creating run directory at /home/shyndman/forklift/runs/forklift_20260215_183238
+2026-02-15 18:32:38,754 [INFO] Cloning /home/shyndman/dev/projects/forklift -> /home/shyndman/forklift/runs/forklift_20260215_183238/workspace
+2026-02-15 18:32:38,773 [DEBUG] git clone output:
+Cloning into '/home/shyndman/forklift/runs/forklift_20260215_183238/workspace'...
+done.
+2026-02-15 18:32:38,780 [INFO] Removing remotes inside /home/shyndman/forklift/runs/forklift_20260215_183238/workspace
+2026-02-15 18:32:38,787 [DEBUG] All remotes removed from /home/shyndman/forklift/runs/forklift_20260215_183238/workspace
+2026-02-15 18:32:38,788 [INFO] Aligning workspace and harness-state ownership to 1000:1000
+2026-02-15 18:32:38,789 [INFO] Run directory ready at /home/shyndman/forklift/runs/forklift_20260215_183238 (workspace=/home/shyndman/forklift/runs/forklift_20260215_183238/workspace, harness-state=/home/shyndman/forklift/runs/forklift_20260215_183238/harness-state)
+2026-02-15 18:32:38,789 [INFO] Launching container forklift-forklift-20260215-183238-20260215183238-4bbf84 with timeout 20 seconds (image=busybox)
+2026-02-15 18:32:38,789 [DEBUG] Container command: docker run --rm --name forklift-forklift-20260215-183238-20260215183238-4bbf84 -v /home/shyndman/forklift/runs/forklift_20260215_183238/workspace:/workspace -v /home/shyndman/forklift/runs/forklift_20260215_183238/harness-state:/harness-state busybox sh -c cd /workspace && echo forklift-run >> forklift-proof.txt
+2026-02-15 18:32:39,009 [INFO] Container run completed successfully.
+2026-02-15 18:32:39,009 [DEBUG] Running command: git merge-base --is-ancestor 6435b994d178d3e795f4cc6c890abeaa40db0cd0 main
+2026-02-15 18:32:39,012 [INFO] Verified upstream commit 6435b994d178 is ancestor of main
+2026-02-15 18:32:39,012 [DEBUG] Running command: git status --porcelain
+2026-02-15 18:32:39,016 [INFO] PR stub: use host repo at /home/shyndman/dev/projects/forklift to push branch main and run `gh pr create --head main --base main`.

@@ -1,0 +1,28 @@
+diff --git a/pyproject.toml b/pyproject.toml
+index c49f440..ef5854e 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -1,5 +1,5 @@
+ [project]
+-name = "forklife"
++name = "forklift"
+ version = "0.1.0"
+ description = "Add your description here"
+ readme = "README.md"
+@@ -7,10 +7,14 @@ authors = [
+     { name = "Scott Hyndman", email = "scotty.hyndman@gmail.com" }
+ ]
+ requires-python = ">=3.13"
+-dependencies = []
++dependencies = [
++    "clypi==1.8.2",
++    "pydantic==2.12.5",
++    "pydantic-ai==1.59.0",
++]
+ 
+ [project.scripts]
+-forklife = "forklife:main"
++forklift = "forklift:main"
+ 
+ [build-system]
+ requires = ["uv_build>=0.9.27,<0.10.0"]
