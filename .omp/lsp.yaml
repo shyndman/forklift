@@ -1,0 +1,11 @@
+servers:
+  pyright:
+    command: ../.venv/bin/basedpyright-langserver
+    args:
+      - --stdio
+    fileTypes:
+      - .py
+    rootMarkers:
+      - pyproject.toml
+      - requirements.txt
+      - setup.py
