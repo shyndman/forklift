@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 
 import logging
+from importlib import metadata
 from pathlib import Path
 from typing import cast, override
 
-from clypi import Command
+from clypi import Command, arg
 
 from .git import (
     GitError,
@@ -33,10 +34,15 @@ class Forklift(Command):
     """Primary entrypoint for the Forklift host orchestrator."""
 
     repo: Path | str | None = None
-    verbose: bool = False
+    debug: bool = arg(False, short="-d", help="Enable debug logging")
+    version: bool = arg(False, short="-v", help="Print version and exit")
 
     @override
     async def run(self) -> None:
+        if self.version:
+            self._print_version()
+            return
+
         repo_path = self._resolve_repo_path()
         self._configure_logging()
         logging.info("Starting Forklift orchestration in %s", repo_path)
@@ -88,7 +94,7 @@ class Forklift(Command):
 
 
     def _configure_logging(self) -> None:
-        level = logging.DEBUG if self.verbose else logging.INFO
+        level = logging.DEBUG if self.debug else logging.INFO
         root = logging.getLogger()
         if not root.handlers:
             logging.basicConfig(level=level, format=LOG_FORMAT)
@@ -194,4 +200,11 @@ class Forklift(Command):
             branch,
             branch,
         )
+
+    def _print_version(self) -> None:
+        try:
+            pkg_version = metadata.version("forklift")
+        except metadata.PackageNotFoundError:
+            pkg_version = "unknown"
+        print(pkg_version)
 

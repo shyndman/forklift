@@ -25,7 +25,7 @@ Forklift is a host-side orchestrator that keeps your fork of an upstream reposit
 +## Running Forklift
 +
 +```bash
-+uv run forklift --verbose
+uv run forklift --debug
 +```
 +
 +What happens:

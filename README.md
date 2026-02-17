@@ -19,7 +19,10 @@ The image contains Ubuntu 24.04 plus Git, build-essential, Python 3, Node (via `
 ## Running Forklift
 
 ```bash
-uv run forklift --verbose
+uv run forklift --debug
+
+uv run forklift --version  # Print version and exit
+
 ```
 
 What happens:

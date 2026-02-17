@@ -23,7 +23,7 @@
 
 ## Development Commands
 - Bootstrap + run orchestration:
-  - `uv run forklift --verbose` – primary command to kick off an orchestration run from the host.
+  - `uv run forklift --debug` – primary command to kick off an orchestration run from the host.
   - `docker build -t forklift/kitchen-sink:latest docker/kitchen-sink` – rebuild the sandbox image after Dockerfile changes.
 - Tooling:
   - `uv run basedpyright` – run static type checks (from README).
@@ -31,7 +31,7 @@
 - Design docs outline future host utilities (e.g., `forklift run <fork> --interactive`, `forklift scheduler start`, `forklift logs --transcript <id>`, `forklift test-notify --mock-conflict`)—treat them as reference commands when expanding the CLI surface.
 
 ## Code Conventions & Common Patterns
-- Logging: standard `logging` module with format `"%(asctime)s [%(levelname)s] %(message)s"`; verbose flag raises level to DEBUG. All git/container operations log both intent and captured stdout/stderr.
+- Logging: standard `logging` module with format "%(asctime)s [%(levelname)s] %(message)s"; the `--debug` flag raises level to DEBUG. All git/container operations log both intent and captured stdout/stderr.
 - Error handling: Git failures raise `GitError` that the CLI converts into `SystemExit(1)`; container timeouts raise exit code 2; upstream verification failures exit 3; `STUCK.md` presence exits 4 with the first 40 lines logged.
 - Data carriers: use dataclasses (`RunPaths`, `ContainerRunResult`, `GitRemote`, `GitFetchResult`) for structured data; prefer `Path` throughout for filesystem interactions.
 - Workspace hygiene: every run strips remotes, aligns ownership recursively to UID/GID `1000`, and keeps metadata in JSON for later verification—ensure any new host logic preserves these invariants.
