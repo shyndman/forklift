@@ -1,6 +1,6 @@
 ## Context
 
-The repository currently contains only a placeholder `forklife` CLI that prints "Hello". The goal for v0 is the radically simple workflow already captured in `forklift-v0-design.md` and reiterated in the proposal: the user runs `forklift` from a fork checkout, the host orchestrator fetches `origin`/`upstream`, duplicates the repo into `~/forklift/runs/<project>_<timestamp>/workspace`, and launches an AI agent inside a prebuilt kitchen-sink container for at most eight minutes. The container has no remotes, no credentials, and no push authority; only the host process can verify success and create a PR. Communication is completely filesystem-based (success yields a PR, blockers leave `STUCK.md`). Fork context comes only from Git remotes plus an optional FORK.md, and scope is restricted to `main` → `main` merges for single repositories.
+The repository currently contains only a placeholder `forklife` CLI that prints "Hello". The goal for v0 is the radically simple workflow already captured in `forklift-v0-design.md` and reiterated in the proposal: the user runs `forklift` from a fork checkout, the host orchestrator fetches `origin`/`upstream`, duplicates the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>/workspace` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>/workspace`), and launches an AI agent inside a prebuilt kitchen-sink container for at most eight minutes. The container has no remotes, no credentials, and no push authority; only the host process can verify success and create a PR. Communication is completely filesystem-based (success yields a PR, blockers leave `STUCK.md`). Fork context comes only from Git remotes plus an optional FORK.md, and scope is restricted to `main` → `main` merges for single repositories.
 
 ## Goals / Non-Goals
 
@@ -21,7 +21,7 @@ The repository currently contains only a placeholder `forklife` CLI that prints 
 ## Decisions
 
 1. **Host-Orchestrated Workflow**
-   - Steps: fetch `origin` and `upstream`, create `~/forklift/runs/<project>_<timestamp>`, duplicate repo into `workspace`, remove remotes, start container with `/workspace` and `/harness-state` bind-mounted from the run directory, wait up to eight minutes, kill container if still running, verify upstream inclusion, and open a PR if needed.
+   - Steps: fetch `origin` and `upstream`, create `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), duplicate repo into `workspace`, remove remotes, start container with `/workspace` and `/harness-state` bind-mounted from the run directory, wait up to eight minutes, kill container if still running, verify upstream inclusion, and open a PR if needed.
    - Rationale: Keeps authority (network creds, PR creation) outside the agent, matching the security constraints.
    - Alternatives: letting the agent retain remotes and push directly, or running entirely inside the container. Rejected because it violates the trust boundary and complicates auditing.
 
@@ -79,7 +79,7 @@ The repository currently contains only a placeholder `forklife` CLI that prints 
 4. Implement STUCK detection and verification logic; ensure PR creation uses host credentials only.
 5. Document usage (`README`, `forklift-v0-design.md`, FORK.md guidance) and provide cron example.
 6. Test locally on a sample fork, iterate on timeout and logging.
-7. Rollback: stop cron jobs, delete `~/forklift/runs/*`, revert CLI rename if necessary.
+7. Rollback: stop cron jobs, delete `$XDG_STATE_HOME/forklift/runs/*` (or `~/.local/state/forklift/runs/*`), revert CLI rename if necessary.
 
 ## Open Questions
 1. Should we surface additional context (e.g., failing test names) somewhere beyond STUCK.md to aid triage?

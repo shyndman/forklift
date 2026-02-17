@@ -1,11 +1,11 @@
 ## ADDED Requirements
 
 ### Requirement: Run directory preparation
-The host orchestrator SHALL, upon each invocation, create a new run directory at `~/forklift/runs/<project>_<YYYYMMDD_HHMMSS>` containing a duplicated workspace copy of the current fork along with empty `harness-state` and metadata files. The duplicated workspace MUST have all Git remotes removed before being handed to the agent container.
+The host orchestrator SHALL, upon each invocation, create a new run directory at `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>` (defaults to `~/.local/state/forklift/runs/<project>_<YYYYMMDD_HHMMSS>`) containing a duplicated workspace copy of the current fork along with empty `harness-state` and metadata files. The duplicated workspace MUST have all Git remotes removed before being handed to the agent container.
 
 #### Scenario: Fresh run setup
 - **WHEN** the user runs `forklift` inside a repository whose `origin` and `upstream` remotes resolve successfully
-- **THEN** the orchestrator creates `~/forklift/runs/<project>_<timestamp>/workspace` populated with the fork contents and no Git remotes, alongside sibling `harness-state` and metadata locations
+- **THEN** the orchestrator creates `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>/workspace` (or `~/.local/state/forklift/runs/<project>_<timestamp>/workspace`) populated with the fork contents and no Git remotes, alongside sibling `harness-state` and metadata locations
 ### Requirement: Workspace ownership alignment
 Before launching the container, the orchestrator SHALL adjust ownership or permissions of `workspace/` and `harness-state/` so they are writable by the container's non-root user (UID/GID 1000). This can be done via `chown -R 1000:1000` or by running the container with matching UID/GID.
 

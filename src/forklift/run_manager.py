@@ -18,9 +18,15 @@ CONTAINER_GID = 1000
 
 
 
+
+def _default_runs_root() -> Path:
+    xdg_state = os.environ.get("XDG_STATE_HOME")
+    base = Path(xdg_state).expanduser() if xdg_state else Path.home() / ".local" / "state"
+    return (base / "forklift" / "runs").resolve()
+
 logger = logging.getLogger(__name__)
 
-DEFAULT_RUNS_ROOT = Path.home() / "forklift" / "runs"
+DEFAULT_RUNS_ROOT = _default_runs_root()
 TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
 
 

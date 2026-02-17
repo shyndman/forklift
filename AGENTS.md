@@ -1,7 +1,7 @@
 # Repository Guidelines
 
 ## Project Overview
-- Forklift is a host-side orchestrator that keeps a fork in sync with its upstream by snapshotting the repo into `~/forklift/runs/<project>_<timestamp>`, launching the kitchen-sink container for at most eight minutes, and either guiding a pull request or surfacing a `STUCK.md` with remediation details (see `README.md`).
+- Forklift is a host-side orchestrator that keeps a fork in sync with its upstream by snapshotting the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launching the kitchen-sink container for at most eight minutes, and either guiding a pull request or surfacing a `STUCK.md` with remediation details (see `README.md`).
 - The workflow is intentionally filesystem-driven: a shared-clone workspace (no remotes) and a writable `harness-state/` directory are bind-mounted into the sandbox so the harness and agent communicate via files instead of services (documented in `forklift-v0-design.md`).
 
 ## Architecture & Data Flow
@@ -15,7 +15,11 @@
 - `docker/kitchen-sink/` – Dockerfile plus harness script that define the Ubuntu 24.04 sandbox with Git/build-essential, Node via `n`, Bun, Rust, jq, ripgrep, fd, tree, and `/opt/forklift/harness/run.sh`.
 - `openspec/changes/forklift-v0/` – Proposal, specs, and artifacts documenting host-orchestrator and sandbox requirements, docker build logs, and harness transcripts.
 - `FORK.md` – Template at repo root copied into every workspace so agents know mission themes, tests to run, risky areas, and contacts.
-- `~/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (created at runtime) – Contains `workspace/`, `harness-state/`, and `metadata.json`; inspect when debugging runs.
+- `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...` and created at runtime) – Contains `workspace/`, `harness-state`, and `metadata.json`; inspect when debugging runs.
+
+## Version Control
+- This repository is the live working tree; git commits, rebases, and other writes happen here.
+- Forklift creates snapshot clones under `$XDG_STATE_HOME/forklift/runs/...` (defaults to `~/.local/state/forklift/runs/...`) when orchestrating a fork. Those run directories are intentionally detached/read-only relative to remotes—don’t confuse them with this repo.
 
 ## Development Commands
 - Bootstrap + run orchestration:
@@ -51,7 +55,7 @@
 ## Testing & QA
 - The repository does not include a native `tests/` tree; testing relies on the fork’s own suites described in `FORK.md` and echoed by the harness (`run.sh`). Document commands like `uv run pytest` or `npm test` in `FORK.md` so agents know what to execute.
 - Harness guidance (see `docker/kitchen-sink/harness/run.sh`) instructs agents to merge `upstream/main`, run the project’s primary tests when time allows, and write `STUCK.md` with actionable details when blocked.
-- Always inspect `~/forklift/runs/.../harness-state/instructions.txt` and any generated `STUCK.md` after a run; they are the canonical QA artifacts.
+- Always inspect `$XDG_STATE_HOME/forklift/runs/.../harness-state/instructions.txt` (or `~/.local/state/forklift/runs/...` if `XDG_STATE_HOME` is unset) and any generated `STUCK.md` after a run; they are the canonical QA artifacts.
 - Static analysis (`uv run basedpyright`) is the only built-in check today; add further QA steps to `FORK.md` or integrate new host-side commands if broader coverage is needed.
 
 ## Dependency Management

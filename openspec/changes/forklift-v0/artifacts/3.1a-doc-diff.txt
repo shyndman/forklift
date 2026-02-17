@@ -6,7 +6,7 @@ index 48c9bfb..d6360c7 100644
 -The future home of Forklift.
 +# Forklift
 +
-+Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `~/forklift/runs/<project>_<timestamp>`, launches an isolated "kitchen-sink" container for at most eight minutes, and either opens a pull request or leaves a `STUCK.md` explaining what blocked progress.
+Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launches an isolated "kitchen-sink" container for at most eight minutes, and either opens a pull request or leaves a `STUCK.md` explaining what blocked progress.
 +
 +## Requirements
 +
@@ -31,7 +31,7 @@ index 48c9bfb..d6360c7 100644
 +What happens:
 +
 +1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both.
-+2. It creates `~/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` with:
+2. It creates `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...`) with:
 +   - `workspace/` – shared-clone copy of your repo with remotes removed
 +   - `harness-state/` – writable directory the container uses for logs and instructions
 +   - `metadata.json` – records source repo, timestamp, main branch, and upstream SHA
@@ -51,7 +51,7 @@ index 48c9bfb..d6360c7 100644
 +- Blocked run: `workspace/STUCK.md` describing what the agent needs
 +- Always: `/harness-state/instructions.txt` with rendered guidance and optional `/harness-state/fork-context.md`
 +
-+Old run directories remain under `~/forklift/runs/` for auditing. Safe to delete when no longer needed.
+Old run directories remain under `$XDG_STATE_HOME/forklift/runs/` (or `~/.local/state/forklift/runs/` if `XDG_STATE_HOME` is unset) for auditing. Safe to delete when no longer needed.
 +
 +## FORK.md guidance
 +

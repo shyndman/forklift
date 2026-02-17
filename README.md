@@ -1,6 +1,6 @@
 # Forklift
 
-Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `~/forklift/runs/<project>_<timestamp>`, launches an isolated "kitchen-sink" container for at most eight minutes, and either opens a pull request or leaves a `STUCK.md` explaining what blocked progress.
+Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launches an isolated "kitchen-sink" container for at most eight minutes, and either opens a pull request or leaves a `STUCK.md` explaining what blocked progress.
 
 ## Requirements
 
@@ -25,7 +25,7 @@ uv run forklift --verbose
 What happens:
 
 1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both.
-2. It creates `~/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` with:
+2. It creates `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...`) with:
    - `workspace/` – shared-clone copy of your repo with remotes removed
    - `harness-state/` – writable directory the container uses for logs and instructions
    - `metadata.json` – records source repo, timestamp, main branch, and upstream SHA
@@ -33,11 +33,13 @@ What happens:
 4. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The harness prints default instructions into `/harness-state/instructions.txt`, echoes the FORK.md contents (or notes the absence), and logs any agent command it executes.
 5. The agent has eight minutes. If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/main main` and prompts you to push + create a PR. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
 
+
 ### Environment overrides
 
 - `FORKLIFT_DOCKER_IMAGE` – alternate container image (defaults to `forklift/kitchen-sink:latest`)
 - `FORKLIFT_DOCKER_COMMAND` – custom command executed inside the harness after instructions print (useful for smoke tests)
 - `FORKLIFT_TIMEOUT_SECONDS` – adjust the watchdog (default 480 seconds / 8 minutes)
+
 
 ## Outputs to inspect
 
@@ -45,7 +47,7 @@ What happens:
 - Blocked run: `workspace/STUCK.md` describing what the agent needs
 - Always: `/harness-state/instructions.txt` with rendered guidance and optional `/harness-state/fork-context.md`
 
-Old run directories remain under `~/forklift/runs/` for auditing. Safe to delete when no longer needed.
+Old run directories remain under `$XDG_STATE_HOME/forklift/runs/` (or `~/.local/state/forklift/runs/` if `XDG_STATE_HOME` is unset) for auditing. Safe to delete when no longer needed.
 
 ## FORK.md guidance
 

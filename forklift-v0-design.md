@@ -91,7 +91,7 @@ At runtime the orchestrator binds `runs/<project>_<timestamp>/workspace` → `/w
 
 Forklift maintains a simple directory structure:
 ```
-~/forklift/
+~/.local/state/forklift/
 ├── runs/
 │   └── projectname_2024-02-13_080456/
 │       ├── workspace/          # Copied repository

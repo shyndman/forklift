@@ -6,7 +6,7 @@
 - [x] 1.1a Capture `git diff pyproject.toml src/forklift/__init__.py` (or entry module) showing the console script now points to `forklift` (see `artifacts/1.1a-diff.txt`)
 - [x] 1.2 Implement Git remote discovery (`origin`, `upstream`) and fetch logic in the host CLI
 - [x] 1.2a Attach CLI log output from a sample repo showing detected remotes and successful fetches (see `artifacts/1.2a-cli-log.txt`)
-- [x] 1.3 Create run directory scaffolding (`~/forklift/runs/<project>_<timestamp>/workspace` + `harness-state`) and duplicate repo with remotes removed
+- [x] 1.3 Create run directory scaffolding (`$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>/workspace` + `harness-state`, defaulting to `~/.local/state/forklift/runs/<project>_<timestamp>/workspace`) and duplicate repo with remotes removed
 - [x] 1.3a Provide a `tree`/`ls` snapshot plus `git remote -v` from the workspace proving remotes are absent (see `artifacts/1.3a-run-snapshot.txt`)
 - [x] 1.4 Align workspace/harness-state ownership or permissions so container UID/GID 1000 can write (e.g., `chown -R 1000:1000`)
 - [x] 1.4a Attach `ls -ln` output showing both directories owned by UID/GID 1000 (see `artifacts/1.4a-ls-ownership.txt`)

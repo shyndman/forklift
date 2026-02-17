@@ -69,7 +69,7 @@ The OpenCode architecture we aligned on requires a split server/client model: ro
 2. Build the new Docker image that installs OpenCode, adds the entrypoint and server scripts, and configures user/groups.
 3. Update harness scripts to run the OpenCode client by default and emit logs to `/harness-state`.
 4. Update documentation (README, forklift-v0-design.md, FORK.md guidance) with the new setup and troubleshooting steps.
-5. Smoke-test on a sample repo: ensure `~/forklift/runs/.../harness-state` contains server/client logs and that the agent operates using the provided `.env` settings.
+5. Smoke-test on a sample repo: ensure `$XDG_STATE_HOME/forklift/runs/.../harness-state` (defaults to `~/.local/state/forklift/runs/.../harness-state`) contains server/client logs and that the agent operates using the provided `.env` settings.
 6. Roll out by publishing the new image tag (still `forklift/kitchen-sink:latest`) and instructing operators to rebuild via `docker build ...`.
 
 ## Open Questions
