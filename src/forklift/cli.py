@@ -42,8 +42,8 @@ class Forklift(Command):
     """Primary entrypoint for the Forklift host orchestrator."""
 
     repo: Path | str | None = None
-    debug: bool = arg(False, short="-d", help="Enable debug logging")
-    version: bool = arg(False, short="-v", help="Print version and exit")
+    debug: bool = arg(False, short="d", help="Enable debug logging")
+    version: bool = arg(False, short="v", help="Print version and exit")
     model: str | None = arg(None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/).")
     variant: str | None = arg(None, help="Override OPENCODE_VARIANT (letters, numbers, punctuation ._-/).")
     agent: str | None = arg(None, help="Override OPENCODE_AGENT (letters, numbers, punctuation ._-/).")
@@ -260,4 +260,3 @@ class Forklift(Command):
         except metadata.PackageNotFoundError:
             pkg_version = "unknown"
         print(pkg_version)
-
