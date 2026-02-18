@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 
 import logging
+from dataclasses import replace
 from importlib import metadata
 from pathlib import Path
 from typing import cast, override
@@ -21,6 +22,13 @@ from .git import (
 )
 
 from .container_runner import ContainerRunner
+from .opencode_env import (
+    DEFAULT_ENV_PATH,
+    SAFE_VALUE_PATTERN,
+    OpenCodeEnv,
+    OpenCodeEnvError,
+    load_opencode_env,
+)
 from .run_manager import RunDirectoryManager, RunPaths
 
 
@@ -36,6 +44,9 @@ class Forklift(Command):
     repo: Path | str | None = None
     debug: bool = arg(False, short="-d", help="Enable debug logging")
     version: bool = arg(False, short="-v", help="Print version and exit")
+    model: str | None = arg(None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/).")
+    variant: str | None = arg(None, help="Override OPENCODE_VARIANT (letters, numbers, punctuation ._-/).")
+    agent: str | None = arg(None, help="Override OPENCODE_AGENT (letters, numbers, punctuation ._-/).")
 
     @override
     async def run(self) -> None:
@@ -46,6 +57,8 @@ class Forklift(Command):
         repo_path = self._resolve_repo_path()
         self._configure_logging()
         logging.info("Starting Forklift orchestration in %s", repo_path)
+
+        opencode_env = self._prepare_opencode_env()
 
         remotes = self._discover_required_remotes(repo_path)
         fetch_results = self._fetch_all(repo_path, remotes)
@@ -68,7 +81,9 @@ class Forklift(Command):
         )
 
         container_runner = ContainerRunner()
-        container_result = container_runner.run(run_paths.workspace, run_paths.harness_state)
+        container_result = container_runner.run(
+            run_paths.workspace, run_paths.harness_state, opencode_env.as_env()
+        )
         if container_result.stdout.strip():
             logging.info("Container stdout:\n%s", container_result.stdout.strip())
         if container_result.stderr.strip():
@@ -200,6 +215,44 @@ class Forklift(Command):
             branch,
             branch,
         )
+
+    def _prepare_opencode_env(self) -> OpenCodeEnv:
+        env_path = DEFAULT_ENV_PATH
+        try:
+            env = load_opencode_env(env_path)
+        except OpenCodeEnvError as exc:
+            logging.error("Failed to load OpenCode config from %s: %s", env_path, exc)
+            raise SystemExit(1) from exc
+        logging.info("Loaded OpenCode env from %s", env_path)
+        env = self._apply_cli_overrides(env)
+        logging.debug(
+            "Forwarding OpenCode configuration: model=%s variant=%s agent=%s",
+            env.model or "(default)",
+            env.variant,
+            env.agent,
+        )
+        return env
+
+    def _apply_cli_overrides(self, env: OpenCodeEnv) -> OpenCodeEnv:
+        model = self._validated_override(self.model, env.model, "model")
+        variant = self._validated_override(self.variant, env.variant, "variant")
+        agent = self._validated_override(self.agent, env.agent, "agent")
+        return replace(env, model=model, variant=variant, agent=agent)
+
+    def _validated_override(
+        self, override: str | None, current: str | None, label: str
+    ) -> str | None:
+        if override is None:
+            return current
+        if not SAFE_VALUE_PATTERN.fullmatch(override):
+            logging.error(
+                "Invalid %s value %r; expected pattern %s",
+                label,
+                override,
+                SAFE_VALUE_PATTERN.pattern,
+            )
+            raise SystemExit(1)
+        return override
 
     def _print_version(self) -> None:
         try:

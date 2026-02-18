@@ -1,5 +1,6 @@
 # syntax=docker/dockerfile:1.6
 FROM ubuntu:24.04
+ARG OPENCODE_VERSION=1.2.6
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -9,9 +10,12 @@ ENV DEBIAN_FRONTEND=noninteractive \
     N_PREFIX=/opt/n \
     BUN_INSTALL=/opt/bun \
     PYENV_ROOT=/opt/pyenv \
-    PATH=/opt/pyenv/shims:/opt/pyenv/bin:$N_PREFIX/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    OPENCODE_HOME=/opt/opencode \
+    PATH=/opt/pyenv/shims:/opt/pyenv/bin:$N_PREFIX/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:$OPENCODE_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-RUN apt-get update && \
+RUN --mount=type=cache,target=/var/lib/apt/lists,id=forklift-apt-lists,sharing=locked \
+    --mount=type=cache,target=/var/cache/apt,id=forklift-apt-cache,sharing=locked \
+    apt-get update && \
     apt-get install -y --no-install-recommends \
     git \
     build-essential \
@@ -43,21 +47,51 @@ RUN apt-get update && \
     sudo \
     gnupg \
     xz-utils && \
-    ln -s /usr/bin/fdfind /usr/local/bin/fd && \
-    rm -rf /var/lib/apt/lists/*
+    ln -s /usr/bin/fdfind /usr/local/bin/fd
 
 # Install Node.js via n (LTS)
-RUN npm install -g n && \
+RUN --mount=type=cache,target=/root/.npm,id=forklift-npm-cache \
+    npm install -g n && \
     n lts
 
 # Install Bun
-RUN curl -fsSL https://bun.sh/install | bash
+RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked \
+    INSTALLER_DIR=/var/cache/forklift-installers && \
+    install -d "$INSTALLER_DIR" && \
+    INSTALLER="$INSTALLER_DIR/bun-install.sh" && \
+    if [ ! -f "$INSTALLER" ]; then \
+        curl -fsSL https://bun.sh/install -o "$INSTALLER"; \
+    fi && \
+    bash "$INSTALLER"
 
 # Install Rust toolchain (minimal profile, stable)
-RUN curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked \
+    INSTALLER_DIR=/var/cache/forklift-installers && \
+    install -d "$INSTALLER_DIR" && \
+    INSTALLER="$INSTALLER_DIR/rustup-init.sh" && \
+    if [ ! -f "$INSTALLER" ]; then \
+        curl https://sh.rustup.rs -sSf -o "$INSTALLER"; \
+    fi && \
+    sh "$INSTALLER" -y --profile minimal --default-toolchain stable
 
 # Install PyEnv
 RUN git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
+
+# Install OpenCode CLI via official installer
+RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked \
+    set -euxo pipefail && \
+    INSTALLER_DIR=/var/cache/forklift-installers && \
+    install -d "$INSTALLER_DIR" && \
+    INSTALLER="$INSTALLER_DIR/opencode-install.sh" && \
+    if [ ! -f "$INSTALLER" ]; then \
+        curl -fsSL https://opencode.ai/install -o "$INSTALLER"; \
+    fi && \
+    chmod +x "$INSTALLER" && \
+    "$INSTALLER" --no-modify-path --version "$OPENCODE_VERSION" && \
+    install -d "$OPENCODE_HOME/bin" && \
+    mv /root/.opencode/bin/opencode "$OPENCODE_HOME/bin/opencode" && \
+    chmod 755 "$OPENCODE_HOME/bin/opencode" && \
+    rm -rf /root/.opencode
 
 # Remove default ubuntu user if present so we can reuse UID 1000
 RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi
@@ -65,6 +99,8 @@ RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi
 
 # Create forklift user and harness directory
 RUN useradd -m -u 1000 -U forklift && \
+    groupadd --system opencode && \
+    usermod -aG opencode forklift && \
     mkdir -p /opt/forklift/harness && \
     chown -R forklift:forklift /opt/forklift "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX"
 
@@ -85,7 +121,11 @@ COPY harness/ /opt/forklift/harness/
 RUN chmod +x /opt/forklift/harness/run.sh && \
     chown -R forklift:forklift /opt/forklift "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX" "$PYENV_ROOT"
 
-USER forklift
+COPY opencode/start_server.sh /opt/opencode/start_server.sh
+COPY opencode/entrypoint.sh /opt/opencode/entrypoint.sh
+RUN chmod 700 /opt/opencode/start_server.sh /opt/opencode/entrypoint.sh && \
+    chown root:root /opt/opencode/start_server.sh /opt/opencode/entrypoint.sh
+
 WORKDIR /workspace
 
-ENTRYPOINT ["/opt/forklift/harness/run.sh"]
+ENTRYPOINT ["/opt/opencode/entrypoint.sh"]

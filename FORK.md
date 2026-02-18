@@ -1,6 +1,7 @@
 # Fork Context Template
 
 Use this file to brief Forklift on what makes your fork unique. Keep it short and high-signal—the file is copied into every run workspace and echoed in the harness logs.
+The harness forwards this text verbatim as the positional payload to `opencode run`, so treat it as the agent's single source of contextual truth.
 
 ## Mission / Themes
 - Why this fork exists

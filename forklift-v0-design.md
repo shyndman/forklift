@@ -73,10 +73,18 @@ A single "kitchen sink" container includes:
 - System packages: `git`, `build-essential`, `cmake`, `pkg-config`, `python3`, `python3-venv`, `python3-pip`, `curl`, `wget`, `unzip`, `ca-certificates`, `openssl`, `libssl-dev`
 - Language runtimes: Python 3, Rust via rustup, Node.js via `n`, Bun installer, PyEnv for version pinning
 - Tooling: jq, ripgrep, fd, tree, make, bash-completion, other standard CLI helpers
-- Harness bits copied into `/opt/forklift/harness` with entrypoint `/opt/forklift/harness/run.sh`
+- Harness bits copied into `/opt/forklift/harness` plus OpenCode scripts under `/opt/opencode`. The container always boots via `/opt/opencode/entrypoint.sh`, which launches the OpenCode server as root on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the health check to pass, and then hands off to `/opt/forklift/harness/run.sh` as the unprivileged `forklift` user.
 - Default bind mounts: `/workspace` (run workspace) and `/harness-state` (agent logs/state), both read-write
 - Container user `forklift` (UID 1000, GID 1000) owns `/workspace`; host orchestration must ensure the mounted directories are writable by that UID (e.g., via `chown -R 1000:1000` after cloning)
-The harness writes its rendered instructions to `/harness-state/instructions.txt`, echoes any detected FORK.md content, and appends an "Agent Command" section whenever we run additional commands via `FORKLIFT_DOCKER_COMMAND`. This keeps every run self-documenting and lets us capture verification artifacts straight from the container logs.
+The harness writes its rendered instructions to `/harness-state/instructions.txt`, echoes any detected FORK.md content, records the deterministic OpenCode client command, and then launches `opencode run` using the sanitized model/variant/agent values provided by the host CLI. Client stdout/stderr is redirected into `/harness-state/opencode-client.log` while the entrypoint streams server bootstrap/shutdown events into `/harness-state/opencode-server.log`, keeping every run auditable without allowing arbitrary operator commands inside the container.
+
+### OpenCode configuration pipeline
+
+- The host CLI reads `~/.config/forklift/opencode.env`, enforces required keys, and masks secrets when logging which file was loaded.
+- Optional CLI flags `--model`, `--variant`, and `--agent` override the defaults provided they contain only safe characters (letters, digits, and punctuation like `._-/`). Invalid overrides abort the run before any secrets are forwarded.
+- Only the sanitized OpenCode env keys are passed through `docker run -e`; `FORKLIFT_DOCKER_COMMAND` and other arbitrary command hooks are intentionally removed.
+- `/opt/opencode/entrypoint.sh` exports the validated env, starts the server as root, confines it to loopback (`127.0.0.1:$OPENCODE_SERVER_PORT`), runs the harness as the unprivileged `forklift` user, and traps SIGTERM/SIGINT to stop the server cleanly and remove any temporary artifacts.
+
 
 
 
