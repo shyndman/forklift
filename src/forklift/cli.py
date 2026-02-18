@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-
 import logging
+import os
 from dataclasses import replace
 from importlib import metadata
 from pathlib import Path
@@ -47,6 +47,7 @@ class Forklift(Command):
     model: str | None = arg(None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/).")
     variant: str | None = arg(None, help="Override OPENCODE_VARIANT (letters, numbers, punctuation ._-/).")
     agent: str | None = arg(None, help="Override OPENCODE_AGENT (letters, numbers, punctuation ._-/).")
+    forward_tz: bool = arg(False, help="Forward the host TZ variable into the sandbox")
 
     @override
     async def run(self) -> None:
@@ -80,9 +81,10 @@ class Forklift(Command):
             run_paths.harness_state,
         )
 
+        container_env = self._build_container_env(opencode_env)
         container_runner = ContainerRunner()
         container_result = container_runner.run(
-            run_paths.workspace, run_paths.harness_state, opencode_env.as_env()
+            run_paths.workspace, run_paths.harness_state, container_env
         )
         if container_result.stdout.strip():
             logging.info("Container stdout:\n%s", container_result.stdout.strip())
@@ -224,7 +226,6 @@ class Forklift(Command):
             logging.error("Failed to load OpenCode config from %s: %s", env_path, exc)
             raise SystemExit(1) from exc
         logging.info("Loaded OpenCode env from %s", env_path)
-        env = self._apply_cli_overrides(env)
         logging.debug(
             "Forwarding OpenCode configuration: model=%s variant=%s agent=%s",
             env.model or "(default)",
@@ -232,6 +233,30 @@ class Forklift(Command):
             env.agent,
         )
         return env
+
+    def _build_container_env(self, env: OpenCodeEnv) -> dict[str, str]:
+        container_env = dict(env.as_env())
+        tz_value = self._host_timezone_value()
+        if tz_value is not None:
+            container_env["TZ"] = tz_value
+        return container_env
+
+    def _host_timezone_value(self) -> str | None:
+        if not self.forward_tz:
+            return None
+        tz_value = os.environ.get("TZ")
+        if not tz_value:
+            logging.warning("--forward-tz enabled but host TZ is unset; skipping TZ forwarding.")
+            return None
+        if self._contains_control_characters(tz_value):
+            logging.warning("Host TZ value %r contains control characters; skipping TZ forwarding.", tz_value)
+            return None
+        logging.info("Forwarding host TZ=%s into sandbox container.", tz_value)
+        return tz_value
+
+    @staticmethod
+    def _contains_control_characters(value: str) -> bool:
+        return any(ord(char) < 32 or ord(char) == 127 for char in value)
 
     def _apply_cli_overrides(self, env: OpenCodeEnv) -> OpenCodeEnv:
         model = self._validated_override(self.model, env.model, "model")
