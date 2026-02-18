@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: OpenCode configuration handling
-The host CLI SHALL read OpenCode credentials and defaults from `~/.config/forklift/opencode.env` (or the path supplied via env override), validate that required keys such as `OPENCODE_API_KEY`, `OPENCODE_MODEL`, `OPENCODE_VARIANT`, and `OPENCODE_AGENT` are present, and export only those values into the container environment. The CLI SHALL provide typed options (`--model`, `--variant`, `--agent`) that override the defaults, and MUST reject any values containing characters outside `[A-Za-z0-9._-]` to block shell injection.
+The host CLI SHALL read OpenCode credentials and defaults from `~/.config/forklift/opencode.env` (or the path supplied via env override), validate that required keys such as `OPENCODE_API_KEY`, `OPENCODE_MODEL`, `OPENCODE_VARIANT`, and `OPENCODE_AGENT` are present, and export only those values into the container environment. The CLI SHALL provide typed options (`--model`, `--variant`, `--agent`) that override the defaults, and MUST reject any values containing characters outside the safe whitelist (letters, digits, `.`, `_`, `-`, `/`) to block shell injection.
 
 #### Scenario: Validated configuration
 - **WHEN** an operator runs `forklift` with `--model claude-35-sonnet` and a populated `~/.config/forklift/opencode.env`

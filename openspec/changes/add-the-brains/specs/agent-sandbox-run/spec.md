@@ -1,10 +1,10 @@
 ## ADDED Requirements
 
 ### Requirement: OpenCode socket access control
-The container SHALL expose the OpenCode Unix-domain socket at `/opt/opencode/opencode.sock` with ownership `root:opencode` and permissions `0660`, ensuring only the bundled `forklift` user (a member of the `opencode` group) can connect. Any additional user inside the container MUST be denied access.
+The container SHALL expose the OpenCode server only on `127.0.0.1:$OPENCODE_SERVER_PORT`, ensuring the bundled `forklift` user is the only process that can attach. Any additional user inside the container MUST be denied access by group membership and filesystem permissions on `/harness-state`.
 
 #### Scenario: Socket restricted to forklift
-- **WHEN** the harness connects to `/opt/opencode/opencode.sock` as user `forklift`
+- **WHEN** the harness attaches to `http://127.0.0.1:$OPENCODE_SERVER_PORT` as user `forklift`
 - **THEN** the connection succeeds, while a different unprivileged user attempting the same connection receives a permission error, demonstrating that only the intended client can reach the server
 
 ## MODIFIED Requirements

@@ -39,7 +39,6 @@ The OpenCode architecture we aligned on requires a split server/client model: ro
    - `run.sh` continues to print instructions and FORK.md context into `/harness-state`. After that it launches the OpenCode client by default:
      ```bash
      /opt/opencode/bin/opencode run \
-       --socket /opt/opencode/opencode.sock \
        --model "$OPENCODE_MODEL" \
        --variant "$OPENCODE_VARIANT" \
        --agent "$OPENCODE_AGENT" \
