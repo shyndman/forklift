@@ -48,6 +48,10 @@ class Forklift(Command):
     variant: str | None = arg(None, help="Override OPENCODE_VARIANT (letters, numbers, punctuation ._-/).")
     agent: str | None = arg(None, help="Override OPENCODE_AGENT (letters, numbers, punctuation ._-/).")
     forward_tz: bool = arg(False, help="Forward the host TZ variable into the sandbox")
+    chown: str | None = arg(
+        None,
+        help="Reassign harness-state ownership to UID[:GID] after runs (defaults to $UID:$GID).",
+    )
 
     @override
     async def run(self) -> None:
@@ -60,6 +64,7 @@ class Forklift(Command):
         logging.info("Starting Forklift orchestration in %s", repo_path)
 
         opencode_env = self._prepare_opencode_env()
+        chown_uid, chown_gid = self._resolve_chown_target()
 
         remotes = self._discover_required_remotes(repo_path)
         fetch_results = self._fetch_all(repo_path, remotes)
@@ -86,6 +91,7 @@ class Forklift(Command):
         container_result = container_runner.run(
             run_paths.workspace, run_paths.harness_state, container_env
         )
+        self._chown_harness_state(run_paths.harness_state, chown_uid, chown_gid)
         if container_result.stdout.strip():
             logging.info("Container stdout:\n%s", container_result.stdout.strip())
         if container_result.stderr.strip():
@@ -285,3 +291,84 @@ class Forklift(Command):
         except metadata.PackageNotFoundError:
             pkg_version = "unknown"
         print(pkg_version)
+
+    def _resolve_chown_target(self) -> tuple[int, int]:
+        default_uid, default_gid = self._default_host_ids()
+        spec = (self.chown or "").strip()
+        if not spec:
+            return default_uid, default_gid
+        uid_part, _, gid_part = spec.partition(":")
+        uid_part = uid_part.strip()
+        gid_part = gid_part.strip()
+        if not uid_part:
+            logging.error("Invalid --chown value %r; UID is required.", spec)
+            raise SystemExit(1)
+        uid = self._parse_id_component(uid_part, "UID")
+        gid = (
+            default_gid
+            if gid_part == ""
+            else self._parse_id_component(gid_part, "GID")
+        )
+        return uid, gid
+
+    def _default_host_ids(self) -> tuple[int, int]:
+        uid = os.getuid() if hasattr(os, "getuid") else 1000
+        gid = os.getgid() if hasattr(os, "getgid") else 1000
+        return uid, gid
+
+    def _parse_id_component(self, raw: str, label: str) -> int:
+        try:
+            value = int(raw, 10)
+        except ValueError:
+            logging.error("Invalid %s %r in --chown value; expected integer.", label, raw)
+            raise SystemExit(1) from None
+        if value < 0:
+            logging.error(
+                "Invalid %s %s in --chown value; expected non-negative integer.", label, value
+            )
+            raise SystemExit(1)
+        return value
+
+    def _chown_harness_state(self, harness_state: Path, uid: int, gid: int) -> None:
+        if not harness_state.exists():
+            logging.debug(
+                "Harness-state directory %s missing; skipping ownership reset.", harness_state
+            )
+            return
+        logging.info("Reassigning harness-state ownership to %s:%s", uid, gid)
+        try:
+            self._chown_path_recursive(harness_state, uid, gid)
+        except PermissionError as exc:
+            logging.warning(
+                "Unable to chown harness-state to %s:%s: %s", uid, gid, exc
+            )
+        except OSError as exc:
+            logging.warning(
+                "Failed to chown harness-state to %s:%s: %s", uid, gid, exc
+            )
+
+    def _chown_path_recursive(self, path: Path, uid: int, gid: int) -> None:
+        self._set_owner(path, uid, gid)
+        if path.is_symlink():
+            return
+        try:
+            is_dir = path.is_dir()
+        except OSError:
+            return
+        if not is_dir:
+            return
+        try:
+            children = list(path.iterdir())
+        except OSError:
+            return
+        for child in children:
+            try:
+                self._chown_path_recursive(child, uid, gid)
+            except FileNotFoundError:
+                continue
+
+    def _set_owner(self, path: Path, uid: int, gid: int) -> None:
+        try:
+            os.chown(path, uid, gid, follow_symlinks=False)
+        except NotImplementedError:
+            os.chown(path, uid, gid)
