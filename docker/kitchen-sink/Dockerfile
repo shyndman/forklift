@@ -49,13 +49,23 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,id=forklift-apt-lists,sharing=l
     xz-utils && \
     ln -s /usr/bin/fdfind /usr/local/bin/fd
 
+# Prepare forklift user and writable tool directories ahead of installs
+RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi && \
+    if ! getent group opencode >/dev/null 2>&1; then groupadd --system opencode; fi && \
+    if ! id -u forklift >/dev/null 2>&1; then useradd -m -u 1000 -U forklift; fi && \
+    usermod -aG opencode forklift && \
+    install -d -o forklift -g forklift /opt/forklift /opt/forklift/harness "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX" "$PYENV_ROOT" /var/cache/forklift-installers /home/forklift/.npm
+
+USER forklift
+
 # Install Node.js via n (LTS)
-RUN --mount=type=cache,target=/root/.npm,id=forklift-npm-cache \
+RUN --mount=type=cache,target=/home/forklift/.npm,id=forklift-npm-cache,uid=1000,gid=1000 \
+    export NPM_CONFIG_PREFIX="$N_PREFIX" && \
     npm install -g n && \
-    n lts
+    "$N_PREFIX/bin/n" lts
 
 # Install Bun
-RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked \
+RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked,uid=1000,gid=1000 \
     INSTALLER_DIR=/var/cache/forklift-installers && \
     install -d "$INSTALLER_DIR" && \
     INSTALLER="$INSTALLER_DIR/bun-install.sh" && \
@@ -65,7 +75,7 @@ RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-install
     bash "$INSTALLER"
 
 # Install Rust toolchain (minimal profile, stable)
-RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked \
+RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked,uid=1000,gid=1000 \
     INSTALLER_DIR=/var/cache/forklift-installers && \
     install -d "$INSTALLER_DIR" && \
     INSTALLER="$INSTALLER_DIR/rustup-init.sh" && \
@@ -78,7 +88,8 @@ RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-install
 RUN git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
 
 # Install OpenCode CLI via official installer
-RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked \
+USER root
+RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked,uid=1000,gid=1000 \
     set -euxo pipefail && \
     INSTALLER_DIR=/var/cache/forklift-installers && \
     install -d "$INSTALLER_DIR" && \
@@ -93,16 +104,6 @@ RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-install
     chmod 755 "$OPENCODE_HOME/bin/opencode" && \
     rm -rf /root/.opencode
 
-# Remove default ubuntu user if present so we can reuse UID 1000
-RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi
-
-
-# Create forklift user and harness directory
-RUN useradd -m -u 1000 -U forklift && \
-    groupadd --system opencode && \
-    usermod -aG opencode forklift && \
-    mkdir -p /opt/forklift/harness && \
-    chown -R forklift:forklift /opt/forklift "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX"
 
 # Profile setup for pyenv + cargo + bun + n
 RUN cat <<'EOF' >/etc/profile.d/forklift.sh
@@ -117,9 +118,8 @@ if command -v pyenv >/dev/null 2>&1; then
 fi
 EOF
 
-COPY harness/ /opt/forklift/harness/
-RUN chmod +x /opt/forklift/harness/run.sh && \
-    chown -R forklift:forklift /opt/forklift "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX" "$PYENV_ROOT"
+COPY --chown=forklift:forklift harness/ /opt/forklift/harness/
+RUN chmod +x /opt/forklift/harness/run.sh
 
 COPY opencode/start_server.sh /opt/opencode/start_server.sh
 COPY opencode/entrypoint.sh /opt/opencode/entrypoint.sh
