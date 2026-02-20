@@ -95,6 +95,7 @@ Because the entrypoint is fixed, `FORKLIFT_DOCKER_COMMAND` is no longer honored.
   - `/harness-state/fork-context.md` snapshotting FORK.md (or noting that none was provided)
   - `/harness-state/opencode-server.log` with the server bootstrap and shutdown transcript
   - `/harness-state/opencode-client.log` with the OpenCode client stdout/stderr
+  - `opencode-logs/` mirroring `~/.local/share/opencode/log` for deeper OpenCode debugging traces
 
 Old run directories remain under `$XDG_STATE_HOME/forklift/runs/` (or `~/.local/state/forklift/runs/` if `XDG_STATE_HOME` is unset) for auditing. Safe to delete when no longer needed.
 
@@ -132,7 +133,7 @@ docker build -t forklift/kitchen-sink:latest docker/kitchen-sink
 uv run forklift --debug --model claude-35-sonnet --variant production --agent default
 ```
 
-Inspect `~/.local/state/forklift/runs/<latest>/harness-state/opencode-{server,client}.log` to verify the server bootstraps, the instructions render, and the client transcript is captured end-to-end.
+Inspect `~/.local/state/forklift/runs/<latest>/harness-state/opencode-{server,client}.log` to verify the server bootstraps, the instructions render, and the client transcript is captured end-to-end. Check `~/.local/state/forklift/runs/<latest>/opencode-logs/` if you need the full OpenCode CLI logs from inside the sandbox.
 
 ## Development
 

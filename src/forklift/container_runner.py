@@ -18,6 +18,7 @@ DOCKER_BIN = os.environ.get("DOCKER_BIN", "docker")
 DEFAULT_EXTRA_RUN_ARGS = shlex.split(os.environ.get("FORKLIFT_DOCKER_ARGS", ""))
 SENSITIVE_ENV_KEYS = {"OPENCODE_API_KEY", "OPENCODE_SERVER_PASSWORD"}
 HARNESS_ENTRYPOINT = "/opt/opencode/entrypoint.sh"
+OPENCODE_LOG_DIR = "/home/forklift/.local/share/opencode/log"
 
 
 @dataclass(frozen=True)
@@ -44,10 +45,17 @@ class ContainerRunner:
         self,
         workspace: Path,
         harness_state: Path,
+        opencode_logs: Path,
         extra_env: Mapping[str, str] | None = None,
     ) -> ContainerRunResult:
         container_name = self._container_name(workspace)
-        cmd = self._build_command(container_name, workspace, harness_state, extra_env)
+        cmd = self._build_command(
+            container_name,
+            workspace,
+            harness_state,
+            opencode_logs,
+            extra_env,
+        )
         logger.info(
             "Launching container %s with timeout %s seconds (image=%s)",
             container_name,
@@ -95,6 +103,7 @@ class ContainerRunner:
         container_name: str,
         workspace: Path,
         harness_state: Path,
+        opencode_logs: Path,
         extra_env: Mapping[str, str] | None = None,
     ) -> list[str]:
         env_flags: list[str] = []
@@ -111,6 +120,8 @@ class ContainerRunner:
             f"{workspace}:/workspace",
             "-v",
             f"{harness_state}:/harness-state",
+            "-v",
+            f"{opencode_logs}:{OPENCODE_LOG_DIR}",
             *self.extra_run_args,
             *env_flags,
             self.image,

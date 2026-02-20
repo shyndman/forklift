@@ -54,7 +54,8 @@ RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi && \
     if ! getent group opencode >/dev/null 2>&1; then groupadd --system opencode; fi && \
     if ! id -u forklift >/dev/null 2>&1; then useradd -m -u 1000 -U forklift; fi && \
     usermod -aG opencode forklift && \
-    install -d -o forklift -g forklift /opt/forklift /opt/forklift/harness "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX" "$PYENV_ROOT" /var/cache/forklift-installers /home/forklift/.npm
+    install -d -o forklift -g forklift /opt/forklift /opt/forklift/harness "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX" "$PYENV_ROOT" /var/cache/forklift-installers /home/forklift/.npm /home/forklift/.local/state /home/forklift/.local/share/opencode/log && \
+    chown -R forklift:forklift /home/forklift/.local
 
 USER forklift
 

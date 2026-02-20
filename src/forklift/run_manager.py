@@ -39,6 +39,7 @@ class RunPaths:
     run_dir: Path
     workspace: Path
     harness_state: Path
+    opencode_logs: Path
 
 
 class RunDirectoryManager:
@@ -52,20 +53,27 @@ class RunDirectoryManager:
         run_dir = self._runs_root / f"{project}_{timestamp}"
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
+        opencode_logs = run_dir / "opencode-logs"
 
         logger.info("Creating run directory at %s", run_dir)
         workspace.parent.mkdir(parents=True, exist_ok=True)
         harness_state.mkdir(parents=True, exist_ok=True)
+        opencode_logs.mkdir(parents=True, exist_ok=True)
 
         self._clone_repo(source_repo, workspace)
         self._overlay_fork_context(source_repo, workspace)
 
         branch_info = self._capture_branch_info(workspace, source_repo)
         self._remove_remotes(workspace)
-        self._ensure_permissions(workspace, harness_state)
+        self._ensure_permissions(workspace, harness_state, opencode_logs)
         self._write_metadata(run_dir, source_repo, timestamp, branch_info)
 
-        return RunPaths(run_dir=run_dir, workspace=workspace, harness_state=harness_state)
+        return RunPaths(
+            run_dir=run_dir,
+            workspace=workspace,
+            harness_state=harness_state,
+            opencode_logs=opencode_logs,
+        )
 
     def _clone_repo(self, source: Path, destination: Path) -> None:
         if destination.exists():
@@ -97,13 +105,13 @@ class RunDirectoryManager:
             _ = self._run_git(workspace, ["remote", "remove", remote])
         logger.debug("All remotes removed from %s", workspace)
 
-    def _ensure_permissions(self, workspace: Path, harness_state: Path) -> None:
+    def _ensure_permissions(self, *paths: Path) -> None:
         logger.info(
-            "Aligning workspace and harness-state ownership to %s:%s",
+            "Aligning run artifact ownership to %s:%s",
             CONTAINER_UID,
             CONTAINER_GID,
         )
-        for path in (workspace, harness_state):
+        for path in paths:
             self._chown_recursive(path, CONTAINER_UID, CONTAINER_GID)
 
     def _chown_recursive(self, path: Path, uid: int, gid: int) -> None:

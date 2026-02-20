@@ -80,18 +80,23 @@ class Forklift(Command):
         run_manager = RunDirectoryManager()
         run_paths = run_manager.prepare(repo_path)
         logging.info(
-            "Run directory ready at %s (workspace=%s, harness-state=%s)",
+            "Run directory ready at %s (workspace=%s, harness-state=%s, opencode-logs=%s)",
             run_paths.run_dir,
             run_paths.workspace,
             run_paths.harness_state,
+            run_paths.opencode_logs,
         )
 
         container_env = self._build_container_env(opencode_env)
         container_runner = ContainerRunner()
         container_result = container_runner.run(
-            run_paths.workspace, run_paths.harness_state, container_env
+            run_paths.workspace,
+            run_paths.harness_state,
+            run_paths.opencode_logs,
+            container_env,
         )
-        self._chown_harness_state(run_paths.harness_state, chown_uid, chown_gid)
+        self._chown_artifact(run_paths.harness_state, "harness-state", chown_uid, chown_gid)
+        self._chown_artifact(run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid)
         if container_result.stdout.strip():
             logging.info("Container stdout:\n%s", container_result.stdout.strip())
         if container_result.stderr.strip():
@@ -329,22 +334,20 @@ class Forklift(Command):
             raise SystemExit(1)
         return value
 
-    def _chown_harness_state(self, harness_state: Path, uid: int, gid: int) -> None:
-        if not harness_state.exists():
-            logging.debug(
-                "Harness-state directory %s missing; skipping ownership reset.", harness_state
-            )
+    def _chown_artifact(self, target: Path, label: str, uid: int, gid: int) -> None:
+        if not target.exists():
+            logging.debug("%s directory %s missing; skipping ownership reset.", label, target)
             return
-        logging.info("Reassigning harness-state ownership to %s:%s", uid, gid)
+        logging.info("Reassigning %s ownership to %s:%s", label, uid, gid)
         try:
-            self._chown_path_recursive(harness_state, uid, gid)
+            self._chown_path_recursive(target, uid, gid)
         except PermissionError as exc:
             logging.warning(
-                "Unable to chown harness-state to %s:%s: %s", uid, gid, exc
+                "Unable to chown %s to %s:%s: %s", label, uid, gid, exc
             )
         except OSError as exc:
             logging.warning(
-                "Failed to chown harness-state to %s:%s: %s", uid, gid, exc
+                "Failed to chown %s to %s:%s: %s", label, uid, gid, exc
             )
 
     def _chown_path_recursive(self, path: Path, uid: int, gid: int) -> None:
