@@ -124,8 +124,11 @@ RUN chmod +x /opt/forklift/harness/run.sh
 
 COPY opencode/start_server.sh /opt/opencode/start_server.sh
 COPY opencode/entrypoint.sh /opt/opencode/entrypoint.sh
+COPY opencode/opencode-permissive.json /opt/opencode/opencode-permissive.json
 RUN chmod 700 /opt/opencode/start_server.sh /opt/opencode/entrypoint.sh && \
-    chown root:root /opt/opencode/start_server.sh /opt/opencode/entrypoint.sh
+    chown root:root /opt/opencode/start_server.sh /opt/opencode/entrypoint.sh && \
+    chmod 644 /opt/opencode/opencode-permissive.json && \
+    chown root:root /opt/opencode/opencode-permissive.json
 
 WORKDIR /workspace
 

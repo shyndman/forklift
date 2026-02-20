@@ -17,15 +17,12 @@ CLIENT_ENV_VARS=(
 
 mkdir -p /harness-state "$STATE_DIR"
 : >"$CLIENT_LOG"
-chown root:opencode "$CLIENT_LOG"
+chown forklift:opencode "$CLIENT_LOG"
 chmod 660 "$CLIENT_LOG"
 
 cleanup() {
   if [[ -f "$PID_FILE" ]]; then
     SERVER_PID=$(cat "$PID_FILE")
-    if command -v /opt/opencode/bin/opencode >/dev/null 2>&1; then
-      /opt/opencode/bin/opencode session stop --all >>"$SERVER_LOG" 2>&1 || true
-    fi
     if kill -0 "$SERVER_PID" >/dev/null 2>&1; then
       kill "$SERVER_PID" >/dev/null 2>&1 || true
       wait "$SERVER_PID" >/dev/null 2>&1 || true
@@ -67,8 +64,10 @@ run_harness() {
       env_args+=("${var}=${value}")
     fi
   done
-  env_args+=("OPENCODE_SERVER_USERNAME=opencode")
-  env_args+=("OPENCODE_CLIENT_LOG=$CLIENT_LOG")
+	# TODO(https://github.com/anomalyco/opencode/issues/8502): Uncomment when
+	# fixed
+  # env_args+=("OPENCODE_SERVER_USERNAME=opencode")
+  # env_args+=("OPENCODE_CLIENT_LOG=$CLIENT_LOG")
   runuser -u forklift -- env "${env_args[@]}" /opt/forklift/harness/run.sh
 }
 
