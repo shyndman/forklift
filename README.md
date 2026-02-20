@@ -28,7 +28,7 @@ What happens:
 
 1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both.
 2. It creates `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...`) with:
-   - `workspace/` – shared-clone copy of your repo with remotes removed
+   - `workspace/` – self-contained clone of your repo with remotes removed (we avoid `git clone --shared` to ensure the sandbox never depends on external object stores)
    - `harness-state/` – writable directory the container uses for logs and instructions
    - `metadata.json` – records source repo, timestamp, main branch, and upstream SHA
 3. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.

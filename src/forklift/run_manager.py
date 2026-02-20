@@ -73,7 +73,7 @@ class RunDirectoryManager:
         logger.info("Cloning %s -> %s", source, destination)
         try:
             result: subprocess.CompletedProcess[str] = subprocess.run(
-                ["git", "clone", "--shared", str(source), str(destination)],
+                ["git", "clone", str(source), str(destination)],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
