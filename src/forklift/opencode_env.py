@@ -22,7 +22,7 @@ REQUIRED_KEYS: Final[tuple[str, ...]] = (
 )
 OPTIONAL_PROVIDER_KEYS: Final[tuple[str, ...]] = (
     "OPENAI_API_KEY",
-    "GEMINI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENROUTER_API_KEY",
 )
@@ -30,7 +30,7 @@ DEFAULT_PORT: Final[int] = 4096
 PRIMARY_API_KEYS: Final[tuple[str, ...]] = (
     "OPENCODE_API_KEY",
     "OPENAI_API_KEY",
-    "GEMINI_API_KEY",
+    "GOOGLE_GENERATIVE_AI_API_KEY",
     "ANTHROPIC_API_KEY",
     "OPENROUTER_API_KEY",
 )
@@ -47,7 +47,7 @@ class OpenCodeEnv:
     org: str | None = None
     timeout_seconds: int | None = None
     openai_api_key: str | None = None
-    gemini_api_key: str | None = None
+    google_generative_ai_api_key: str | None = None
     anthropic_api_key: str | None = None
     openrouter_api_key: str | None = None
 
@@ -68,8 +68,8 @@ class OpenCodeEnv:
             env["OPENCODE_ORG"] = self.org
         if self.openai_api_key:
             env["OPENAI_API_KEY"] = self.openai_api_key
-        if self.gemini_api_key:
-            env["GEMINI_API_KEY"] = self.gemini_api_key
+        if self.google_generative_ai_api_key:
+            env["GOOGLE_GENERATIVE_AI_API_KEY"] = self.google_generative_ai_api_key
         if self.anthropic_api_key:
             env["ANTHROPIC_API_KEY"] = self.anthropic_api_key
         if self.openrouter_api_key:
@@ -93,16 +93,22 @@ def load_opencode_env(path: Path | None = None) -> OpenCodeEnv:
     raw_model = sanitized.get("OPENCODE_MODEL")
     if raw_model:
         model = _require_safe_value(raw_model, "OPENCODE_MODEL", env_path)
-    variant = _require_safe_value(sanitized["OPENCODE_VARIANT"], "OPENCODE_VARIANT", env_path)
+    variant = _require_safe_value(
+        sanitized["OPENCODE_VARIANT"], "OPENCODE_VARIANT", env_path
+    )
     agent = _require_safe_value(sanitized["OPENCODE_AGENT"], "OPENCODE_AGENT", env_path)
     api_key = sanitized.get("OPENCODE_API_KEY")
     server_password = sanitized["OPENCODE_SERVER_PASSWORD"]
     if not server_password:
-        raise OpenCodeEnvError(f"OPENCODE_SERVER_PASSWORD in {env_path} must not be empty")
+        raise OpenCodeEnvError(
+            f"OPENCODE_SERVER_PASSWORD in {env_path} must not be empty"
+        )
 
     primary_keys = [sanitized.get(key, "").strip() for key in PRIMARY_API_KEYS]
     if not any(primary_keys):
-        raise OpenCodeEnvError("At least one provider API key must be set (OpenCode, OpenAI, Gemini, Anthropic, or OpenRouter)")
+        raise OpenCodeEnvError(
+            "At least one provider API key must be set (OpenCode, OpenAI, Gemini, Anthropic, or OpenRouter)"
+        )
 
     timeout_val: int | None = None
     raw_timeout = sanitized.get("OPENCODE_TIMEOUT")
@@ -143,7 +149,7 @@ def load_opencode_env(path: Path | None = None) -> OpenCodeEnv:
         org=org,
         timeout_seconds=timeout_val,
         openai_api_key=provider_keys["OPENAI_API_KEY"],
-        gemini_api_key=provider_keys["GEMINI_API_KEY"],
+        google_generative_ai_api_key=provider_keys["GOOGLE_GENERATIVE_AI_API_KEY"],
         anthropic_api_key=provider_keys["ANTHROPIC_API_KEY"],
         openrouter_api_key=provider_keys["OPENROUTER_API_KEY"],
     )
@@ -171,7 +177,9 @@ def _parse_env_text(raw_text: str, env_path: Path) -> dict[str, str]:
 
 
 def _ensure_required_keys(values: dict[str, str], env_path: Path) -> None:
-    missing = [key for key in REQUIRED_KEYS if key not in values or not values[key].strip()]
+    missing = [
+        key for key in REQUIRED_KEYS if key not in values or not values[key].strip()
+    ]
     if missing:
         joined = ", ".join(missing)
         raise OpenCodeEnvError(f"Missing required keys in {env_path}: {joined}")
@@ -203,7 +211,7 @@ def _validate_permissions(env_path: Path) -> None:
 def _read_env_text(env_path: Path) -> str:
     mode = env_path.stat().st_mode
     if stat.S_ISFIFO(mode):
-        with env_path.open('r', encoding='utf-8') as handle:
+        with env_path.open("r", encoding="utf-8") as handle:
             return handle.read()
     if stat.S_ISSOCK(mode):
         data: list[str] = []
@@ -213,6 +221,6 @@ def _read_env_text(env_path: Path) -> str:
                 chunk = client.recv(8192)
                 if not chunk:
                     break
-                data.append(chunk.decode('utf-8'))
-        return ''.join(data)
+                data.append(chunk.decode("utf-8"))
+        return "".join(data)
     return env_path.read_text()

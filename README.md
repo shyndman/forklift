@@ -50,7 +50,7 @@ Optional keys:
 - `OPENCODE_TIMEOUT` (seconds)
 - `OPENCODE_SERVER_PORT` (defaults to `4096`)
 - `OPENAI_API_KEY`
-- `GEMINI_API_KEY`
+- `GOOGLE_GENERATIVE_AI_API_KEY`
 - `ANTHROPIC_API_KEY`
 - `OPENROUTER_API_KEY`
 
@@ -67,7 +67,7 @@ OPENCODE_TIMEOUT=480
 OPENCODE_SERVER_PORT=4096
 ```
 
-The file should be owned by you with `0600` permissions. At runtime the CLI logs which file path was used (masking secrets) to aid troubleshooting. At least one provider API key (`OPENCODE_API_KEY`, `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY`) must be present; populate whichever ones your workflow requires.
+The file should be owned by you with `0600` permissions. At runtime the CLI logs which file path was used (masking secrets) to aid troubleshooting. At least one provider API key (`OPENCODE_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY`) must be present; populate whichever ones your workflow requires.
 
 The CLI also exposes typed overrides:
 

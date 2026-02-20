@@ -38,8 +38,7 @@
 
 ## 6. Multi-provider Env Keys
 
-- [x] 6.1 Extend `.opencode_env` and the CLI to pass optional `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENROUTER_API_KEY` through to the container
+- [x] 6.1 Extend `.opencode_env` and the CLI to pass optional `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENROUTER_API_KEY` through to the container
 - [x] 6.1 Validation: Show CLI/env loader evidence proving the keys load correctly and surface in `container_runner` env output
 - [x] 6.2 Allow `.opencode_env` to omit `OPENCODE_API_KEY` when third-party provider keys are supplied and update docs to reflect the new base requirements
 - [x] 6.2 Validation: Load an env missing `OPENCODE_API_KEY` but containing other provider keys and show that `load_opencode_env` succeeds
-
