@@ -1,13 +1,13 @@
 # Repository Guidelines
 
 ## Project Overview
-- Forklift is a host-side orchestrator that keeps a fork in sync with its upstream by snapshotting the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launching the kitchen-sink container for at most eight minutes, and either guiding a pull request or surfacing a `STUCK.md` with remediation details (see `README.md`).
+- Forklift is a host-side orchestrator that keeps a fork in sync with its upstream by snapshotting the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launching the kitchen-sink container for at most three and a half minutes (210 seconds), and either guiding a pull request or surfacing a `STUCK.md` with remediation details (see `README.md`).
 - The workflow is intentionally filesystem-driven: a standalone workspace clone (no remotes) and a writable `harness-state/` directory are bind-mounted into the sandbox so the harness and agent communicate via files instead of services (documented in `forklift-v0-design.md`).
 
 ## Architecture & Data Flow
 - Entry point: `Forklift` (`src/forklift/cli.py`) resolves the repo, configures logging, ensures `origin`/`upstream` using `git.py`, fetches both remotes, and orchestrates the run lifecycle.
 - Run preparation: `RunDirectoryManager` (`run_manager.py`) clones the repo via `git clone`, copies `FORK.md`, strips remotes, aligns ownership to UID/GID `1000`, captures `main_branch` and `upstream/main` SHA, and emits `RunPaths` (run directory, workspace, harness-state) plus a `metadata.json` manifest.
-- Sandbox execution: `ContainerRunner` (`container_runner.py`) builds `docker run --rm --name ... -v workspace:/workspace -v harness-state:/harness-state` with overrides from `FORKLIFT_DOCKER_IMAGE`, `FORKLIFT_TIMEOUT_SECONDS` (default 480s), `FORKLIFT_DOCKER_ARGS`, and `FORKLIFT_DOCKER_COMMAND`, then captures stdout/stderr and timeouts.
+- Sandbox execution: `ContainerRunner` (`container_runner.py`) builds `docker run --rm --name ... -v workspace:/workspace -v harness-state:/harness-state` with overrides from `FORKLIFT_DOCKER_IMAGE`, `FORKLIFT_TIMEOUT_SECONDS` (default 210s), `FORKLIFT_DOCKER_ARGS`, and `FORKLIFT_DOCKER_COMMAND`, then captures stdout/stderr and timeouts.
 - Post-run verification: CLI reloads `metadata.json`, previews `workspace/STUCK.md` (exits with code 4), runs `git merge-base --is-ancestor upstream/main <target_branch>` before logging PR instructions, and exits non-zero for timeout (2) or container failures (container exit code); otherwise it logs that no changes were detected.
 
 ## Key Directories

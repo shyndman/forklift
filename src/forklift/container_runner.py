@@ -13,7 +13,7 @@ from uuid import uuid4
 logger = logging.getLogger(__name__)
 
 DEFAULT_IMAGE = os.environ.get("FORKLIFT_DOCKER_IMAGE", "forklift/kitchen-sink:latest")
-DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("FORKLIFT_TIMEOUT_SECONDS", "480"))
+DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("FORKLIFT_TIMEOUT_SECONDS", "210"))
 DOCKER_BIN = os.environ.get("DOCKER_BIN", "docker")
 DEFAULT_EXTRA_RUN_ARGS = shlex.split(os.environ.get("FORKLIFT_DOCKER_ARGS", ""))
 SENSITIVE_ENV_KEYS = {"OPENCODE_API_KEY", "OPENCODE_SERVER_PASSWORD"}

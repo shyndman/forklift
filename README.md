@@ -1,6 +1,6 @@
 # Forklift
 
-Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launches an isolated "kitchen-sink" container for at most eight minutes, and either opens a pull request or leaves a `STUCK.md` explaining what blocked progress.
+Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launches an isolated "kitchen-sink" container for at most three and a half minutes (210 seconds), and either opens a pull request or leaves a `STUCK.md` explaining what blocked progress.
 
 ## Requirements
 
@@ -33,7 +33,7 @@ What happens:
    - `metadata.json` – records source repo, timestamp, main branch, and upstream SHA
 3. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
 4. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. The harness prints default instructions into `/harness-state/instructions.txt`, echoes the FORK.md contents (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
-5. The agent has eight minutes. If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/main main` and prompts you to push + create a PR. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
+5. The agent has three and a half minutes (210 seconds). If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>` using the branch stored in the run metadata (defaulting to `main`) and then prompts you to push + create a PR. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
 
 ## Configuring OpenCode
 
@@ -63,7 +63,7 @@ OPENCODE_VARIANT=production
 OPENCODE_AGENT=default-agent
 OPENCODE_SERVER_PASSWORD=server-passphrase
 OPENCODE_ORG=acme
-OPENCODE_TIMEOUT=480
+OPENCODE_TIMEOUT=210
 OPENCODE_SERVER_PORT=4096
 ```
 
@@ -81,7 +81,7 @@ Each override must avoid shell metacharacters, but forward slashes are allowed f
 
 - `FORKLIFT_DOCKER_IMAGE` – alternate container image (defaults to `forklift/kitchen-sink:latest`)
 - `FORKLIFT_DOCKER_ARGS` – extra `docker run` flags appended before the image (for GPU devices, proxies, etc.)
-- `FORKLIFT_TIMEOUT_SECONDS` – adjust the watchdog (default 480 seconds / 8 minutes)
+- `FORKLIFT_TIMEOUT_SECONDS` – adjust the watchdog (default 210 seconds / 3.5 minutes)
 - `DOCKER_BIN` – override the Docker CLI binary name/path if needed
 
 Because the entrypoint is fixed, `FORKLIFT_DOCKER_COMMAND` is no longer honored.
