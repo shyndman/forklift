@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Rebuild docker/kitchen-sink after editing this file so the image picks up harness changes.
+
 INSTRUCTIONS_FILE=/harness-state/instructions.txt
 FORK_CONTEXT_FILE=/harness-state/fork-context.md
 CLIENT_LOG=${OPENCODE_CLIENT_LOG:-/harness-state/opencode-client.log}
@@ -31,31 +33,38 @@ log_client "  OPENCODE_VARIANT=$OPENCODE_VARIANT"
 log_client "  OPENCODE_AGENT=$OPENCODE_AGENT"
 log_client "  OPENCODE_SERVER_PORT=$OPENCODE_SERVER_PORT"
 log_client "  OPENCODE_TIMEOUT=${OPENCODE_TIMEOUT}s"
+log_client "  FORKLIFT_MAIN_BRANCH=$MAIN_BRANCH"
 
 default_instructions() {
-  local upstream_sha upstream_date main_sha
-  upstream_sha=$(git -C /workspace rev-parse --short upstream/main 2>/dev/null || echo "unknown")
-  upstream_date=$(git -C /workspace log --format='%ar' upstream/main -1 2>/dev/null || echo "unknown")
-  main_sha=$(git -C /workspace rev-parse --short main 2>/dev/null || echo "unknown")
+  local upstream_sha upstream_date main_sha branch_name upstream_ref helper_branch
+  branch_name="$MAIN_BRANCH"
+  upstream_ref="$UPSTREAM_REF"
+  helper_branch="$HELPER_BRANCH"
+  upstream_sha=$(git -C /workspace rev-parse --short "$upstream_ref" 2>/dev/null || echo "unknown")
+  upstream_date=$(git -C /workspace log --format='%ar' "$upstream_ref" -1 2>/dev/null || echo "unknown")
+  main_sha=$(git -C /workspace rev-parse --short "$branch_name" 2>/dev/null || echo "unknown")
 
   cat <<TXT
 You are the Forklift merge agent. Your job is to merge upstream changes into
-this fork and leave the repository in a working state, while preserving the
-functionality of both the fork, and the upstream project.
+this fork and leave the repository in a working state while preserving the
+functionality of both the upstream $upstream_ref branch and the fork's
+$branch_name branch.
 
 == Environment ==
-- Working directory: /workspace (a git repository)
-- The \`upstream\` remote is already configured and fetched; do not add or
-  modify any git remotes
-- upstream/main is at $upstream_sha ($upstream_date)
-- local main is at $main_sha — use this as a reset point if the rebase goes
-  badly wrong: \`git checkout main && git reset --hard $main_sha\`
-- Use git to inspect history, branches, and conflicts
+|- Working directory: /workspace (a git repository)
+|- Git remotes were stripped before the run; `git remote -v` will show nothing.
+  Do not add new remotes. Forklift seeded `refs/remotes/$upstream_ref`
+  (helper branch `$helper_branch`) so `git rebase $upstream_ref` works without
+  extra setup.
+|- $upstream_ref is at $upstream_sha ($upstream_date)
+|- local $branch_name is at $main_sha — use this as a reset point if the rebase goes
+  badly wrong: `git checkout $branch_name && git reset --hard $main_sha`
+|- Use git to inspect history, branches, and conflicts
 
 == Task ==
-1. Run \`git rebase upstream/main\` on the local \`main\` branch only.
+1. Run `git rebase $upstream_ref` on the local `$branch_name` branch only.
    No other branches need attention.
-2. Resolve any conflicts. Your goal is to preserve the functionality of both the upstream and main branches. If this seems impossible, write a STUCK.md as described below.
+2. Resolve any conflicts. Your goal is to preserve the functionality of both $upstream_ref and $branch_name. If this seems impossible, write a STUCK.md as described below.
 	 Refer to the FORK.md if supplied to understand intentional fork customizations worth
    preserving.
 3. Run the project's primary test suite (e.g. npm test, pytest, cargo test)

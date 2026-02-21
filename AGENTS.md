@@ -25,6 +25,7 @@
 - Bootstrap + run orchestration:
   - `uv run forklift --debug` – primary command to kick off an orchestration run from the host.
   - `docker build -t forklift/kitchen-sink:latest docker/kitchen-sink` – rebuild the sandbox image after Dockerfile changes.
+  - Whenever you touch files that affect the baked image (Dockerfile, harness scripts, or other contents under `docker/kitchen-sink/`), rebuild the image before treating the work as done so the container matches the repo state.
 - Tooling:
   - `uv run basedpyright` – run static type checks (from README).
   - Set overrides before running: `export FORKLIFT_DOCKER_IMAGE=...`, `FORKLIFT_TIMEOUT_SECONDS=600`, `FORKLIFT_DOCKER_COMMAND="bash -lc '...''"` when you need non-default images, watchdogs, or entry commands.

@@ -46,7 +46,7 @@ class RunDirectoryManager:
     def __init__(self, runs_root: Path | None = None) -> None:
         self._runs_root: Path = (runs_root or DEFAULT_RUNS_ROOT).expanduser().resolve()
 
-    def prepare(self, source_repo: Path) -> RunPaths:
+    def prepare(self, source_repo: Path, main_branch: str = "main") -> RunPaths:
         source_repo = source_repo.resolve()
         timestamp = datetime.now().strftime(TIMESTAMP_FORMAT)
         project = source_repo.name
@@ -63,8 +63,10 @@ class RunDirectoryManager:
         self._clone_repo(source_repo, workspace)
         self._overlay_fork_context(source_repo, workspace)
 
-        branch_info = self._capture_branch_info(workspace, source_repo)
+        branch_info = self._capture_branch_info(source_repo, main_branch)
+        upstream_main_sha = branch_info.get("upstream_main_sha")
         self._remove_remotes(workspace)
+        self._seed_upstream_ref(workspace, upstream_main_sha, main_branch)
         self._ensure_permissions(workspace, harness_state, opencode_logs)
         self._write_metadata(run_dir, source_repo, timestamp, branch_info)
 
@@ -152,19 +154,12 @@ class RunDirectoryManager:
 
 
     def _capture_branch_info(
-        self, workspace: Path, source_repo: Path
+        self, source_repo: Path, main_branch: str
     ) -> dict[str, str | None]:
-        info: dict[str, str | None] = {}
-        try:
-            info["main_branch"] = self._run_git(
-                workspace, ["rev-parse", "--abbrev-ref", "HEAD"]
-            )
-        except RunDirectoryError as exc:
-            logger.warning("Failed to capture branch name: %s", exc)
-            info["main_branch"] = None
+        info: dict[str, str | None] = {"main_branch": main_branch}
         try:
             info["upstream_main_sha"] = self._run_git(
-                source_repo, ["rev-parse", "upstream/main"]
+                source_repo, ["rev-parse", f"upstream/{main_branch}"]
             )
         except RunDirectoryError:
             info["upstream_main_sha"] = None
@@ -187,4 +182,23 @@ class RunDirectoryManager:
                 f"git {' '.join(args)} failed in {repo_path}: {output.strip()}"
             ) from exc
         return (completed.stdout or "").strip()
+
+    def _seed_upstream_ref(
+        self, workspace: Path, upstream_sha: str | None, main_branch: str
+    ) -> None:
+        if not upstream_sha:
+            raise RunDirectoryError(
+                "Unable to seed upstream ref in the workspace; upstream_main_sha is missing. "
+                f"Ensure the source repo has an upstream remote with the '{main_branch}' branch."
+            )
+        remote_ref = f"refs/remotes/upstream/{main_branch}"
+        helper_branch = f"upstream-{main_branch.replace('/', '-')}"
+        logger.info(
+            "Seeding synthetic %s ref at %s (helper branch %s)",
+            remote_ref,
+            upstream_sha,
+            helper_branch,
+        )
+        _ = self._run_git(workspace, ["update-ref", remote_ref, upstream_sha])
+        _ = self._run_git(workspace, ["branch", "-f", helper_branch, upstream_sha])
 

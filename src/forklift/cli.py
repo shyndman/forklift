@@ -42,6 +42,7 @@ class Forklift(Command):
     """Primary entrypoint for the Forklift host orchestrator."""
 
     repo: Path | str | None = None
+    main_branch: str = arg("main", help="Name of the primary branch to rebase (default: main)")
     debug: bool = arg(False, short="d", help="Enable debug logging")
     version: bool = arg(False, short="v", help="Print version and exit")
     model: str | None = arg(None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/).")
@@ -63,6 +64,8 @@ class Forklift(Command):
         self._configure_logging()
         logging.info("Starting Forklift orchestration in %s", repo_path)
 
+        main_branch = self._resolved_main_branch()
+
         opencode_env = self._prepare_opencode_env()
         chown_uid, chown_gid = self._resolve_chown_target()
 
@@ -78,7 +81,7 @@ class Forklift(Command):
         logging.info("Remote discovery and fetch complete.")
 
         run_manager = RunDirectoryManager()
-        run_paths = run_manager.prepare(repo_path)
+        run_paths = run_manager.prepare(repo_path, main_branch=main_branch)
         logging.info(
             "Run directory ready at %s (workspace=%s, harness-state=%s, opencode-logs=%s)",
             run_paths.run_dir,
@@ -87,7 +90,7 @@ class Forklift(Command):
             run_paths.opencode_logs,
         )
 
-        container_env = self._build_container_env(opencode_env)
+        container_env = self._build_container_env(opencode_env, main_branch)
         container_runner = ContainerRunner()
         container_result = container_runner.run(
             run_paths.workspace,
@@ -116,7 +119,7 @@ class Forklift(Command):
             )
             raise SystemExit(container_result.exit_code)
         logging.info("Container run completed successfully.")
-        self._post_container_results(repo_path, run_paths)
+        self._post_container_results(repo_path, run_paths, main_branch)
 
 
 
@@ -157,27 +160,37 @@ class Forklift(Command):
             logging.error("%s", exc)
             raise SystemExit(1) from exc
 
-    def _post_container_results(self, repo_path: Path, run_paths: RunPaths) -> None:
+    def _post_container_results(
+        self, repo_path: Path, run_paths: RunPaths, configured_branch: str
+    ) -> None:
         metadata = self._load_run_metadata(run_paths.run_dir)
         workspace = run_paths.workspace
         self._fail_if_stuck(workspace)
 
-        target_branch = metadata.get("main_branch") or current_branch(workspace)
+        metadata_branch = metadata.get("main_branch")
+        target_branch = metadata_branch or configured_branch or current_branch(workspace)
+        upstream_ref_branch = metadata_branch or configured_branch
+        upstream_ref = f"upstream/{upstream_ref_branch}"
         upstream_sha = metadata.get("upstream_main_sha")
 
-        if upstream_sha:
-            try:
-                ensure_upstream_merged(workspace, upstream_sha, target_branch)
+        try:
+            ensure_upstream_merged(workspace, upstream_ref, target_branch)
+            if upstream_sha:
                 logging.info(
-                    "Verified upstream commit %s is ancestor of %s",
+                    "Verified %s (%s) is ancestor of %s",
+                    upstream_ref,
                     upstream_sha[:12],
                     target_branch,
                 )
-            except GitError as exc:
-                logging.error("Upstream verification failed: %s", exc)
-                raise SystemExit(3) from exc
-        else:
-            logging.warning("Upstream commit info missing; skipping verification.")
+            else:
+                logging.info(
+                    "Verified %s is ancestor of %s",
+                    upstream_ref,
+                    target_branch,
+                )
+        except GitError as exc:
+            logging.error("Upstream verification failed: %s", exc)
+            raise SystemExit(3) from exc
 
         if self._workspace_has_changes(workspace):
             self._create_pr_stub(repo_path, target_branch)
@@ -223,8 +236,9 @@ class Forklift(Command):
 
     def _create_pr_stub(self, repo_path: Path, branch: str) -> None:
         logging.info(
-            "PR stub: use host repo at %s to push branch %s and run `gh pr create --head %s --base main`.",
+            "PR stub: use host repo at %s to push branch %s and run `gh pr create --head %s --base %s`.",
             repo_path,
+            branch,
             branch,
             branch,
         )
@@ -245,8 +259,9 @@ class Forklift(Command):
         )
         return env
 
-    def _build_container_env(self, env: OpenCodeEnv) -> dict[str, str]:
+    def _build_container_env(self, env: OpenCodeEnv, main_branch: str) -> dict[str, str]:
         container_env = dict(env.as_env())
+        container_env["FORKLIFT_MAIN_BRANCH"] = main_branch
         tz_value = self._host_timezone_value()
         if tz_value is not None:
             container_env["TZ"] = tz_value
@@ -289,6 +304,20 @@ class Forklift(Command):
             )
             raise SystemExit(1)
         return override
+
+    def _resolved_main_branch(self) -> str:
+        branch = (self.main_branch or "main").strip()
+        if not branch:
+            logging.error("--main-branch value must not be empty")
+            raise SystemExit(1)
+        if not SAFE_VALUE_PATTERN.fullmatch(branch):
+            logging.error(
+                "Invalid --main-branch value %r; expected pattern %s",
+                branch,
+                SAFE_VALUE_PATTERN.pattern,
+            )
+            raise SystemExit(1)
+        return branch
 
     def _print_version(self) -> None:
         try:

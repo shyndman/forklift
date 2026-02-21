@@ -24,11 +24,19 @@ uv run forklift --debug
 uv run forklift --version  # Print version and exit
 ```
 
+By default Forklift targets the `main` branch. Use `--main-branch=<name>` (for example,
+`uv run forklift --main-branch=dev --debug`) when your fork tracks a differently named
+primary branch; the orchestrator will seed matching upstream refs and adjust the harness
+instructions accordingly. The container receives this value via the
+`FORKLIFT_MAIN_BRANCH` environment variable so `/opt/forklift/harness/run.sh` prints the
+right branch names. Rebuild `docker/kitchen-sink` after editing the harness so new
+instructions are present in the image.
+
 What happens:
 
 1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both.
 2. It creates `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...`) with:
-   - `workspace/` – self-contained clone of your repo with remotes removed (we avoid `git clone --shared` to ensure the sandbox never depends on external object stores)
+   - `workspace/` – self-contained clone of your repo with remotes removed (we avoid `git clone --shared` to ensure the sandbox never depends on external object stores). Forklift seeds `refs/remotes/upstream/<branch>` (matching whatever you passed to `--main-branch`, with helper branch `upstream-<branch>` such as `upstream-main`) with the captured upstream SHA so commands like `git rebase upstream/<branch>` still work even though `git remote -v` will be empty inside the sandbox.
    - `harness-state/` – writable directory the container uses for logs and instructions
    - `metadata.json` – records source repo, timestamp, main branch, and upstream SHA
 3. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
