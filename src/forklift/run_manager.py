@@ -46,7 +46,12 @@ class RunDirectoryManager:
     def __init__(self, runs_root: Path | None = None) -> None:
         self._runs_root: Path = (runs_root or DEFAULT_RUNS_ROOT).expanduser().resolve()
 
-    def prepare(self, source_repo: Path, main_branch: str = "main") -> RunPaths:
+    def prepare(
+        self,
+        source_repo: Path,
+        main_branch: str = "main",
+        extra_metadata: dict[str, object] | None = None,
+    ) -> RunPaths:
         source_repo = source_repo.resolve()
         timestamp = datetime.now().strftime(TIMESTAMP_FORMAT)
         project = source_repo.name
@@ -64,11 +69,14 @@ class RunDirectoryManager:
         self._overlay_fork_context(source_repo, workspace)
 
         branch_info = self._capture_branch_info(source_repo, main_branch)
+        metadata_payload: dict[str, object] = {**branch_info}
+        if extra_metadata:
+            metadata_payload.update(extra_metadata)
         upstream_main_sha = branch_info.get("upstream_main_sha")
+        self._write_metadata(run_dir, source_repo, timestamp, metadata_payload)
         self._remove_remotes(workspace)
         self._seed_upstream_ref(workspace, upstream_main_sha, main_branch)
         self._ensure_permissions(workspace, harness_state, opencode_logs)
-        self._write_metadata(run_dir, source_repo, timestamp, branch_info)
 
         return RunPaths(
             run_dir=run_dir,
@@ -133,7 +141,7 @@ class RunDirectoryManager:
         run_dir: Path,
         source_repo: Path,
         timestamp: str,
-        extra: dict[str, str | None],
+        extra: dict[str, object],
     ) -> None:
         metadata = {
             "source_repo": str(source_repo),
@@ -163,6 +171,12 @@ class RunDirectoryManager:
             )
         except RunDirectoryError:
             info["upstream_main_sha"] = None
+        try:
+            info["origin_main_sha"] = self._run_git(
+                source_repo, ["rev-parse", f"origin/{main_branch}"]
+            )
+        except RunDirectoryError:
+            info["origin_main_sha"] = None
         return info
 
 
@@ -188,8 +202,7 @@ class RunDirectoryManager:
     ) -> None:
         if not upstream_sha:
             raise RunDirectoryError(
-                "Unable to seed upstream ref in the workspace; upstream_main_sha is missing. "
-                f"Ensure the source repo has an upstream remote with the '{main_branch}' branch."
+                f"Unable to seed upstream ref in the workspace; upstream_main_sha is missing. Ensure the source repo has an upstream remote with the '{main_branch}' branch."
             )
         remote_ref = f"refs/remotes/upstream/{main_branch}"
         helper_branch = f"upstream-{main_branch.replace('/', '-')}"
