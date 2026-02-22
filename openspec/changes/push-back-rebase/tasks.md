@@ -1,7 +1,7 @@
 ## 1. Sandbox Identity and Requirements
 
-- [ ] 1.1 Update `docker/kitchen-sink/harness/run.sh` (or equivalent entrypoint) to set `Forklift Agent <forklift@github.com>` via `git config --global` before the agent starts.
-- [ ] 1.2 Document the new host prerequisite (`git filter-repo` availability + sandbox identity expectations) in `README.md` and any relevant docs.
+- [x] 1.1 Update `docker/kitchen-sink/harness/run.sh` (or equivalent entrypoint) to set `Forklift Agent <forklift@github.com>` via `git config --global` before the agent starts.
+- [x] 1.2 Document the new host prerequisite (`git filter-repo` availability + sandbox identity expectations) in `README.md` and any relevant docs.
 
 ## 2. Host Identity Capture & Metadata
 

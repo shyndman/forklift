@@ -7,6 +7,18 @@ Forklift is a host-side orchestrator that keeps your fork of an upstream reposit
 - A Git repository with `origin` (your fork) and `upstream` (source) remotes configured
 - [Docker](https://docs.docker.com/get-started/) available on the host
 - [uv](https://docs.astral.sh/uv/) for running the Python CLI (`pip install uv` if needed)
+- `git filter-repo` 2.47.0+ available on your `PATH` (install via `pip install git-filter-repo==2.47.0`, `brew install git-filter-repo`, or download the standalone script from <https://github.com/newren/git-filter-repo/releases>)
+- A Git identity configured in your operator repo (`git config user.name` / `git config user.email`); Forklift refuses to run until both values are set
+
+### Git identity & filter-repo
+
+Forklift rewrites sandbox commits before pushing them back to your fork. The harness now seeds `git config --global user.name "Forklift Agent"` and `git config --global user.email forklift@github.com` inside the container so agent commits always succeed. After the run completes, the host CLI rewrites those commits to the operator identity it captured at startup via `git filter-repo` and then force-pushes the cleaned branch with a safety lease/tag.
+
+Because of this behavior:
+
+- Make sure your operator repo already has both `user.name` and `user.email` configured. Run `git config user.name` / `git config user.email` in the repo you call `forklift` from; the CLI fails fast with guidance if either value is missing.
+- Install `git filter-repo` 2.47.0+ and ensure it responds to `git filter-repo --version`. Forklift validates availability before rewriting commits and prints remediation steps referencing the supported install paths above if missing.
+- Expect the CLI logs and DONE.md guidance to mention when authorship has been rewritten, where the backup tag lives, and how to recover any stash the host created while rewriting history.
 
 ## Building the container once
 

@@ -35,6 +35,12 @@ log_client "  OPENCODE_SERVER_PORT=$OPENCODE_SERVER_PORT"
 log_client "  OPENCODE_TIMEOUT=${OPENCODE_TIMEOUT}s"
 log_client "  FORKLIFT_MAIN_BRANCH=$MAIN_BRANCH"
 
+log_client "Configuring Forklift Agent git identity"
+git config --global user.name "Forklift Agent"
+git config --global user.email forklift@github.com
+log_client "  git user.name=$(git config --global user.name)"
+log_client "  git user.email=$(git config --global user.email)"
+
 default_instructions() {
   local upstream_sha upstream_date main_sha branch_name upstream_ref helper_branch
   branch_name="$MAIN_BRANCH"
