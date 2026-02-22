@@ -24,8 +24,8 @@
 ## Development Commands
 - Bootstrap + run orchestration:
   - `uv run forklift --debug` – primary command to kick off an orchestration run from the host.
-  - `docker build -t forklift/kitchen-sink:latest docker/kitchen-sink` – rebuild the sandbox image after Dockerfile changes.
-  - Whenever you touch files that affect the baked image (Dockerfile, harness scripts, or other contents under `docker/kitchen-sink/`), rebuild the image before treating the work as done so the container matches the repo state.
+- `docker build -t forklift/kitchen-sink:latest docker/kitchen-sink` – rebuild the sandbox image after Dockerfile changes.
+  - **Non-negotiable reminder:** every time you edit anything under `docker/kitchen-sink/` (Dockerfile, harness scripts, opencode entrypoints, etc.), immediately rebuild the image before moving on so the container matches your changes.
 - Tooling:
   - `uv run basedpyright` – run static type checks (from README).
   - Set overrides before running: `export FORKLIFT_DOCKER_IMAGE=...`, `FORKLIFT_TIMEOUT_SECONDS=600`, `FORKLIFT_DOCKER_COMMAND="bash -lc '...''"` when you need non-default images, watchdogs, or entry commands.
@@ -37,6 +37,7 @@
 - Data carriers: use dataclasses (`RunPaths`, `ContainerRunResult`, `GitRemote`, `GitFetchResult`) for structured data; prefer `Path` throughout for filesystem interactions.
 - Workspace hygiene: every run strips remotes, aligns ownership recursively to UID/GID `1000`, and keeps metadata in JSON for later verification—ensure any new host logic preserves these invariants.
 - Async pattern: `Forklift.run` is `async` (required by `clypi.Command`). Keep long-running calls (git subprocesses, docker invocation) in blocking helpers so the CLI remains straightforward.
+- Commits: use [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages (e.g., `feat: ...`, `fix: ...`, `docs: ...`).
 
 ## Important Files
 - `src/forklift/cli.py` – Top-level orchestration logic plus logging configuration, remote discovery, fetch loop, post-run verification.
