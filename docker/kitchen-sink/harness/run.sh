@@ -58,17 +58,17 @@ $branch_name branch.
 
 == Environment ==
 |- Working directory: /workspace (a git repository)
-|- Git remotes were stripped before the run; `git remote -v` will show nothing.
-  Do not add new remotes. Forklift seeded `refs/remotes/$upstream_ref`
-  (helper branch `$helper_branch`) so `git rebase $upstream_ref` works without
+|- Git remotes were stripped before the run; \`git remote -v\` will show nothing.
+  Do not add new remotes. Forklift seeded \`refs/remotes/$upstream_ref\`
+  (helper branch \`$helper_branch\`) so \`git rebase $upstream_ref\` works without
   extra setup.
 |- $upstream_ref is at $upstream_sha ($upstream_date)
 |- local $branch_name is at $main_sha — use this as a reset point if the rebase goes
-  badly wrong: `git checkout $branch_name && git reset --hard $main_sha`
+  badly wrong: \`git checkout $branch_name && git reset --hard $main_sha\`
 |- Use git to inspect history, branches, and conflicts
 
 == Task ==
-1. Run `git rebase $upstream_ref` on the local `$branch_name` branch only.
+1. Run \`git rebase $upstream_ref\` on the local \`$branch_name\` branch only.
    No other branches need attention.
 2. Resolve any conflicts. Your goal is to preserve the functionality of both $upstream_ref and $branch_name. If this seems impossible, write a STUCK.md as described below.
 	 Refer to the FORK.md if supplied to understand intentional fork customizations worth
