@@ -6,7 +6,7 @@
 
 ## Architecture & Data Flow
 - Entry point: `Forklift` (`src/forklift/cli.py`) resolves the repo, configures logging, ensures `origin`/`upstream` using `git.py`, fetches both remotes, and orchestrates the run lifecycle.
-- Run preparation: `RunDirectoryManager` (`run_manager.py`) clones the repo via `git clone`, copies `FORK.md`, strips remotes, aligns ownership to UID/GID `1000`, captures `main_branch` and `upstream/main` SHA, and emits `RunPaths` (run directory, workspace, harness-state) plus a `metadata.json` manifest.
+- Run preparation: `RunDirectoryManager` (`run_manager.py`) clones the repo via `git clone`, copies `FORK.md`, strips remotes, aligns ownership to UID/GID `1000`, captures `main_branch` and `upstream/main` SHA, and emits `RunPaths` (run directory, workspace, harness-state, opencode logs, correlator) plus a `metadata.json` manifest that now includes `run_id`.
 - Sandbox execution: `ContainerRunner` (`container_runner.py`) builds `docker run --rm --name ... -v workspace:/workspace -v harness-state:/harness-state` with overrides from `FORKLIFT_DOCKER_IMAGE`, `FORKLIFT_TIMEOUT_SECONDS` (default 210s), `FORKLIFT_DOCKER_ARGS`, and `FORKLIFT_DOCKER_COMMAND`, then captures stdout/stderr and timeouts.
 - Post-run verification: CLI reloads `metadata.json`, previews `workspace/STUCK.md` (exits with code 4), runs `git merge-base --is-ancestor upstream/main <target_branch>` before logging PR instructions, and exits non-zero for timeout (2) or container failures (container exit code); otherwise it logs that no changes were detected.
 
@@ -32,7 +32,8 @@
 - Design docs outline future host utilities (e.g., `forklift run <fork> --interactive`, `forklift scheduler start`, `forklift logs --transcript <id>`, `forklift test-notify --mock-conflict`)—treat them as reference commands when expanding the CLI surface.
 
 ## Code Conventions & Common Patterns
-- Logging: standard `logging` module with format "%(asctime)s [%(levelname)s] %(message)s"; the `--debug` flag raises level to DEBUG. All git/container operations log both intent and captured stdout/stderr.
+- Logging: configured once via structlog + Rich (colored console output, Rich tracebacks, and a per-run correlator bound via `run=<id>`). The `--debug` flag raises the Rich handler level to DEBUG. All git/container operations log both intent and captured stdout/stderr.
+- Inline documentation: when adding new APIs or helpers, include a short docstring describing the goal of the abstraction so downstream contributors immediately understand its purpose.
 - Error handling: Git failures raise `GitError` that the CLI converts into `SystemExit(1)`; container timeouts raise exit code 2; upstream verification failures exit 3; `STUCK.md` presence exits 4 with the first 40 lines logged.
 - Data carriers: use dataclasses (`RunPaths`, `ContainerRunResult`, `GitRemote`, `GitFetchResult`) for structured data; prefer `Path` throughout for filesystem interactions.
 - Workspace hygiene: every run strips remotes, aligns ownership recursively to UID/GID `1000`, and keeps metadata in JSON for later verification—ensure any new host logic preserves these invariants.
@@ -52,7 +53,7 @@
 - Python: requires Python 3.13+ (`.python-version` pins 3.13) and uses `uv` for dependency management/build backend (`uv_build`). Entry point script is `forklift = "forklift:main"` defined in `pyproject.toml`.
 - Dependencies: `clypi`, `pydantic`, and `pydantic-ai` are the core runtime libraries; install/update with `uv add` to keep `pyproject.toml` and `uv.lock` aligned.
 - Sandbox: default Docker image `forklift/kitchen-sink:latest` (Ubuntu 24.04) ships Git, build-essential, Python toolchain, Node via `n`, Bun, Rust via rustup, jq, ripgrep, fd, and tree. Harness exposes `/workspace` and `/harness-state` only.
-- Environment overrides: `FORKLIFT_DOCKER_IMAGE`, `FORKLIFT_DOCKER_COMMAND`, `FORKLIFT_TIMEOUT_SECONDS`, `FORKLIFT_DOCKER_ARGS`, and `DOCKER_BIN` adjust container behavior without code changes.
+- Environment overrides: `FORKLIFT_DOCKER_IMAGE`, `FORKLIFT_DOCKER_COMMAND`, `FORKLIFT_TIMEOUT_SECONDS`, `FORKLIFT_DOCKER_ARGS`, and `DOCKER_BIN` adjust container behavior without code changes. The container always receives `FORKLIFT_MAIN_BRANCH` and `FORKLIFT_RUN_ID` so harness logs can be paired with host correlators.
 
 ## Testing & QA
 - The repository does not include a native `tests/` tree; testing relies on the fork’s own suites described in `FORK.md` and echoed by the harness (`run.sh`). Document commands like `uv run pytest` or `npm test` in `FORK.md` so agents know what to execute.

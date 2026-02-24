@@ -1,13 +1,18 @@
 from __future__ import annotations
 
-import logging
 import subprocess
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
+import structlog
+from structlog.stdlib import BoundLogger
+
 DEFAULT_REQUIRED_REMOTES: Sequence[str] = ("origin", "upstream")
+
+
+logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
 
 class GitError(RuntimeError):
@@ -50,9 +55,7 @@ def ensure_required_remotes(
     remotes = discover_remotes(repo_path)
     missing = [name for name in required if name not in remotes]
     if missing:
-        raise GitError(
-            "Missing required Git remote(s): " + ", ".join(sorted(missing))
-        )
+        raise GitError("Missing required Git remote(s): " + ", ".join(sorted(missing)))
     return remotes
 
 
@@ -70,7 +73,7 @@ def fetch_remotes(
         remote = remotes.get(remote_name)
         if remote is None:
             raise GitError(f"Remote '{remote_name}' is not configured")
-        logging.info("Fetching %s (%s)", remote.name, remote.fetch_url)
+        logger.info("Fetching remote", name=remote.name, fetch_url=remote.fetch_url)
         output = _run_git(repo_path, ["fetch", remote.name, "--prune"])
         results.append(GitFetchResult(name=remote.name, output=output))
     return results
@@ -103,7 +106,7 @@ def run_git(repo_path: Path, args: Sequence[str]) -> str:
 
 def _run_git(repo_path: Path, args: Sequence[str]) -> str:
     cmd = ["git", *args]
-    logging.debug("Running command: %s", " ".join(cmd))
+    logger.debug("Running command", command=" ".join(cmd))
     try:
         completed: subprocess.CompletedProcess[str] = subprocess.run(
             cmd,
@@ -115,8 +118,6 @@ def _run_git(repo_path: Path, args: Sequence[str]) -> str:
         )
     except subprocess.CalledProcessError as exc:
         output = (cast(str | None, exc.stdout) or "").strip()
-        raise GitError(
-            f"git {' '.join(args)} failed with output:\n{output}"
-        ) from exc
+        raise GitError(f"git {' '.join(args)} failed with output:\n{output}") from exc
     stdout = cast(str | None, completed.stdout)
     return (stdout or "").strip()

@@ -1,16 +1,19 @@
 from __future__ import annotations
 
-import logging
 import os
 import shlex
 import subprocess
 import time
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from collections.abc import Mapping, Sequence
+from typing import cast
 from uuid import uuid4
 
-logger = logging.getLogger(__name__)
+import structlog
+from structlog.stdlib import BoundLogger
+
+logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
 DEFAULT_IMAGE = os.environ.get("FORKLIFT_DOCKER_IMAGE", "forklift/kitchen-sink:latest")
 DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("FORKLIFT_TIMEOUT_SECONDS", "210"))
@@ -57,12 +60,15 @@ class ContainerRunner:
             extra_env,
         )
         logger.info(
-            "Launching container %s with timeout %s seconds (image=%s)",
-            container_name,
-            self.timeout_seconds,
-            self.image,
+            "Launching container",
+            container=container_name,
+            timeout_seconds=self.timeout_seconds,
+            image=self.image,
         )
-        logger.debug("Container command: %s", " ".join(self._mask_sensitive(cmd)))
+        logger.debug(
+            "Container command",
+            command=" ".join(self._mask_sensitive(cmd)),
+        )
 
         process = subprocess.Popen(
             cmd,
@@ -70,6 +76,8 @@ class ContainerRunner:
             stderr=subprocess.PIPE,
             text=True,
         )
+        client_log_path = opencode_logs / "opencode-client.log"
+        logger.info("Agent log available", path=client_log_path)
         timed_out = False
         stdout = ""
         stderr = ""
@@ -79,9 +87,9 @@ class ContainerRunner:
         except subprocess.TimeoutExpired:
             timed_out = True
             logger.warning(
-                "Container %s exceeded %s seconds; forcing stop",
-                container_name,
-                self.timeout_seconds,
+                "Container exceeded timeout",
+                container=container_name,
+                timeout_seconds=self.timeout_seconds,
             )
             self._force_stop(container_name)
             process.kill()
@@ -143,13 +151,18 @@ class ContainerRunner:
     def _force_stop(self, container_name: str) -> None:
         stop_cmd = [DOCKER_BIN, "kill", container_name]
         try:
-            _ = subprocess.run(stop_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            _ = subprocess.run(
+                stop_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
+            )
         except Exception as exc:  # pragma: no cover - best effort cleanup
-            logger.error("Failed to kill container %s: %s", container_name, exc)
+            logger.exception(
+                "Failed to kill container",
+                container=container_name,
+                error=exc,
+            )
 
     def _container_name(self, workspace: Path) -> str:
         ts = time.strftime("%Y%m%d%H%M%S")
         suffix = uuid4().hex[:6]
         project = workspace.parent.name.replace("_", "-")
         return f"forklift-{project}-{ts}-{suffix}".replace("--", "-")
-

@@ -10,6 +10,11 @@ from pathlib import Path
 from typing import cast, override
 
 from clypi import Command, arg
+import structlog
+from structlog.stdlib import BoundLogger
+from rich.traceback import install as install_rich_traceback
+
+from forklift.logs import build_renderer
 
 from .git import (
     GitError,
@@ -33,7 +38,8 @@ from .opencode_env import (
 from .run_manager import RunDirectoryManager, RunPaths
 
 
-LOG_FORMAT = "%(asctime)s [%(levelname)s] %(message)s"
+logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
+
 
 STUCK_EXIT_CODE = 4
 STUCK_PREVIEW_LINES = 40
@@ -69,12 +75,20 @@ class Forklift(Command):
     """Primary entrypoint for the Forklift host orchestrator."""
 
     repo: Path | str | None = None
-    main_branch: str = arg("main", help="Name of the primary branch to rebase (default: main)")
+    main_branch: str = arg(
+        "main", help="Name of the primary branch to rebase (default: main)"
+    )
     debug: bool = arg(False, short="d", help="Enable debug logging")
     version: bool = arg(False, short="v", help="Print version and exit")
-    model: str | None = arg(None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/).")
-    variant: str | None = arg(None, help="Override OPENCODE_VARIANT (letters, numbers, punctuation ._-/).")
-    agent: str | None = arg(None, help="Override OPENCODE_AGENT (letters, numbers, punctuation ._-/).")
+    model: str | None = arg(
+        None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/)."
+    )
+    variant: str | None = arg(
+        None, help="Override OPENCODE_VARIANT (letters, numbers, punctuation ._-/)."
+    )
+    agent: str | None = arg(
+        None, help="Override OPENCODE_AGENT (letters, numbers, punctuation ._-/)."
+    )
     forward_tz: bool = arg(False, help="Forward the host TZ variable into the sandbox")
     chown: str | None = arg(
         None,
@@ -89,7 +103,7 @@ class Forklift(Command):
 
         repo_path = self._resolve_repo_path()
         self._configure_logging()
-        logging.info("Starting Forklift orchestration in %s", repo_path)
+        logger.info("Starting Forklift orchestration", repo=str(repo_path))
 
         operator_identity = self._capture_operator_identity(repo_path)
         main_branch = self._resolved_main_branch()
@@ -102,11 +116,11 @@ class Forklift(Command):
 
         for result in fetch_results:
             if result.output:
-                logging.info("Fetch output for %s:\n%s", result.name, result.output)
+                logger.info("Fetch output", remote=result.name, output=result.output)
             else:
-                logging.info("Fetch output for %s: up to date", result.name)
+                logger.info("Fetch output", remote=result.name, status="up to date")
 
-        logging.info("Remote discovery and fetch complete.")
+        logger.info("Remote discovery and fetch complete.")
 
         run_manager = RunDirectoryManager()
         metadata_overrides = self._metadata_overrides(operator_identity, remotes)
@@ -115,15 +129,20 @@ class Forklift(Command):
             main_branch=main_branch,
             extra_metadata=metadata_overrides,
         )
-        logging.info(
-            "Run directory ready at %s (workspace=%s, harness-state=%s, opencode-logs=%s)",
-            run_paths.run_dir,
-            run_paths.workspace,
-            run_paths.harness_state,
-            run_paths.opencode_logs,
+        structlog.contextvars.bind_contextvars(run=run_paths.run_id)
+        logger.info(
+            "Run directory ready",
+            run_dir=run_paths.run_dir,
+            workspace=run_paths.workspace,
+            harness_state=run_paths.harness_state,
+            opencode_logs=run_paths.opencode_logs,
         )
 
-        container_env = self._build_container_env(opencode_env, main_branch)
+        container_env = self._build_container_env(
+            opencode_env,
+            main_branch,
+            run_paths.run_id,
+        )
         container_runner = ContainerRunner()
         container_result = container_runner.run(
             run_paths.workspace,
@@ -131,39 +150,81 @@ class Forklift(Command):
             run_paths.opencode_logs,
             container_env,
         )
-        self._chown_artifact(run_paths.harness_state, "harness-state", chown_uid, chown_gid)
-        self._chown_artifact(run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid)
+        agent_log_path = run_paths.opencode_logs / "opencode-client.log"
+        if agent_log_path.exists():
+            logger.info("Agent log transcript available", path=agent_log_path)
+        else:
+            logger.warning(
+                "Agent log transcript missing; harness may not have emitted logs.",
+                path=agent_log_path,
+            )
+        self._chown_artifact(
+            run_paths.harness_state, "harness-state", chown_uid, chown_gid
+        )
+        self._chown_artifact(
+            run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid
+        )
         if container_result.stdout.strip():
-            logging.info("Container stdout:\n%s", container_result.stdout.strip())
+            logger.info("Container stdout", stdout=container_result.stdout.strip())
         if container_result.stderr.strip():
-            logging.info("Container stderr:\n%s", container_result.stderr.strip())
+            logger.info("Container stderr", stderr=container_result.stderr.strip())
         if container_result.timed_out:
-            logging.error(
-                "Container %s timed out after %s seconds",
-                container_result.container_name,
-                container_runner.timeout_seconds,
+            logger.error(
+                "Container timed out",
+                container=container_result.container_name,
+                timeout_seconds=container_runner.timeout_seconds,
             )
             raise SystemExit(2)
         if container_result.exit_code != 0:
-            logging.error(
+            logger.error(
                 "Container %s exited with code %s",
                 container_result.container_name,
                 container_result.exit_code,
             )
             raise SystemExit(container_result.exit_code)
-        logging.info("Container run completed successfully.")
+        logger.info("Container run completed successfully.")
         self._post_container_results(repo_path, run_paths, main_branch)
 
-
-
-
     def _configure_logging(self) -> None:
+        """Bootstrap structlog + Rich so every module shares contextual logs."""
+
+        install_rich_traceback(show_locals=True)
         level = logging.DEBUG if self.debug else logging.INFO
-        root = logging.getLogger()
-        if not root.handlers:
-            logging.basicConfig(level=level, format=LOG_FORMAT)
-        else:
-            root.setLevel(level)
+
+        renderer_processors, renderer = build_renderer(run_key="run")
+        pre_chain = [
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.stdlib.PositionalArgumentsFormatter(),
+            *renderer_processors,
+        ]
+        formatter = structlog.stdlib.ProcessorFormatter(
+            foreign_pre_chain=pre_chain,
+            processors=[
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                renderer,
+            ],
+        )
+
+        handler = logging.StreamHandler()
+        handler.setFormatter(formatter)
+
+        logging.basicConfig(
+            level=level,
+            handlers=[handler],
+            force=True,
+        )
+
+        structlog.configure(
+            processors=[
+                *pre_chain,
+                structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+            ],
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            wrapper_class=structlog.stdlib.BoundLogger,
+            cache_logger_on_first_use=True,
+        )
+        structlog.contextvars.clear_contextvars()
 
     def _resolve_repo_path(self) -> Path:
         raw = self.repo
@@ -177,40 +238,39 @@ class Forklift(Command):
         try:
             name = run_git(repo_path, ["config", "--get", "user.name"]).strip()
         except GitError as exc:
-            logging.error(
-                "Unable to read git user.name in %s; configure it via `git config --global user.name \"Your Name\"`.",
+            logger.exception(
+                'Unable to read git user.name in %s; configure it via `git config --global user.name "Your Name"`.',
                 repo_path,
             )
             raise SystemExit(1) from exc
         if not name:
-            logging.error(
-                "git user.name is empty in %s; set it via `git config --global user.name \"Your Name\"`.",
+            logger.error(
+                'git user.name is empty in %s; set it via `git config --global user.name "Your Name"`.',
                 repo_path,
             )
             raise SystemExit(1)
         try:
             email = run_git(repo_path, ["config", "--get", "user.email"]).strip()
         except GitError as exc:
-            logging.error(
+            logger.exception(
                 "Unable to read git user.email in %s; configure it via `git config --global user.email you@example.com`.",
                 repo_path,
             )
             raise SystemExit(1) from exc
         if not email:
-            logging.error(
+            logger.error(
                 "git user.email is empty in %s; set it via `git config --global user.email you@example.com`.",
                 repo_path,
             )
             raise SystemExit(1)
-        logging.info("Captured operator identity %s <%s>", name, email)
+        logger.info("Captured operator identity", name=name, email=email)
         return OperatorIdentity(name=name, email=email)
 
     def _metadata_overrides(
         self, identity: OperatorIdentity, remotes: dict[str, GitRemote]
     ) -> dict[str, object]:
         remote_entries = {
-            name: {"fetch_url": remote.fetch_url}
-            for name, remote in remotes.items()
+            name: {"fetch_url": remote.fetch_url} for name, remote in remotes.items()
         }
         return {
             "operator_name": identity.name,
@@ -222,11 +282,11 @@ class Forklift(Command):
         try:
             remotes = ensure_required_remotes(repo_path)
         except GitError as exc:
-            logging.error("%s", exc)
+            logger.exception("%s", exc)
             raise SystemExit(1) from exc
 
         for remote in remotes.values():
-            logging.info("Detected remote %s -> %s", remote.name, remote.fetch_url)
+            logger.info("Detected remote", name=remote.name, fetch_url=remote.fetch_url)
         return remotes
 
     def _fetch_all(
@@ -235,7 +295,7 @@ class Forklift(Command):
         try:
             return fetch_remotes(repo_path, remotes)
         except GitError as exc:
-            logging.error("%s", exc)
+            logger.exception("%s", exc)
             raise SystemExit(1) from exc
 
     def _post_container_results(
@@ -246,7 +306,9 @@ class Forklift(Command):
         self._fail_if_stuck(workspace)
 
         metadata_branch = cast(str | None, metadata.get("main_branch"))
-        target_branch = metadata_branch or configured_branch or current_branch(workspace)
+        target_branch = (
+            metadata_branch or configured_branch or current_branch(workspace)
+        )
         upstream_ref_branch = metadata_branch or configured_branch
         upstream_ref = f"upstream/{upstream_ref_branch}"
         upstream_sha = cast(str | None, metadata.get("upstream_main_sha"))
@@ -254,20 +316,20 @@ class Forklift(Command):
         try:
             ensure_upstream_merged(workspace, upstream_ref, target_branch)
             if upstream_sha:
-                logging.info(
+                logger.info(
                     "Verified %s (%s) is ancestor of %s",
                     upstream_ref,
                     upstream_sha[:12],
                     target_branch,
                 )
             else:
-                logging.info(
+                logger.info(
                     "Verified %s is ancestor of %s",
                     upstream_ref,
                     target_branch,
                 )
         except GitError as exc:
-            logging.error("Upstream verification failed: %s", exc)
+            logger.exception("Upstream verification failed: %s", exc)
             raise SystemExit(3) from exc
 
         rewrite_result = self._rewrite_and_push(run_paths, metadata, target_branch)
@@ -286,12 +348,12 @@ class Forklift(Command):
         origin_sha = cast(str | None, metadata.get("origin_main_sha"))
         remotes_data = metadata.get("remotes")
         if not operator_name or not operator_email or not origin_sha:
-            logging.info(
+            logger.info(
                 "Missing operator identity or origin baseline in metadata; skipping rewrite/push."
             )
             return None
         if not isinstance(remotes_data, dict):
-            logging.warning("Remote metadata unavailable; skipping rewrite/push.")
+            logger.warning("Remote metadata unavailable; skipping rewrite/push.")
             return None
         operator = OperatorIdentity(name=operator_name, email=operator_email)
         remote_urls: dict[str, str] = {}
@@ -299,13 +361,17 @@ class Forklift(Command):
         for remote_name in ("origin", "upstream"):
             entry = remotes_dict.get(remote_name)
             if not isinstance(entry, dict):
-                logging.warning("Remote metadata for %s missing; skipping rewrite/push.", remote_name)
+                logger.warning(
+                    "Remote metadata for %s missing; skipping rewrite/push.",
+                    remote_name,
+                )
                 return None
             entry_dict = cast(dict[str, object], entry)
             fetch_url = entry_dict.get("fetch_url")
             if not isinstance(fetch_url, str) or not fetch_url:
-                logging.warning(
-                    "Remote metadata for %s lacks fetch_url; skipping rewrite/push.", remote_name
+                logger.warning(
+                    "Remote metadata for %s lacks fetch_url; skipping rewrite/push.",
+                    remote_name,
                 )
                 return None
             remote_urls[remote_name] = fetch_url
@@ -315,18 +381,24 @@ class Forklift(Command):
         stash_conflicts = False
         try:
             if self._workspace_has_changes(workspace):
-                logging.info("Stashing workspace state before rewrite (%s)", STASH_MESSAGE)
+                logger.info(
+                    "Stashing workspace state before rewrite (%s)", STASH_MESSAGE
+                )
                 _ = run_git(workspace, ["stash", "push", "-u", "-m", STASH_MESSAGE])
                 stash_created = True
 
             current = current_branch(workspace)
             if current != target_branch:
-                logging.info("Checking out %s before rewrite (current branch %s)", target_branch, current)
+                logger.info(
+                    "Checking out %s before rewrite (current branch %s)",
+                    target_branch,
+                    current,
+                )
                 _ = run_git(workspace, ["checkout", target_branch])
 
             current_head = run_git(workspace, ["rev-parse", "HEAD"]).strip()
             if current_head == origin_sha:
-                logging.info(
+                logger.info(
                     "Branch %s head %s matches stored origin %s; skipping rewrite/push.",
                     target_branch,
                     current_head[:12],
@@ -349,7 +421,9 @@ class Forklift(Command):
             for remote_name in remote_urls:
                 fetch_output = run_git(workspace, ["fetch", remote_name, "--prune"])
                 if fetch_output:
-                    logging.info("Workspace fetch output for %s:\n%s", remote_name, fetch_output)
+                    logger.info(
+                        "Workspace fetch output for %s:\n%s", remote_name, fetch_output
+                    )
 
             self._validate_filter_repo(workspace)
             mailmap_path = self._write_mailmap(run_paths.run_dir, operator)
@@ -385,7 +459,7 @@ class Forklift(Command):
                 ],
             )
             if push_output:
-                logging.info("Push output:\n%s", push_output)
+                logger.info("Push output", output=push_output)
 
             if stash_created:
                 stash_conflicts = not self._pop_stash(workspace)
@@ -400,9 +474,9 @@ class Forklift(Command):
                 pushed=True,
             )
         except GitError as exc:
-            logging.error("Failed to rewrite/push rewritten branch: %s", exc)
+            logger.exception("Failed to rewrite/push rewritten branch: %s", exc)
             if stash_created:
-                logging.warning(
+                logger.warning(
                     "Stash '%s' remains on the stack; recover it later via `git stash list` inside %s.",
                     STASH_MESSAGE,
                     workspace,
@@ -413,23 +487,28 @@ class Forklift(Command):
         try:
             current_url = run_git(workspace, ["remote", "get-url", name])
         except GitError:
-            logging.info("Reattaching remote %s -> %s", name, url)
+            logger.info("Reattaching remote", name=name, url=url)
             _ = run_git(workspace, ["remote", "add", name, url])
             return
         if current_url == url:
             return
-        logging.info("Updating remote %s to %s (was %s)", name, url, current_url)
+        logger.info(
+            "Updating remote",
+            name=name,
+            new_url=url,
+            old_url=current_url,
+        )
         _ = run_git(workspace, ["remote", "set-url", name, url])
 
     def _validate_filter_repo(self, workspace: Path) -> None:
         try:
             version = run_git(workspace, ["filter-repo", "--version"]).strip()
         except GitError as exc:
-            logging.error("git filter-repo not available: %s", exc)
-            logging.error(FILTER_REPO_INSTALL_HELP)
+            logger.exception("git filter-repo not available: %s", exc)
+            logger.error(FILTER_REPO_INSTALL_HELP)
             raise SystemExit(1) from exc
         if version:
-            logging.info("git filter-repo detected (%s)", version)
+            logger.info("git filter-repo detected", version=version)
 
     def _write_mailmap(self, run_dir: Path, operator: OperatorIdentity) -> Path:
         mailmap_path = run_dir / "authorship.mailmap"
@@ -449,7 +528,7 @@ class Forklift(Command):
         ).strip()
         if residual:
             sample = ", ".join(residual.splitlines()[:5])
-            logging.error(
+            logger.error(
                 "Authorship rewrite incomplete; commits authored by %s <%s> remain: %s",
                 AGENT_NAME,
                 AGENT_EMAIL,
@@ -461,37 +540,37 @@ class Forklift(Command):
         try:
             output = run_git(workspace, ["stash", "pop"])
         except GitError as exc:
-            logging.warning(
+            logger.warning(
                 "Unable to auto-pop stash '%s': %s. Recover manually via `git stash list`.",
                 STASH_MESSAGE,
                 exc,
             )
             return False
         if output:
-            logging.info("Stash pop output:\n%s", output)
+            logger.info("Stash pop output", output=output)
         return True
 
     def _log_rewrite_summary(self, result: RewriteResult | None) -> None:
         if result is None:
-            logging.info("Rewrite/push pipeline skipped (metadata incomplete).")
+            logger.info("Rewrite/push pipeline skipped (metadata incomplete).")
             return
         if not result.pushed:
-            logging.info(
+            logger.info(
                 "Branch %s already matched origin %s; no rewrite/push required.",
                 result.branch,
                 result.origin_sha[:12],
             )
             if result.stash_created:
                 if result.stash_conflicts:
-                    logging.warning(
+                    logger.warning(
                         "Stash '%s' reapplied with conflicts; inspect the workspace and use `git stash list` if needed.",
                         STASH_MESSAGE,
                     )
                 else:
-                    logging.info("Stash '%s' reapplied cleanly.", STASH_MESSAGE)
+                    logger.info("Stash reapplied cleanly", stash=STASH_MESSAGE)
             return
 
-        logging.info(
+        logger.info(
             "Authorship rewrite complete: branch %s force-pushed to origin/%s with commits rewritten to %s <%s>.",
             result.branch,
             result.branch,
@@ -499,49 +578,50 @@ class Forklift(Command):
             result.operator.email,
         )
         if result.tag_name:
-            logging.info(
+            logger.info(
                 "Local safety tag %s points to baseline %s.",
                 result.tag_name,
                 result.origin_sha[:12],
             )
         if result.stash_created:
             if result.stash_conflicts:
-                logging.warning(
+                logger.warning(
                     "Stash '%s' reapplied with conflicts; recover manually via `git stash list` and resolve merges.",
                     STASH_MESSAGE,
                 )
             else:
-                logging.info("Stash '%s' reapplied cleanly.", STASH_MESSAGE)
+                logger.info("Stash reapplied cleanly", stash=STASH_MESSAGE)
 
     def _fail_if_stuck(self, workspace: Path) -> None:
         stuck_file = workspace / "STUCK.md"
         if not stuck_file.exists():
             return
-        logging.warning("STUCK.md detected at %s; skipping verification and PR.", stuck_file)
+        logger.warning(
+            "STUCK.md detected at %s; skipping verification and PR.", stuck_file
+        )
         try:
             contents = stuck_file.read_text().strip()
         except OSError as exc:
-            logging.warning("Unable to read STUCK.md: %s", exc)
+            logger.warning("Unable to read STUCK.md", error=exc)
         else:
             if contents:
                 preview_lines = contents.splitlines()[:STUCK_PREVIEW_LINES]
                 preview_text = "\n".join(preview_lines)
-                logging.warning(
+                logger.warning(
                     "STUCK.md preview (first %s lines):\n%s",
                     STUCK_PREVIEW_LINES,
                     preview_text,
                 )
             else:
-                logging.warning("STUCK.md is empty.")
+                logger.warning("STUCK.md is empty.")
         raise SystemExit(STUCK_EXIT_CODE)
-
 
     def _load_run_metadata(self, run_dir: Path) -> dict[str, object]:
         metadata_path = run_dir / "metadata.json"
         try:
             raw = metadata_path.read_text()
         except FileNotFoundError:
-            logging.warning("Metadata file missing at %s", metadata_path)
+            logger.warning("Metadata file missing", path=metadata_path)
             return {}
         data = cast(dict[str, object], json.loads(raw))
         return data
@@ -550,13 +630,13 @@ class Forklift(Command):
         self, repo_path: Path, branch: str, result: RewriteResult | None
     ) -> None:
         if result is None or not result.pushed:
-            logging.info(
+            logger.info(
                 "PR stub: no rewritten commits were pushed for %s; nothing to do in %s.",
                 branch,
                 repo_path,
             )
             return
-        logging.info(
+        logger.info(
             "PR stub: branch %s is already on origin/%s. Run `gh pr create --head %s --base %s` from %s when ready.",
             branch,
             branch,
@@ -570,10 +650,12 @@ class Forklift(Command):
         try:
             env = load_opencode_env(env_path)
         except OpenCodeEnvError as exc:
-            logging.error("Failed to load OpenCode config from %s: %s", env_path, exc)
+            logger.exception(
+                "Failed to load OpenCode config from %s: %s", env_path, exc
+            )
             raise SystemExit(1) from exc
-        logging.info("Loaded OpenCode env from %s", env_path)
-        logging.debug(
+        logger.info("Loaded OpenCode env", path=env_path)
+        logger.debug(
             "Forwarding OpenCode configuration: model=%s variant=%s agent=%s",
             env.model or "(default)",
             env.variant,
@@ -581,9 +663,12 @@ class Forklift(Command):
         )
         return env
 
-    def _build_container_env(self, env: OpenCodeEnv, main_branch: str) -> dict[str, str]:
+    def _build_container_env(
+        self, env: OpenCodeEnv, main_branch: str, run_id: str
+    ) -> dict[str, str]:
         container_env = dict(env.as_env())
         container_env["FORKLIFT_MAIN_BRANCH"] = main_branch
+        container_env["FORKLIFT_RUN_ID"] = run_id
         tz_value = self._host_timezone_value()
         if tz_value is not None:
             container_env["TZ"] = tz_value
@@ -594,12 +679,17 @@ class Forklift(Command):
             return None
         tz_value = os.environ.get("TZ")
         if not tz_value:
-            logging.warning("--forward-tz enabled but host TZ is unset; skipping TZ forwarding.")
+            logger.warning(
+                "--forward-tz enabled but host TZ is unset; skipping TZ forwarding."
+            )
             return None
         if self._contains_control_characters(tz_value):
-            logging.warning("Host TZ value %r contains control characters; skipping TZ forwarding.", tz_value)
+            logger.warning(
+                "Host TZ value contains control characters; skipping TZ forwarding.",
+                value=tz_value,
+            )
             return None
-        logging.info("Forwarding host TZ=%s into sandbox container.", tz_value)
+        logger.info("Forwarding host timezone", timezone=tz_value)
         return tz_value
 
     @staticmethod
@@ -618,7 +708,7 @@ class Forklift(Command):
         if override is None:
             return current
         if not SAFE_VALUE_PATTERN.fullmatch(override):
-            logging.error(
+            logger.error(
                 "Invalid %s value %r; expected pattern %s",
                 label,
                 override,
@@ -630,10 +720,10 @@ class Forklift(Command):
     def _resolved_main_branch(self) -> str:
         branch = (self.main_branch or "main").strip()
         if not branch:
-            logging.error("--main-branch value must not be empty")
+            logger.error("--main-branch value must not be empty")
             raise SystemExit(1)
         if not SAFE_VALUE_PATTERN.fullmatch(branch):
-            logging.error(
+            logger.error(
                 "Invalid --main-branch value %r; expected pattern %s",
                 branch,
                 SAFE_VALUE_PATTERN.pattern,
@@ -657,13 +747,11 @@ class Forklift(Command):
         uid_part = uid_part.strip()
         gid_part = gid_part.strip()
         if not uid_part:
-            logging.error("Invalid --chown value %r; UID is required.", spec)
+            logger.error("Invalid --chown value %r; UID is required.", spec)
             raise SystemExit(1)
         uid = self._parse_id_component(uid_part, "UID")
         gid = (
-            default_gid
-            if gid_part == ""
-            else self._parse_id_component(gid_part, "GID")
+            default_gid if gid_part == "" else self._parse_id_component(gid_part, "GID")
         )
         return uid, gid
 
@@ -676,29 +764,43 @@ class Forklift(Command):
         try:
             value = int(raw, 10)
         except ValueError:
-            logging.error("Invalid %s %r in --chown value; expected integer.", label, raw)
+            logger.exception(
+                "Invalid %s %r in --chown value; expected integer.", label, raw
+            )
             raise SystemExit(1) from None
         if value < 0:
-            logging.error(
-                "Invalid %s %s in --chown value; expected non-negative integer.", label, value
+            logger.error(
+                "Invalid %s %s in --chown value; expected non-negative integer.",
+                label,
+                value,
             )
             raise SystemExit(1)
         return value
 
     def _chown_artifact(self, target: Path, label: str, uid: int, gid: int) -> None:
         if not target.exists():
-            logging.debug("%s directory %s missing; skipping ownership reset.", label, target)
+            logger.debug(
+                "%s directory %s missing; skipping ownership reset.", label, target
+            )
             return
-        logging.info("Reassigning %s ownership to %s:%s", label, uid, gid)
+        logger.info("Reset artifact ownership", label=label, uid=uid, gid=gid)
         try:
             self._chown_path_recursive(target, uid, gid)
         except PermissionError as exc:
-            logging.warning(
-                "Unable to chown %s to %s:%s: %s", label, uid, gid, exc
+            logger.warning(
+                "Unable to chown artifact",
+                label=label,
+                uid=uid,
+                gid=gid,
+                error=exc,
             )
         except OSError as exc:
-            logging.warning(
-                "Failed to chown %s to %s:%s: %s", label, uid, gid, exc
+            logger.warning(
+                "Failed to chown artifact",
+                label=label,
+                uid=uid,
+                gid=gid,
+                error=exc,
             )
 
     def _chown_path_recursive(self, path: Path, uid: int, gid: int) -> None:

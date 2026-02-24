@@ -11,6 +11,8 @@ dependencies = [
     "clypi==1.8.2",
     "pydantic==2.12.5",
     "pydantic-ai==1.59.0",
+    "rich~=14.3",
+    "structlog~=25.5",
 ]
 
 [project.scripts]

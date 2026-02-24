@@ -17,7 +17,7 @@ UPSTREAM_REF="upstream/${MAIN_BRANCH}"
 HELPER_BRANCH="upstream-${MAIN_BRANCH//\//-}"
 
 log_client() {
-  printf '%s %s\n' "$(date --iso-8601=seconds)" "$1" >>"$CLIENT_LOG"
+   printf '%s %s\n' "$(date --iso-8601=seconds)" "$1" >>"$CLIENT_LOG"
 }
 
 mkdir -p /harness-state
@@ -34,6 +34,7 @@ log_client "  OPENCODE_AGENT=$OPENCODE_AGENT"
 log_client "  OPENCODE_SERVER_PORT=$OPENCODE_SERVER_PORT"
 log_client "  OPENCODE_TIMEOUT=${OPENCODE_TIMEOUT}s"
 log_client "  FORKLIFT_MAIN_BRANCH=$MAIN_BRANCH"
+log_client "  FORKLIFT_RUN_ID=${FORKLIFT_RUN_ID:-unknown}"
 
 log_client "Configuring Forklift Agent git identity"
 git config --global user.name "Forklift Agent"
@@ -42,15 +43,15 @@ log_client "  git user.name=$(git config --global user.name)"
 log_client "  git user.email=$(git config --global user.email)"
 
 default_instructions() {
-  local upstream_sha upstream_date main_sha branch_name upstream_ref helper_branch
-  branch_name="$MAIN_BRANCH"
-  upstream_ref="$UPSTREAM_REF"
-  helper_branch="$HELPER_BRANCH"
-  upstream_sha=$(git -C /workspace rev-parse --short "$upstream_ref" 2>/dev/null || echo "unknown")
-  upstream_date=$(git -C /workspace log --format='%ar' "$upstream_ref" -1 2>/dev/null || echo "unknown")
-  main_sha=$(git -C /workspace rev-parse --short "$branch_name" 2>/dev/null || echo "unknown")
+   local upstream_sha upstream_date main_sha branch_name upstream_ref helper_branch
+   branch_name="$MAIN_BRANCH"
+   upstream_ref="$UPSTREAM_REF"
+   helper_branch="$HELPER_BRANCH"
+   upstream_sha=$(git -C /workspace rev-parse --short "$upstream_ref" 2>/dev/null || echo "unknown")
+   upstream_date=$(git -C /workspace log --format='%ar' "$upstream_ref" -1 2>/dev/null || echo "unknown")
+   main_sha=$(git -C /workspace rev-parse --short "$branch_name" 2>/dev/null || echo "unknown")
 
-  cat <<TXT
+   cat <<TXT
 You are the Forklift merge agent. Your job is to merge upstream changes into
 this fork and leave the repository in a working state while preserving the
 functionality of both the upstream $upstream_ref branch and the fork's
@@ -91,45 +92,45 @@ TXT
 }
 
 print_header() {
-  printf '== %s ==\n' "$1"
+   printf '== %s ==\n' "$1"
 }
 
 write_instructions() {
-  print_header "Instructions" | tee "$INSTRUCTIONS_FILE"
-  default_instructions | tee -a "$INSTRUCTIONS_FILE"
-  print_header "FORK.md Context" | tee -a "$INSTRUCTIONS_FILE"
-  if [[ -f /workspace/FORK.md ]]; then
-    cp /workspace/FORK.md "$FORK_CONTEXT_FILE"
-    cat /workspace/FORK.md | tee -a "$INSTRUCTIONS_FILE"
-  else
-    printf '(none provided)\n' | tee -a "$INSTRUCTIONS_FILE"
-    printf 'No FORK.md context provided.\n' >"$FORK_CONTEXT_FILE"
-  fi
+   print_header "Instructions" | tee "$INSTRUCTIONS_FILE"
+   default_instructions | tee -a "$INSTRUCTIONS_FILE"
+   print_header "FORK.md Context" | tee -a "$INSTRUCTIONS_FILE"
+   if [[ -f /workspace/FORK.md ]]; then
+      cp /workspace/FORK.md "$FORK_CONTEXT_FILE"
+      cat /workspace/FORK.md | tee -a "$INSTRUCTIONS_FILE"
+   else
+      printf '(none provided)\n' | tee -a "$INSTRUCTIONS_FILE"
+      printf 'No FORK.md context provided.\n' >"$FORK_CONTEXT_FILE"
+   fi
 }
 
 write_instructions
 
 AGENT_PAYLOAD=$(
-  cat "$INSTRUCTIONS_FILE"
-  printf '\n\n'
-  cat "$FORK_CONTEXT_FILE" 2>/dev/null || printf ''
+   cat "$INSTRUCTIONS_FILE"
+   printf '\n\n'
+   cat "$FORK_CONTEXT_FILE" 2>/dev/null || printf ''
 )
 
 command_args=(
-  "$OPENCODE_BIN" run
-  --attach "http://127.0.0.1:$OPENCODE_SERVER_PORT"
-	--log-level DEBUG
-	--format json
-	--dir /workspace
+   "$OPENCODE_BIN" run
+   --attach "http://127.0.0.1:$OPENCODE_SERVER_PORT"
+   --log-level DEBUG
+   --format json
+   --dir /workspace
 )
 if [[ -n "$OPENCODE_MODEL" ]]; then
-  command_args+=(--model "$OPENCODE_MODEL")
+   command_args+=(--model "$OPENCODE_MODEL")
 fi
 command_args+=(
-  --variant "$OPENCODE_VARIANT"
-	# Temporarily omitting this as it has a bug
-	# TODO(https://github.com/anomalyco/opencode/issues/6489): Wait until resolved
-	# --agent "$OPENCODE_AGENT"
+   --variant "$OPENCODE_VARIANT"
+   # Temporarily omitting this as it has a bug
+   # TODO(https://github.com/anomalyco/opencode/issues/6489): Wait until resolved
+   # --agent "$OPENCODE_AGENT"
 )
 
 print_header "Agent Command" | tee -a "$INSTRUCTIONS_FILE"
@@ -138,39 +139,39 @@ printf '\n' | tee -a "$INSTRUCTIONS_FILE"
 
 DONE_FILE=/workspace/DONE.md
 STUCK_FILE=/workspace/STUCK.md
-DEADLINE=$(( $(date +%s) + OPENCODE_TIMEOUT ))
+DEADLINE=$(($(date +%s) + OPENCODE_TIMEOUT))
 
 log_model=${OPENCODE_MODEL:-"(default)"}
 log_client "Launching OpenCode client (model=$log_model variant=$OPENCODE_VARIANT agent=$OPENCODE_AGENT)"
 
 attempt=0
 while true; do
-  remaining=$(( DEADLINE - $(date +%s) ))
-  if [[ $remaining -le 0 ]]; then
-    log_client "Deadline reached; exiting"
-    echo "Agent timed out; see $CLIENT_LOG" >&2
-    exit 1
-  fi
+   remaining=$((DEADLINE - $(date +%s)))
+   if [[ $remaining -le 0 ]]; then
+      log_client "Deadline reached; exiting"
+      echo "Agent timed out; see $CLIENT_LOG" >&2
+      exit 1
+   fi
 
-  attempt=$((attempt + 1))
-  if [[ $attempt -eq 1 ]]; then
-    log_client "Attempt $attempt (${remaining}s remaining)"
-    timeout "$remaining" "${command_args[@]}" "$AGENT_PAYLOAD" >>"$CLIENT_LOG" 2>&1 || true
-  else
-    log_client "Attempt $attempt (${remaining}s remaining, continuing)"
-    timeout "$remaining" "${command_args[@]}" --continue "Continue where you left off." >>"$CLIENT_LOG" 2>&1 || true
-  fi
+   attempt=$((attempt + 1))
+   if [[ $attempt -eq 1 ]]; then
+      log_client "Attempt $attempt (${remaining}s remaining)"
+      timeout "$remaining" "${command_args[@]}" "$AGENT_PAYLOAD" >>"$CLIENT_LOG" 2>&1 || true
+   else
+      log_client "Attempt $attempt (${remaining}s remaining, continuing)"
+      timeout "$remaining" "${command_args[@]}" --continue "Continue where you left off." >>"$CLIENT_LOG" 2>&1 || true
+   fi
 
-  if [[ -f "$DONE_FILE" ]]; then
-    log_client "Agent completed successfully (DONE.md present)"
-    exit 0
-  fi
+   if [[ -f "$DONE_FILE" ]]; then
+      log_client "Agent completed successfully (DONE.md present)"
+      exit 0
+   fi
 
-  if [[ -f "$STUCK_FILE" ]]; then
-    log_client "Agent reported stuck (STUCK.md present)"
-    echo "Agent is stuck; see $STUCK_FILE and $CLIENT_LOG" >&2
-    exit 1
-  fi
+   if [[ -f "$STUCK_FILE" ]]; then
+      log_client "Agent reported stuck (STUCK.md present)"
+      echo "Agent is stuck; see $STUCK_FILE and $CLIENT_LOG" >&2
+      exit 1
+   fi
 
-  log_client "Agent exited without signalling completion; retrying"
+   log_client "Agent exited without signalling completion; retrying"
 done

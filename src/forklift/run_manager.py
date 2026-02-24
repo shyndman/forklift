@@ -1,30 +1,33 @@
 from __future__ import annotations
 
+import base64
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
-import os
-
 import json
+import os
+import secrets
 import shutil
-
-import logging
 from pathlib import Path
 import subprocess
 from typing import cast
+
+import structlog
+from structlog.stdlib import BoundLogger
 
 CONTAINER_UID = 1000
 CONTAINER_GID = 1000
 
 
-
-
 def _default_runs_root() -> Path:
     xdg_state = os.environ.get("XDG_STATE_HOME")
-    base = Path(xdg_state).expanduser() if xdg_state else Path.home() / ".local" / "state"
+    base = (
+        Path(xdg_state).expanduser() if xdg_state else Path.home() / ".local" / "state"
+    )
     return (base / "forklift" / "runs").resolve()
 
-logger = logging.getLogger(__name__)
+
+logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
 DEFAULT_RUNS_ROOT = _default_runs_root()
 TIMESTAMP_FORMAT = "%Y%m%d_%H%M%S"
@@ -40,6 +43,7 @@ class RunPaths:
     workspace: Path
     harness_state: Path
     opencode_logs: Path
+    run_id: str
 
 
 class RunDirectoryManager:
@@ -59,8 +63,9 @@ class RunDirectoryManager:
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
         opencode_logs = run_dir / "opencode-logs"
+        run_id = self._generate_run_id()
 
-        logger.info("Creating run directory at %s", run_dir)
+        logger.info("Creating run directory", run_dir=run_dir)
         workspace.parent.mkdir(parents=True, exist_ok=True)
         harness_state.mkdir(parents=True, exist_ok=True)
         opencode_logs.mkdir(parents=True, exist_ok=True)
@@ -72,6 +77,7 @@ class RunDirectoryManager:
         metadata_payload: dict[str, object] = {**branch_info}
         if extra_metadata:
             metadata_payload.update(extra_metadata)
+        metadata_payload["run_id"] = run_id
         upstream_main_sha = branch_info.get("upstream_main_sha")
         self._write_metadata(run_dir, source_repo, timestamp, metadata_payload)
         self._remove_remotes(workspace)
@@ -83,12 +89,13 @@ class RunDirectoryManager:
             workspace=workspace,
             harness_state=harness_state,
             opencode_logs=opencode_logs,
+            run_id=run_id,
         )
 
     def _clone_repo(self, source: Path, destination: Path) -> None:
         if destination.exists():
             raise RunDirectoryError(f"Workspace already exists at {destination}")
-        logger.info("Cloning %s -> %s", source, destination)
+        logger.info("Cloning source repo", source=source, destination=destination)
         try:
             result: subprocess.CompletedProcess[str] = subprocess.run(
                 ["git", "clone", str(source), str(destination)],
@@ -103,23 +110,23 @@ class RunDirectoryManager:
                 f"Failed to clone {source} -> {destination}: {output.strip()}"
             ) from exc
         stdout_text = cast(str | None, result.stdout) or ""
-        logger.debug("git clone output:\n%s", stdout_text.strip())
+        logger.debug("git clone output", output=stdout_text.strip())
 
     def _remove_remotes(self, workspace: Path) -> None:
-        logger.info("Removing remotes inside %s", workspace)
+        logger.info("Removing remotes", workspace=workspace)
         remotes_output = self._run_git(workspace, ["remote"]).strip()
         remote_names: list[str] = [
             line.strip() for line in remotes_output.splitlines() if line.strip()
         ]
         for remote in remote_names:
             _ = self._run_git(workspace, ["remote", "remove", remote])
-        logger.debug("All remotes removed from %s", workspace)
+        logger.debug("All remotes removed", workspace=workspace)
 
     def _ensure_permissions(self, *paths: Path) -> None:
         logger.info(
-            "Aligning run artifact ownership to %s:%s",
-            CONTAINER_UID,
-            CONTAINER_GID,
+            "Aligning run artifact ownership",
+            uid=CONTAINER_UID,
+            gid=CONTAINER_GID,
         )
         for path in paths:
             self._chown_recursive(path, CONTAINER_UID, CONTAINER_GID)
@@ -135,7 +142,6 @@ class RunDirectoryManager:
             for child in path.iterdir():
                 self._chown_recursive(child, uid, gid)
 
-
     def _write_metadata(
         self,
         run_dir: Path,
@@ -148,18 +154,18 @@ class RunDirectoryManager:
             "created_at": timestamp,
             **extra,
         }
-        _ = (run_dir / "metadata.json").write_text(json.dumps(metadata, indent=2) + "\n")
+        _ = (run_dir / "metadata.json").write_text(
+            json.dumps(metadata, indent=2) + "\n"
+        )
 
     def _overlay_fork_context(self, source_repo: Path, workspace: Path) -> None:
         fork_file = source_repo / "FORK.md"
         if not fork_file.exists():
-            logger.debug("No FORK.md found at %s", fork_file)
+            logger.debug("No FORK.md found", path=fork_file)
             return
         destination = workspace / "FORK.md"
         _ = shutil.copy2(fork_file, destination)
-        logger.debug("Copied FORK.md into %s", destination)
-
-
+        logger.debug("Copied FORK.md", destination=destination)
 
     def _capture_branch_info(
         self, source_repo: Path, main_branch: str
@@ -178,7 +184,6 @@ class RunDirectoryManager:
         except RunDirectoryError:
             info["origin_main_sha"] = None
         return info
-
 
     def _run_git(self, repo_path: Path, args: Sequence[str]) -> str:
         try:
@@ -207,11 +212,17 @@ class RunDirectoryManager:
         remote_ref = f"refs/remotes/upstream/{main_branch}"
         helper_branch = f"upstream-{main_branch.replace('/', '-')}"
         logger.info(
-            "Seeding synthetic %s ref at %s (helper branch %s)",
-            remote_ref,
-            upstream_sha,
-            helper_branch,
+            "Seeding synthetic upstream ref",
+            remote_ref=remote_ref,
+            upstream_sha=upstream_sha,
+            helper_branch=helper_branch,
         )
         _ = self._run_git(workspace, ["update-ref", remote_ref, upstream_sha])
         _ = self._run_git(workspace, ["branch", "-f", helper_branch, upstream_sha])
 
+    def _generate_run_id(self) -> str:
+        """Return the four-character correlator shared across host and harness logs."""
+
+        token = secrets.token_bytes(3)
+        encoded = base64.urlsafe_b64encode(token).decode("ascii")
+        return encoded[:4]
