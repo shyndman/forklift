@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+from typing import cast
 
 import structlog
 from structlog.dev import Column, ConsoleRenderer, KeyValueColumnFormatter
@@ -32,7 +33,8 @@ def timestamp_processor(
 def compact_level_processor(
     _logger: structlog.stdlib.BoundLogger, _method: str, event_dict: EventDict
 ) -> EventDict:
-    level = str(event_dict.get("level", "")).lower()
+    level_raw = cast(object, event_dict.get("level", ""))
+    level = str(level_raw).lower()
     if level in LEVEL_STYLES:
         style, label = LEVEL_STYLES[level]
         event_dict["level"] = f"{style}[{label}]{RESET}"
@@ -43,7 +45,8 @@ def ensure_run_processor(run_key: str, placeholder: str = "----") -> Processor:
     def processor(
         _logger: structlog.stdlib.BoundLogger, _method: str, event_dict: EventDict
     ) -> EventDict:
-        value = str(event_dict.get(run_key, placeholder)).strip() or placeholder
+        value_raw = cast(object, event_dict.get(run_key, placeholder))
+        value = str(value_raw).strip() or placeholder
         event_dict[run_key] = f"{RUN_STYLE}[{value}]{RESET}"
         return event_dict
 

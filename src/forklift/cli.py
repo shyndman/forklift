@@ -129,7 +129,7 @@ class Forklift(Command):
             main_branch=main_branch,
             extra_metadata=metadata_overrides,
         )
-        structlog.contextvars.bind_contextvars(run=run_paths.run_id)
+        _ = structlog.contextvars.bind_contextvars(run=run_paths.run_id)
         logger.info(
             "Run directory ready",
             run_dir=run_paths.run_dir,
@@ -188,7 +188,7 @@ class Forklift(Command):
     def _configure_logging(self) -> None:
         """Bootstrap structlog + Rich so every module shares contextual logs."""
 
-        install_rich_traceback(show_locals=True)
+        _ = install_rich_traceback(show_locals=True)
         level = logging.DEBUG if self.debug else logging.INFO
 
         renderer_processors, renderer = build_renderer(run_key="run")
