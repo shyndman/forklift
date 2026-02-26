@@ -37,7 +37,7 @@ Forklift configures stdlib logging just once in `Forklift.run()` and every modul
    - Drop `better_exceptions` entirely and rely on `RichHandler`’s `rich_tracebacks=True`/`tracebacks_show_locals=True` settings (documented in Rich’s logging guide) to show detailed stacks, plus `rich.traceback.install()` for uncaught exceptions if needed.
 
 5. **Client log pointer instead of streaming**
-   - As soon as `ContainerRunner.run()` starts the container (before we block on `communicate()`), compute the absolute path to `${run_paths.opencode_logs}/opencode-client.log` and log a single informational entry: e.g., `Agent log available at {path}` with the current correlator bound.
+   - As soon as `ContainerRunner.run()` starts the container (before we block on `communicate()`), compute the absolute path to `${run_paths.harness_state}/opencode-client.log` and log a single informational entry: e.g., `Agent log available at {path}` with the current correlator bound.
    - Do not tail or parse the log contents. If the file doesn’t exist yet, rely on its deterministic path; the harness always truncates/creates it (`docker/kitchen-sink/harness/run.sh` lines 23–35).
    - After the run completes, optionally log a reminder that the same path contains the final transcript.
 

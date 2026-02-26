@@ -150,7 +150,7 @@ class Forklift(Command):
             run_paths.opencode_logs,
             container_env,
         )
-        agent_log_path = run_paths.opencode_logs / "opencode-client.log"
+        agent_log_path = run_paths.harness_state / "opencode-client.log"
         if agent_log_path.exists():
             logger.info("Agent log transcript available", path=agent_log_path)
         else:

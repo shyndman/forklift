@@ -123,7 +123,7 @@ Old run directories remain under `$XDG_STATE_HOME/forklift/runs/` (or `~/.local/
 
 Forklift now configures [structlog](https://www.structlog.org/) + [Rich](https://rich.readthedocs.io/) as the sole logging stack so the CLI emits colorful, contextual logs by default. Each run receives a four-character correlator (for example `run=Q1p_`) which appears on every log line, is stored in `metadata.json` under `run_id`, and is forwarded to the sandbox as the `FORKLIFT_RUN_ID` environment variable. The harness records that same identifier at the top of `/harness-state/opencode-client.log`, making it easy to grep across host and container artifacts.
 
-Once the container launches the CLI prints a single pointer to `opencode-client.log` rather than streaming the transcript. When the run finishes Forklift logs one final reminder pointing to the same file (or warns if it was never created). Open that path to inspect agent output in real time.
+Once the container launches the CLI prints a single pointer to `/harness-state/opencode-client.log` inside the active run directory rather than streaming the transcript. When the run finishes Forklift logs one final reminder pointing to the same file (or warns if it was never created). Open that path to inspect agent output in real time.
 
 ## FORK.md guidance
 

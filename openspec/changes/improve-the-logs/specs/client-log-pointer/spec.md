@@ -1,7 +1,7 @@
 ## ADDED Requirements
 
 ### Requirement: Surface client log path at startup
-When the Forklift agent process begins (right after the container launches and the harness starts logging), Forklift SHALL emit a single log line indicating the fully qualified path to the active `opencode-client.log` file (e.g., `/home/.../opencode-logs/opencode-client.log`). The message SHALL include the run correlator so operators can quickly navigate to the log location.
+When the Forklift agent process begins (right after the container launches and the harness starts logging), Forklift SHALL emit a single log line indicating the fully qualified path to the active `opencode-client.log` file (e.g., `/home/.../harness-state/opencode-client.log`). The message SHALL include the run correlator so operators can quickly navigate to the log location.
 
 #### Scenario: Default run
 - **WHEN** Forklift starts a run

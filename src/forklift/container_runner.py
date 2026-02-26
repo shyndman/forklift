@@ -76,7 +76,7 @@ class ContainerRunner:
             stderr=subprocess.PIPE,
             text=True,
         )
-        client_log_path = opencode_logs / "opencode-client.log"
+        client_log_path = harness_state / "opencode-client.log"
         logger.info("Agent log available", path=client_log_path)
         timed_out = False
         stdout = ""

@@ -16,7 +16,7 @@
 
 ## 3. Agent Log Pointer
 
-- [x] 3.1 Emit a single log line right after the container launches that points to `${run_paths.opencode_logs}/opencode-client.log`, including the run correlator for easy correlation, and ensure no streaming/tailing occurs.
+- [x] 3.1 Emit a single log line right after the container launches that points to `${run_paths.harness_state}/opencode-client.log`, including the run correlator for easy correlation, and ensure no streaming/tailing occurs.
 - [x] 3.1a Launch a sandbox run and verify the CLI prints the path with the correct correlator, then confirm no agent log lines are inlined afterward.
 - [x] 3.2 Optionally log a reminder once the run finishes (success, stuck, timeout) that the same file contains the full transcript, without dumping contents.
 - [x] 3.2a Test success and timeout paths to ensure the reminder (or warning when the file never appears) logs correctly and still avoids streaming output.
