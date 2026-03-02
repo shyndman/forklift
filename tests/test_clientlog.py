@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from forklift.clientlog import ClientLogParser, Clientlog, TranscriptRenderer
+from forklift.clientlog_command import is_terminal_run_state, resolve_run_dir
 
 
 class ClientlogCommandTests(unittest.TestCase):
@@ -155,6 +156,30 @@ class ClientlogParserTests(unittest.TestCase):
 
         self.assertIn("Step msg-1 • completed • live", follow_render)
         self.assertIn("part=prt-2", follow_render)
+
+
+class ClientlogCommandHelperTests(unittest.TestCase):
+    def test_resolve_run_dir_reports_missing_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runs_root = Path(temp_dir)
+            with self.assertRaises(SystemExit) as ctx:
+                _ = resolve_run_dir("missing-run", runs_root=runs_root)
+            self.assertIn("run directory 'missing-run' not found", str(ctx.exception))
+
+    def test_is_terminal_run_state_uses_loaded_status(self) -> None:
+        state_file = Path("/tmp/unused-run-state.json")
+        self.assertTrue(
+            is_terminal_run_state(
+                state_file,
+                load_required_run_state_fn=lambda _path: {"status": "completed"},
+            )
+        )
+        self.assertFalse(
+            is_terminal_run_state(
+                state_file,
+                load_required_run_state_fn=lambda _path: {"status": "running"},
+            )
+        )
 
 
 if __name__ == "__main__":

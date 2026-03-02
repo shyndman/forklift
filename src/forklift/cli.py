@@ -1,23 +1,41 @@
-# This comment is part of an experiment requested by the repo owner.
 from __future__ import annotations
 
-import json
 import logging
-import os
-from datetime import datetime
-from dataclasses import dataclass, replace
 from importlib import metadata
 from pathlib import Path
 from typing import cast, override
 
 from clypi import Command, arg
 import structlog
-from structlog.stdlib import BoundLogger
 from rich.traceback import install as install_rich_traceback
+from structlog.stdlib import BoundLogger
 
+from .cli_authorship import (
+    AGENT_EMAIL as AUTHORSHIP_AGENT_EMAIL,
+    AGENT_NAME as AUTHORSHIP_AGENT_NAME,
+    FILTER_REPO_INSTALL_HELP as AUTHORSHIP_FILTER_REPO_INSTALL_HELP,
+    STASH_MESSAGE as AUTHORSHIP_STASH_MESSAGE,
+    OperatorIdentity,
+    RewriteResult,
+    assert_no_agent_commits,
+    log_rewrite_summary,
+    rewrite_and_publish_local,
+    workspace_has_changes,
+)
+from .cli_post_run import (
+    STUCK_EXIT_CODE as POST_RUN_STUCK_EXIT_CODE,
+    STUCK_PREVIEW_LINES as POST_RUN_STUCK_PREVIEW_LINES,
+    post_container_results,
+)
+from .cli_runtime import (
+    apply_cli_overrides,
+    build_container_env,
+    chown_artifact,
+    resolve_chown_target,
+    resolved_main_branch,
+)
 from .clientlog import Clientlog
-from .logs import build_renderer
-
+from .container_runner import ContainerRunner
 from .git import (
     GitError,
     GitFetchResult,
@@ -28,50 +46,18 @@ from .git import (
     fetch_remotes,
     run_git,
 )
-
-from .container_runner import ContainerRunner
-from .opencode_env import (
-    DEFAULT_ENV_PATH,
-    SAFE_VALUE_PATTERN,
-    OpenCodeEnv,
-    OpenCodeEnvError,
-    load_opencode_env,
-)
+from .logs import build_renderer
+from .opencode_env import DEFAULT_ENV_PATH, OpenCodeEnv, OpenCodeEnvError, load_opencode_env
 from .run_manager import RunDirectoryManager, RunPaths
-
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
-
-STUCK_EXIT_CODE = 4
-STUCK_PREVIEW_LINES = 40
-
-AGENT_NAME = "Forklift Agent"
-AGENT_EMAIL = "forklift@github.com"
-STASH_MESSAGE = "forklift-authorship-rewrite"
-FILTER_REPO_INSTALL_HELP = (
-    "Install git filter-repo 2.47.0+: pip install git-filter-repo==2.47.0, "
-    "brew install git-filter-repo, or download the standalone script from "
-    "https://github.com/newren/git-filter-repo/releases (requires git >= 2.22 and python >= 3.6)."
-)
-
-
-@dataclass(frozen=True)
-class OperatorIdentity:
-    name: str
-    email: str
-
-
-@dataclass
-class RewriteResult:
-    branch: str
-    operator: OperatorIdentity
-    rewrite_range: str
-    publication_branch: str | None
-    stash_created: bool
-    stash_conflicts: bool
-    rewritten: bool
-    published: bool
+AGENT_NAME = AUTHORSHIP_AGENT_NAME
+AGENT_EMAIL = AUTHORSHIP_AGENT_EMAIL
+STASH_MESSAGE = AUTHORSHIP_STASH_MESSAGE
+FILTER_REPO_INSTALL_HELP = AUTHORSHIP_FILTER_REPO_INSTALL_HELP
+STUCK_EXIT_CODE = POST_RUN_STUCK_EXIT_CODE
+STUCK_PREVIEW_LINES = POST_RUN_STUCK_PREVIEW_LINES
 
 
 class Forklift(Command):
@@ -111,27 +97,23 @@ class Forklift(Command):
 
         operator_identity = self._capture_operator_identity(repo_path)
         main_branch = self._resolved_main_branch()
-
         opencode_env = self._prepare_opencode_env()
         chown_uid, chown_gid = self._resolve_chown_target()
 
         remotes = self._discover_required_remotes(repo_path)
         fetch_results = self._fetch_all(repo_path, remotes)
-
         for result in fetch_results:
             if result.output:
                 logger.info("Fetch output", remote=result.name, output=result.output)
             else:
                 logger.info("Fetch output", remote=result.name, status="up to date")
-
         logger.info("Remote discovery and fetch complete.")
 
         run_manager = RunDirectoryManager()
-        metadata_overrides = self._metadata_overrides(operator_identity)
         run_paths = run_manager.prepare(
             repo_path,
             main_branch=main_branch,
-            extra_metadata=metadata_overrides,
+            extra_metadata=self._metadata_overrides(operator_identity),
         )
         _ = structlog.contextvars.bind_contextvars(run=run_paths.run_id)
         logger.info(
@@ -142,19 +124,15 @@ class Forklift(Command):
             opencode_logs=run_paths.opencode_logs,
         )
 
-        container_env = self._build_container_env(
-            opencode_env,
-            main_branch,
-            run_paths.run_id,
-        )
         container_runner = ContainerRunner()
         container_result = container_runner.run(
             run_paths.workspace,
             run_paths.harness_state,
             run_paths.opencode_logs,
             run_paths.run_dir / "run-state.json",
-            container_env,
+            self._build_container_env(opencode_env, main_branch, run_paths.run_id),
         )
+
         agent_log_path = run_paths.harness_state / "opencode-client.log"
         if agent_log_path.exists():
             logger.info("Agent log transcript available", path=agent_log_path)
@@ -163,12 +141,10 @@ class Forklift(Command):
                 "Agent log transcript missing; harness may not have emitted logs.",
                 path=agent_log_path,
             )
-        self._chown_artifact(
-            run_paths.harness_state, "harness-state", chown_uid, chown_gid
-        )
-        self._chown_artifact(
-            run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid
-        )
+
+        self._chown_artifact(run_paths.harness_state, "harness-state", chown_uid, chown_gid)
+        self._chown_artifact(run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid)
+
         if container_result.stdout.strip():
             logger.info("Container stdout", stdout=container_result.stdout.strip())
         if container_result.stderr.strip():
@@ -187,6 +163,7 @@ class Forklift(Command):
                 container_result.exit_code,
             )
             raise SystemExit(container_result.exit_code)
+
         logger.info("Container run completed successfully.")
         self._post_container_results(repo_path, run_paths, main_branch)
 
@@ -195,7 +172,6 @@ class Forklift(Command):
 
         _ = install_rich_traceback(show_locals=True)
         level = logging.DEBUG if self.debug else logging.INFO
-
         renderer_processors, renderer = build_renderer(run_key="run")
         pre_chain = [
             structlog.contextvars.merge_contextvars,
@@ -210,16 +186,9 @@ class Forklift(Command):
                 renderer,
             ],
         )
-
         handler = logging.StreamHandler()
         handler.setFormatter(formatter)
-
-        logging.basicConfig(
-            level=level,
-            handlers=[handler],
-            force=True,
-        )
-
+        logging.basicConfig(level=level, handlers=[handler], force=True)
         structlog.configure(
             processors=[
                 *pre_chain,
@@ -233,13 +202,12 @@ class Forklift(Command):
 
     def _resolve_repo_path(self) -> Path:
         raw = self.repo
-        if raw is None:
-            base = Path.cwd()
-        else:
-            base = Path(raw)
+        base = Path.cwd() if raw is None else Path(raw)
         return base.expanduser().resolve()
 
     def _capture_operator_identity(self, repo_path: Path) -> OperatorIdentity:
+        """Read and validate git operator identity used for run metadata."""
+
         try:
             name = run_git(repo_path, ["config", "--get", "user.name"]).strip()
         except GitError as exc:
@@ -254,6 +222,7 @@ class Forklift(Command):
                 repo_path,
             )
             raise SystemExit(1)
+
         try:
             email = run_git(repo_path, ["config", "--get", "user.email"]).strip()
         except GitError as exc:
@@ -268,14 +237,12 @@ class Forklift(Command):
                 repo_path,
             )
             raise SystemExit(1)
+
         logger.info("Captured operator identity", name=name, email=email)
         return OperatorIdentity(name=name, email=email)
 
     def _metadata_overrides(self, identity: OperatorIdentity) -> dict[str, object]:
-        return {
-            "operator_name": identity.name,
-            "operator_email": identity.email,
-        }
+        return {"operator_name": identity.name, "operator_email": identity.email}
 
     def _discover_required_remotes(self, repo_path: Path) -> dict[str, GitRemote]:
         try:
@@ -283,13 +250,14 @@ class Forklift(Command):
         except GitError as exc:
             logger.exception("%s", exc)
             raise SystemExit(1) from exc
-
         for remote in remotes.values():
             logger.info("Detected remote", name=remote.name, fetch_url=remote.fetch_url)
         return remotes
 
     def _fetch_all(
-        self, repo_path: Path, remotes: dict[str, GitRemote]
+        self,
+        repo_path: Path,
+        remotes: dict[str, GitRemote],
     ) -> list[GitFetchResult]:
         try:
             return fetch_remotes(repo_path, remotes)
@@ -298,51 +266,23 @@ class Forklift(Command):
             raise SystemExit(1) from exc
 
     def _post_container_results(
-        self, repo_path: Path, run_paths: RunPaths, configured_branch: str
+        self,
+        repo_path: Path,
+        run_paths: RunPaths,
+        configured_branch: str,
     ) -> None:
-        metadata = self._load_run_metadata(run_paths.run_dir)
-        workspace = run_paths.workspace
-        self._fail_if_stuck(workspace)
-
-        metadata_branch = cast(str | None, metadata.get("main_branch"))
-        target_branch = (
-            metadata_branch or configured_branch or current_branch(workspace)
-        )
-        upstream_ref_branch = metadata_branch or configured_branch
-        upstream_ref = f"upstream/{upstream_ref_branch}"
-        upstream_sha = cast(str | None, metadata.get("upstream_main_sha"))
-
-        try:
-            ensure_upstream_merged(workspace, upstream_ref, target_branch)
-            if upstream_sha:
-                logger.info(
-                    "Verified %s (%s) is ancestor of %s",
-                    upstream_ref,
-                    upstream_sha[:12],
-                    target_branch,
-                )
-            else:
-                logger.info(
-                    "Verified %s is ancestor of %s",
-                    upstream_ref,
-                    target_branch,
-                )
-        except GitError as exc:
-            logger.exception("Upstream verification failed: %s", exc)
-            raise SystemExit(3) from exc
-
-        rewrite_result = self._rewrite_and_publish_local(
+        post_container_results(
             repo_path,
             run_paths,
-            metadata,
-            target_branch,
-            upstream_ref,
+            configured_branch,
+            rewrite_and_publish_local_fn=self._rewrite_and_publish_local,
+            log_rewrite_summary_fn=self._log_rewrite_summary,
+            current_branch_fn=current_branch,
+            ensure_upstream_merged_fn=ensure_upstream_merged,
         )
-        self._log_rewrite_summary(repo_path, rewrite_result)
 
     def _workspace_has_changes(self, workspace: Path) -> bool:
-        status = run_git(workspace, ["status", "--porcelain"])
-        return bool(status.strip())
+        return workspace_has_changes(workspace)
 
     def _rewrite_and_publish_local(
         self,
@@ -352,425 +292,66 @@ class Forklift(Command):
         target_branch: str,
         upstream_ref: str,
     ) -> RewriteResult | None:
-        """Rewrite agent authorship in bounded range and publish to local handoff branch."""
-
-        operator_name = cast(str | None, metadata.get("operator_name"))
-        operator_email = cast(str | None, metadata.get("operator_email"))
-        if not operator_name or not operator_email:
-            logger.info(
-                "Missing operator identity metadata; skipping rewrite/local publication."
-            )
-            return None
-        operator = OperatorIdentity(name=operator_name, email=operator_email)
-
-        workspace = run_paths.workspace
-        stash_created = False
-        stash_conflicts = False
-        try:
-            if self._workspace_has_changes(workspace):
-                logger.info(
-                    "Stashing workspace state before rewrite (%s)", STASH_MESSAGE
-                )
-                _ = run_git(workspace, ["stash", "push", "-u", "-m", STASH_MESSAGE])
-                stash_created = True
-
-            current = current_branch(workspace)
-            if current != target_branch:
-                logger.info(
-                    "Checking out %s before rewrite (current branch %s)",
-                    target_branch,
-                    current,
-                )
-                _ = run_git(workspace, ["checkout", target_branch])
-
-            upstream_anchor = run_git(workspace, ["rev-parse", upstream_ref]).strip()
-            current_head = run_git(workspace, ["rev-parse", "HEAD"]).strip()
-            rewrite_anchor = self._ensure_rewrite_anchor_branch(
-                workspace,
-                target_branch,
-                upstream_anchor,
-            )
-            rewrite_range = f"{rewrite_anchor}..{target_branch}"
-
-            if current_head == upstream_anchor:
-                logger.info(
-                    "Branch %s head %s matches %s; skipping rewrite/local publication.",
-                    target_branch,
-                    current_head[:12],
-                    upstream_ref,
-                )
-                if stash_created:
-                    stash_conflicts = not self._pop_stash(workspace)
-                return RewriteResult(
-                    branch=target_branch,
-                    operator=operator,
-                    rewrite_range=rewrite_range,
-                    publication_branch=None,
-                    stash_created=stash_created,
-                    stash_conflicts=stash_conflicts,
-                    rewritten=False,
-                    published=False,
-                )
-
-            self._validate_filter_repo(workspace)
-            mailmap_path = self._write_mailmap(run_paths.run_dir, operator)
-            try:
-                _ = run_git(
-                    workspace,
-                    [
-                        "filter-repo",
-                        "--force",
-                        f"--mailmap={mailmap_path}",
-                        f"--refs={rewrite_range}",
-                    ],
-                )
-            finally:
-                try:
-                    mailmap_path.unlink()
-                except FileNotFoundError:
-                    pass
-
-            self._assert_no_agent_commits(workspace, rewrite_range)
-
-            ensure_upstream_merged(workspace, upstream_ref, target_branch)
-            post_rewrite_upstream = run_git(
-                workspace, ["rev-parse", upstream_ref]
-            ).strip()
-            if post_rewrite_upstream != upstream_anchor:
-                logger.error(
-                    "Rewrite boundary violation: %s moved from %s to %s.",
-                    upstream_ref,
-                    upstream_anchor[:12],
-                    post_rewrite_upstream[:12],
-                )
-                raise SystemExit(1)
-
-            publication_branch = self._build_publication_branch(metadata, target_branch)
-            self._publish_to_local(
-                workspace,
-                repo_path,
-                target_branch,
-                publication_branch,
-            )
-
-            if stash_created:
-                stash_conflicts = not self._pop_stash(workspace)
-
-            return RewriteResult(
-                branch=target_branch,
-                operator=operator,
-                rewrite_range=rewrite_range,
-                publication_branch=publication_branch,
-                stash_created=stash_created,
-                stash_conflicts=stash_conflicts,
-                rewritten=True,
-                published=True,
-            )
-        except GitError as exc:
-            logger.exception("Failed to rewrite/publish branch locally: %s", exc)
-            if stash_created:
-                logger.warning(
-                    "Stash '%s' remains on the stack; recover it later via `git stash list` inside %s.",
-                    STASH_MESSAGE,
-                    workspace,
-                )
-            raise SystemExit(1) from exc
-
-    def _ensure_rewrite_anchor_branch(
-        self, workspace: Path, target_branch: str, upstream_anchor: str
-    ) -> str:
-        """Ensure a stable local ref exists for bounded rewrite ranges."""
-
-        helper_branch = f"upstream-{target_branch.replace('/', '-')}"
-        try:
-            helper_sha = run_git(workspace, ["rev-parse", "--verify", helper_branch])
-        except GitError:
-            logger.info(
-                "Recreating rewrite anchor branch",
-                branch=helper_branch,
-                upstream_sha=upstream_anchor,
-            )
-            _ = run_git(workspace, ["branch", "-f", helper_branch, upstream_anchor])
-            return helper_branch
-        if helper_sha == upstream_anchor:
-            return helper_branch
-        logger.info(
-            "Resetting rewrite anchor branch",
-            branch=helper_branch,
-            old_sha=helper_sha[:12],
-            new_sha=upstream_anchor[:12],
+        return rewrite_and_publish_local(
+            repo_path,
+            run_paths,
+            metadata,
+            target_branch,
+            upstream_ref,
+            run_git_cmd=run_git,
+            current_branch_fn=current_branch,
+            ensure_upstream_merged_fn=ensure_upstream_merged,
+            workspace_has_changes_fn=self._workspace_has_changes,
         )
-        _ = run_git(workspace, ["branch", "-f", helper_branch, upstream_anchor])
-        return helper_branch
-
-    def _build_publication_branch(
-        self, metadata: dict[str, object], target_branch: str
-    ) -> str:
-        """Build the local review branch name for rewritten output."""
-
-        raw_timestamp = cast(str | None, metadata.get("created_at"))
-        if raw_timestamp:
-            try:
-                parsed = datetime.strptime(raw_timestamp, "%Y%m%d_%H%M%S")
-            except ValueError:
-                logger.warning(
-                    "Unexpected metadata timestamp format; using normalized value.",
-                    value=raw_timestamp,
-                )
-                publication_timestamp = raw_timestamp.replace("_", "T")
-            else:
-                publication_timestamp = parsed.strftime("%Y%m%dT%H%M%S")
-        else:
-            publication_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
-        return f"upstream-merge/{publication_timestamp}/{target_branch}"
-
-    def _publish_to_local(
-        self,
-        workspace: Path,
-        repo_path: Path,
-        source_branch: str,
-        publication_branch: str,
-    ) -> None:
-        """Publish rewritten workspace commits to a local handoff branch."""
-
-        push_output = run_git(
-            workspace,
-            [
-                "push",
-                str(repo_path),
-                f"{source_branch}:{publication_branch}",
-                "--force",
-            ],
-        )
-        if push_output:
-            logger.info("Local publication output", output=push_output)
-
-    def _validate_filter_repo(self, workspace: Path) -> None:
-        try:
-            version = run_git(workspace, ["filter-repo", "--version"]).strip()
-        except GitError as exc:
-            logger.exception("git filter-repo not available: %s", exc)
-            logger.error(FILTER_REPO_INSTALL_HELP)
-            raise SystemExit(1) from exc
-        if version:
-            logger.info("git filter-repo detected", version=version)
-
-    def _write_mailmap(self, run_dir: Path, operator: OperatorIdentity) -> Path:
-        mailmap_path = run_dir / "authorship.mailmap"
-        mapping = f"{operator.name} <{operator.email}> {AGENT_NAME} <{AGENT_EMAIL}>\n"
-        _ = mailmap_path.write_text(mapping)
-        return mailmap_path
 
     def _assert_no_agent_commits(self, workspace: Path, rewrite_range: str) -> None:
-        residual = run_git(
-            workspace,
-            [
-                "log",
-                "--format=%H",
-                f"--author={AGENT_NAME} <{AGENT_EMAIL}>",
-                rewrite_range,
-            ],
-        ).strip()
-        if residual:
-            sample = ", ".join(residual.splitlines()[:5])
-            logger.error(
-                "Authorship rewrite incomplete in range %s; commits authored by %s <%s> remain: %s",
-                rewrite_range,
-                AGENT_NAME,
-                AGENT_EMAIL,
-                sample,
-            )
-            raise SystemExit(1)
+        assert_no_agent_commits(workspace, rewrite_range, run_git_cmd=run_git)
 
-    def _pop_stash(self, workspace: Path) -> bool:
-        try:
-            output = run_git(workspace, ["stash", "pop"])
-        except GitError as exc:
-            logger.warning(
-                "Unable to auto-pop stash '%s': %s. Recover manually via `git stash list`.",
-                STASH_MESSAGE,
-                exc,
-            )
-            return False
-        if output:
-            logger.info("Stash pop output", output=output)
-        return True
-
-    def _log_rewrite_summary(
-        self, repo_path: Path, result: RewriteResult | None
-    ) -> None:
-        if result is None:
-            logger.info(
-                "Rewrite/local publication pipeline skipped (metadata incomplete)."
-            )
-            return
-        if not result.rewritten:
-            logger.info(
-                "Branch %s already matches rewrite anchor; no rewrite/local publication required.",
-                result.branch,
-            )
-            if result.stash_created:
-                if result.stash_conflicts:
-                    logger.warning(
-                        "Stash '%s' reapplied with conflicts; inspect the workspace and use `git stash list` if needed.",
-                        STASH_MESSAGE,
-                    )
-                else:
-                    logger.info("Stash reapplied cleanly", stash=STASH_MESSAGE)
-            return
-
-        logger.info(
-            "Authorship rewrite complete for %s with commits rewritten to %s <%s>.",
-            result.rewrite_range,
-            result.operator.name,
-            result.operator.email,
-        )
-        if result.published and result.publication_branch:
-            logger.info(
-                "Published rewritten branch locally: %s -> %s",
-                result.branch,
-                result.publication_branch,
-            )
-            logger.info(
-                "Local review handoff: inspect from %s using `git log --oneline %s..%s` and `git diff --stat %s...%s`.",
-                repo_path,
-                result.branch,
-                result.publication_branch,
-                result.branch,
-                result.publication_branch,
-            )
-            logger.info(
-                "No GitHub push performed; publish manually after review if desired."
-            )
-        if result.stash_created:
-            if result.stash_conflicts:
-                logger.warning(
-                    "Stash '%s' reapplied with conflicts; recover manually via `git stash list` and resolve merges.",
-                    STASH_MESSAGE,
-                )
-            else:
-                logger.info("Stash reapplied cleanly", stash=STASH_MESSAGE)
-
-    def _fail_if_stuck(self, workspace: Path) -> None:
-        stuck_file = workspace / "STUCK.md"
-        if not stuck_file.exists():
-            return
-        logger.warning(
-            "STUCK.md detected at %s; skipping verification and local publication.",
-            stuck_file,
-        )
-        try:
-            contents = stuck_file.read_text().strip()
-        except OSError as exc:
-            logger.warning("Unable to read STUCK.md", error=exc)
-        else:
-            if contents:
-                preview_lines = contents.splitlines()[:STUCK_PREVIEW_LINES]
-                preview_text = "\n".join(preview_lines)
-                logger.warning(
-                    "STUCK.md preview (first %s lines):\n%s",
-                    STUCK_PREVIEW_LINES,
-                    preview_text,
-                )
-            else:
-                logger.warning("STUCK.md is empty.")
-        raise SystemExit(STUCK_EXIT_CODE)
-
-    def _load_run_metadata(self, run_dir: Path) -> dict[str, object]:
-        metadata_path = run_dir / "metadata.json"
-        try:
-            raw = metadata_path.read_text()
-        except FileNotFoundError:
-            logger.warning("Metadata file missing", path=metadata_path)
-            return {}
-        data = cast(dict[str, object], json.loads(raw))
-        return data
+    def _log_rewrite_summary(self, repo_path: Path, result: RewriteResult | None) -> None:
+        log_rewrite_summary(repo_path, result)
 
     def _prepare_opencode_env(self) -> OpenCodeEnv:
-        env_path = DEFAULT_ENV_PATH
         try:
-            env = load_opencode_env(env_path)
+            env = load_opencode_env(DEFAULT_ENV_PATH)
         except OpenCodeEnvError as exc:
             logger.exception(
-                "Failed to load OpenCode config from %s: %s", env_path, exc
+                "Failed to load OpenCode config from %s: %s",
+                DEFAULT_ENV_PATH,
+                exc,
             )
             raise SystemExit(1) from exc
-        logger.info("Loaded OpenCode env", path=env_path)
+        logger.info("Loaded OpenCode env", path=DEFAULT_ENV_PATH)
         logger.debug(
             "Forwarding OpenCode configuration: model=%s variant=%s agent=%s",
             env.model or "(default)",
             env.variant,
             env.agent,
         )
-        return env
+        return self._apply_cli_overrides(env)
 
     def _build_container_env(
-        self, env: OpenCodeEnv, main_branch: str, run_id: str
+        self,
+        env: OpenCodeEnv,
+        main_branch: str,
+        run_id: str,
     ) -> dict[str, str]:
-        container_env = dict(env.as_env())
-        container_env["FORKLIFT_MAIN_BRANCH"] = main_branch
-        container_env["FORKLIFT_RUN_ID"] = run_id
-        tz_value = self._host_timezone_value()
-        if tz_value is not None:
-            container_env["TZ"] = tz_value
-        return container_env
-
-    def _host_timezone_value(self) -> str | None:
-        if not self.forward_tz:
-            return None
-        tz_value = os.environ.get("TZ")
-        if not tz_value:
-            logger.warning(
-                "--forward-tz enabled but host TZ is unset; skipping TZ forwarding."
-            )
-            return None
-        if self._contains_control_characters(tz_value):
-            logger.warning(
-                "Host TZ value contains control characters; skipping TZ forwarding.",
-                value=tz_value,
-            )
-            return None
-        logger.info("Forwarding host timezone", timezone=tz_value)
-        return tz_value
-
-    @staticmethod
-    def _contains_control_characters(value: str) -> bool:
-        return any(ord(char) < 32 or ord(char) == 127 for char in value)
+        return build_container_env(
+            env,
+            main_branch,
+            run_id,
+            forward_tz=self.forward_tz,
+        )
 
     def _apply_cli_overrides(self, env: OpenCodeEnv) -> OpenCodeEnv:
-        model = self._validated_override(self.model, env.model, "model")
-        variant = self._validated_override(self.variant, env.variant, "variant")
-        agent = self._validated_override(self.agent, env.agent, "agent")
-        return replace(env, model=model, variant=variant, agent=agent)
-
-    def _validated_override(
-        self, override: str | None, current: str | None, label: str
-    ) -> str | None:
-        if override is None:
-            return current
-        if not SAFE_VALUE_PATTERN.fullmatch(override):
-            logger.error(
-                "Invalid %s value %r; expected pattern %s",
-                label,
-                override,
-                SAFE_VALUE_PATTERN.pattern,
-            )
-            raise SystemExit(1)
-        return override
+        return apply_cli_overrides(
+            env,
+            model=self.model,
+            variant=self.variant,
+            agent=self.agent,
+        )
 
     def _resolved_main_branch(self) -> str:
-        branch = (self.main_branch or "main").strip()
-        if not branch:
-            logger.error("--main-branch value must not be empty")
-            raise SystemExit(1)
-        if not SAFE_VALUE_PATTERN.fullmatch(branch):
-            logger.error(
-                "Invalid --main-branch value %r; expected pattern %s",
-                branch,
-                SAFE_VALUE_PATTERN.pattern,
-            )
-            raise SystemExit(1)
-        return branch
+        return resolved_main_branch(self.main_branch)
 
     def _print_version(self) -> None:
         try:
@@ -780,92 +361,7 @@ class Forklift(Command):
         print(pkg_version)
 
     def _resolve_chown_target(self) -> tuple[int, int]:
-        default_uid, default_gid = self._default_host_ids()
-        spec = (self.chown or "").strip()
-        if not spec:
-            return default_uid, default_gid
-        uid_part, _, gid_part = spec.partition(":")
-        uid_part = uid_part.strip()
-        gid_part = gid_part.strip()
-        if not uid_part:
-            logger.error("Invalid --chown value %r; UID is required.", spec)
-            raise SystemExit(1)
-        uid = self._parse_id_component(uid_part, "UID")
-        gid = (
-            default_gid if gid_part == "" else self._parse_id_component(gid_part, "GID")
-        )
-        return uid, gid
-
-    def _default_host_ids(self) -> tuple[int, int]:
-        uid = os.getuid() if hasattr(os, "getuid") else 1000
-        gid = os.getgid() if hasattr(os, "getgid") else 1000
-        return uid, gid
-
-    def _parse_id_component(self, raw: str, label: str) -> int:
-        try:
-            value = int(raw, 10)
-        except ValueError:
-            logger.exception(
-                "Invalid %s %r in --chown value; expected integer.", label, raw
-            )
-            raise SystemExit(1) from None
-        if value < 0:
-            logger.error(
-                "Invalid %s %s in --chown value; expected non-negative integer.",
-                label,
-                value,
-            )
-            raise SystemExit(1)
-        return value
+        return resolve_chown_target(self.chown)
 
     def _chown_artifact(self, target: Path, label: str, uid: int, gid: int) -> None:
-        if not target.exists():
-            logger.debug(
-                "%s directory %s missing; skipping ownership reset.", label, target
-            )
-            return
-        logger.info("Reset artifact ownership", label=label, uid=uid, gid=gid)
-        try:
-            self._chown_path_recursive(target, uid, gid)
-        except PermissionError as exc:
-            logger.warning(
-                "Unable to chown artifact",
-                label=label,
-                uid=uid,
-                gid=gid,
-                error=exc,
-            )
-        except OSError as exc:
-            logger.warning(
-                "Failed to chown artifact",
-                label=label,
-                uid=uid,
-                gid=gid,
-                error=exc,
-            )
-
-    def _chown_path_recursive(self, path: Path, uid: int, gid: int) -> None:
-        self._set_owner(path, uid, gid)
-        if path.is_symlink():
-            return
-        try:
-            is_dir = path.is_dir()
-        except OSError:
-            return
-        if not is_dir:
-            return
-        try:
-            children = list(path.iterdir())
-        except OSError:
-            return
-        for child in children:
-            try:
-                self._chown_path_recursive(child, uid, gid)
-            except FileNotFoundError:
-                continue
-
-    def _set_owner(self, path: Path, uid: int, gid: int) -> None:
-        try:
-            os.chown(path, uid, gid, follow_symlinks=False)
-        except NotImplementedError:
-            os.chown(path, uid, gid)
+        chown_artifact(target, label=label, uid=uid, gid=gid)
