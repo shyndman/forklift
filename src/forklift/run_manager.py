@@ -15,6 +15,8 @@ from typing import cast
 import structlog
 from structlog.stdlib import BoundLogger
 
+from .run_state import initialize_run_state
+
 CONTAINER_UID = 1000
 CONTAINER_GID = 1000
 
@@ -80,6 +82,7 @@ class RunDirectoryManager:
         metadata_payload["run_id"] = run_id
         upstream_main_sha = branch_info.get("upstream_main_sha")
         self._write_metadata(run_dir, source_repo, timestamp, metadata_payload)
+        _ = initialize_run_state(run_dir, run_id)
         self._remove_remotes(workspace)
         self._seed_upstream_ref(workspace, upstream_main_sha, main_branch)
         self._ensure_permissions(workspace, harness_state, opencode_logs)

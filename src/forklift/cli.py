@@ -15,6 +15,7 @@ import structlog
 from structlog.stdlib import BoundLogger
 from rich.traceback import install as install_rich_traceback
 
+from .clientlog import Clientlog
 from .logs import build_renderer
 
 from .git import (
@@ -76,6 +77,7 @@ class RewriteResult:
 class Forklift(Command):
     """Primary entrypoint for the Forklift host orchestrator."""
 
+    subcommand: Clientlog | None = None
     repo: Path | str | None = None
     main_branch: str = arg(
         "main", help="Name of the primary branch to rebase (default: main)"
@@ -150,6 +152,7 @@ class Forklift(Command):
             run_paths.workspace,
             run_paths.harness_state,
             run_paths.opencode_logs,
+            run_paths.run_dir / "run-state.json",
             container_env,
         )
         agent_log_path = run_paths.harness_state / "opencode-client.log"
@@ -430,7 +433,9 @@ class Forklift(Command):
             self._assert_no_agent_commits(workspace, rewrite_range)
 
             ensure_upstream_merged(workspace, upstream_ref, target_branch)
-            post_rewrite_upstream = run_git(workspace, ["rev-parse", upstream_ref]).strip()
+            post_rewrite_upstream = run_git(
+                workspace, ["rev-parse", upstream_ref]
+            ).strip()
             if post_rewrite_upstream != upstream_anchor:
                 logger.error(
                     "Rewrite boundary violation: %s moved from %s to %s.",
@@ -591,9 +596,13 @@ class Forklift(Command):
             logger.info("Stash pop output", output=output)
         return True
 
-    def _log_rewrite_summary(self, repo_path: Path, result: RewriteResult | None) -> None:
+    def _log_rewrite_summary(
+        self, repo_path: Path, result: RewriteResult | None
+    ) -> None:
         if result is None:
-            logger.info("Rewrite/local publication pipeline skipped (metadata incomplete).")
+            logger.info(
+                "Rewrite/local publication pipeline skipped (metadata incomplete)."
+            )
             return
         if not result.rewritten:
             logger.info(

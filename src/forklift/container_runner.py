@@ -13,6 +13,8 @@ from uuid import uuid4
 import structlog
 from structlog.stdlib import BoundLogger
 
+from .run_state import RunStateError, update_run_state, utc_now_iso8601
+
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
 DEFAULT_IMAGE = os.environ.get("FORKLIFT_DOCKER_IMAGE", "forklift/kitchen-sink:latest")
@@ -49,8 +51,11 @@ class ContainerRunner:
         workspace: Path,
         harness_state: Path,
         opencode_logs: Path,
+        run_state_file: Path,
         extra_env: Mapping[str, str] | None = None,
     ) -> ContainerRunResult:
+        """Run the sandbox container and record lifecycle transitions in run-state metadata."""
+
         container_name = self._container_name(workspace)
         cmd = self._build_command(
             container_name,
@@ -70,11 +75,26 @@ class ContainerRunner:
             command=" ".join(self._mask_sensitive(cmd)),
         )
 
-        process = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
+        try:
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+        except OSError:
+            self._safe_update_run_state(
+                run_state_file,
+                status="failed",
+                finished_at=utc_now_iso8601(),
+                exit_code=-1,
+            )
+            raise
+
+        self._safe_update_run_state(
+            run_state_file,
+            status="running",
+            container_started_at=utc_now_iso8601(),
         )
         client_log_path = harness_state / "opencode-client.log"
         logger.info("Agent log available", path=client_log_path)
@@ -98,6 +118,15 @@ class ContainerRunner:
             stderr = stderr_partial or ""
 
         exit_code = process.returncode or 0
+        final_status = (
+            "timed_out" if timed_out else "completed" if exit_code == 0 else "failed"
+        )
+        self._safe_update_run_state(
+            run_state_file,
+            status=final_status,
+            finished_at=utc_now_iso8601(),
+            exit_code=exit_code,
+        )
         return ContainerRunResult(
             exit_code=exit_code,
             timed_out=timed_out,
@@ -105,6 +134,19 @@ class ContainerRunner:
             stderr=stderr or "",
             container_name=container_name,
         )
+
+    def _safe_update_run_state(self, run_state_file: Path, **updates: object) -> None:
+        """Best-effort helper that keeps run-state transitions visible without crashing runs."""
+
+        try:
+            _ = update_run_state(run_state_file, **updates)
+        except RunStateError as exc:
+            logger.warning(
+                "Unable to persist run-state transition",
+                path=run_state_file,
+                error=str(exc),
+                updates=updates,
+            )
 
     def _build_command(
         self,
