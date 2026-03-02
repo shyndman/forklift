@@ -53,9 +53,8 @@ default_instructions() {
 
    cat <<TXT
 You are the Forklift merge agent. Your job is to merge upstream changes into
-this fork and leave the repository in a working state while preserving the
-functionality of both the upstream $upstream_ref branch and the fork's
-$branch_name branch.
+this fork and leave the repository preserving the functionality of both the
+upstream $upstream_ref branch and the fork's $branch_name branch.
 
 == Environment ==
 |- Working directory: /workspace (a git repository)
@@ -67,6 +66,7 @@ $branch_name branch.
 |- local $branch_name is at $main_sha — use this as a reset point if the rebase goes
   badly wrong: \`git checkout $branch_name && git reset --hard $main_sha\`
 |- Use git to inspect history, branches, and conflicts
+|- Do not attempt to run tests or build the code; focus on the git operations and commit the final result.
 
 == Task ==
 1. Run \`git rebase $upstream_ref\` on the local \`$branch_name\` branch only.
