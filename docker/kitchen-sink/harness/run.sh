@@ -74,8 +74,7 @@ $branch_name branch.
 2. Resolve any conflicts. Your goal is to preserve the functionality of both $upstream_ref and $branch_name. If this seems impossible, write a STUCK.md as described below.
 	 Refer to the FORK.md if supplied to understand intentional fork customizations worth
    preserving.
-3. Run the project's primary test suite (e.g. npm test, pytest, cargo test)
-   and fix any failures introduced by the merge.
+3. You MUST continue the rebase until it is complete. _Verify this!_
 4. Commit the result with a clear message describing the merge and any fixes.
 
 == If you get stuck ==
