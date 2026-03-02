@@ -1,6 +1,6 @@
 # Forklift
 
-Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launches an isolated "kitchen-sink" container for at most three and a half minutes (210 seconds), and either opens a pull request or leaves a `STUCK.md` explaining what blocked progress.
+Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launches an isolated "kitchen-sink" container for at most three and a half minutes (210 seconds), and either publishes a local review branch or leaves a `STUCK.md` explaining what blocked progress.
 
 ## Requirements
 
@@ -12,13 +12,13 @@ Forklift is a host-side orchestrator that keeps your fork of an upstream reposit
 
 ### Git identity & filter-repo
 
-Forklift rewrites sandbox commits before pushing them back to your fork. The harness now seeds `git config --global user.name "Forklift Agent"` and `git config --global user.email forklift@github.com` inside the container so agent commits always succeed. After the run completes, the host CLI rewrites those commits to the operator identity it captured at startup via `git filter-repo` and then force-pushes the cleaned branch with a safety lease/tag.
+Forklift rewrites sandbox commits before handing them back for local review. The harness seeds `git config --global user.name "Forklift Agent"` and `git config --global user.email forklift@github.com` inside the container so agent commits always succeed. After the run completes, the host CLI rewrites commits in the bounded range `upstream/<branch>..<branch>` to the operator identity it captured at startup via `git filter-repo`, then publishes the rewritten result to a local branch `upstream-merge/<timestamp>/<branch>`.
 
 Because of this behavior:
 
 - Make sure your operator repo already has both `user.name` and `user.email` configured. Run `git config user.name` / `git config user.email` in the repo you call `forklift` from; the CLI fails fast with guidance if either value is missing.
 - Install `git filter-repo` 2.47.0+ and ensure it responds to `git filter-repo --version`. Forklift validates availability before rewriting commits and prints remediation steps referencing the supported install paths above if missing.
-- Expect the CLI logs and DONE.md guidance to mention when authorship has been rewritten, where the backup tag lives, and how to recover any stash the host created while rewriting history.
+- Expect the CLI logs and DONE.md guidance to mention the bounded rewrite range, the local publication branch, and how to recover any stash the host created while rewriting history.
 
 ## Building the container once
 
@@ -53,7 +53,7 @@ What happens:
    - `metadata.json` – records source repo, timestamp, main branch, and upstream SHA
 3. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
 4. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. The harness prints default instructions into `/harness-state/instructions.txt`, echoes the FORK.md contents (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
-5. The agent has three and a half minutes (210 seconds). If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>` using the branch stored in the run metadata (defaulting to `main`) and then prompts you to push + create a PR. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
+5. The agent has three and a half minutes (210 seconds). If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>`, rewrites only `upstream/<branch>..<branch>` to your identity, and publishes the rewritten tip to a local branch named `upstream-merge/<YYYYMMDDTHHMMSS>/<branch>` for review. Forklift does not push to GitHub automatically in this step. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
 
 ## Configuring OpenCode
 
@@ -108,7 +108,7 @@ Because the entrypoint is fixed, `FORKLIFT_DOCKER_COMMAND` is no longer honored.
 
 ## Outputs to inspect
 
-- Successful run: commits under `workspace/` plus host-side PR instructions in the log
+- Successful run: commits under `workspace/` plus a local review branch `upstream-merge/<timestamp>/<branch>` referenced in host logs
 - Blocked run: `workspace/STUCK.md` describing what the agent needs
 - Always:
   - `/harness-state/instructions.txt` with rendered guidance

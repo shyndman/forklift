@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+from datetime import datetime
 from dataclasses import dataclass, replace
 from importlib import metadata
 from pathlib import Path
@@ -14,7 +15,7 @@ import structlog
 from structlog.stdlib import BoundLogger
 from rich.traceback import install as install_rich_traceback
 
-from forklift.logs import build_renderer
+from .logs import build_renderer
 
 from .git import (
     GitError,
@@ -64,11 +65,12 @@ class OperatorIdentity:
 class RewriteResult:
     branch: str
     operator: OperatorIdentity
-    origin_sha: str
-    tag_name: str | None
+    rewrite_range: str
+    publication_branch: str | None
     stash_created: bool
     stash_conflicts: bool
-    pushed: bool
+    rewritten: bool
+    published: bool
 
 
 class Forklift(Command):
@@ -123,7 +125,7 @@ class Forklift(Command):
         logger.info("Remote discovery and fetch complete.")
 
         run_manager = RunDirectoryManager()
-        metadata_overrides = self._metadata_overrides(operator_identity, remotes)
+        metadata_overrides = self._metadata_overrides(operator_identity)
         run_paths = run_manager.prepare(
             repo_path,
             main_branch=main_branch,
@@ -266,16 +268,10 @@ class Forklift(Command):
         logger.info("Captured operator identity", name=name, email=email)
         return OperatorIdentity(name=name, email=email)
 
-    def _metadata_overrides(
-        self, identity: OperatorIdentity, remotes: dict[str, GitRemote]
-    ) -> dict[str, object]:
-        remote_entries = {
-            name: {"fetch_url": remote.fetch_url} for name, remote in remotes.items()
-        }
+    def _metadata_overrides(self, identity: OperatorIdentity) -> dict[str, object]:
         return {
             "operator_name": identity.name,
             "operator_email": identity.email,
-            "remotes": remote_entries,
         }
 
     def _discover_required_remotes(self, repo_path: Path) -> dict[str, GitRemote]:
@@ -332,49 +328,37 @@ class Forklift(Command):
             logger.exception("Upstream verification failed: %s", exc)
             raise SystemExit(3) from exc
 
-        rewrite_result = self._rewrite_and_push(run_paths, metadata, target_branch)
-        self._log_rewrite_summary(rewrite_result)
-        self._create_pr_stub(repo_path, target_branch, rewrite_result)
+        rewrite_result = self._rewrite_and_publish_local(
+            repo_path,
+            run_paths,
+            metadata,
+            target_branch,
+            upstream_ref,
+        )
+        self._log_rewrite_summary(repo_path, rewrite_result)
 
     def _workspace_has_changes(self, workspace: Path) -> bool:
         status = run_git(workspace, ["status", "--porcelain"])
         return bool(status.strip())
 
-    def _rewrite_and_push(
-        self, run_paths: RunPaths, metadata: dict[str, object], target_branch: str
+    def _rewrite_and_publish_local(
+        self,
+        repo_path: Path,
+        run_paths: RunPaths,
+        metadata: dict[str, object],
+        target_branch: str,
+        upstream_ref: str,
     ) -> RewriteResult | None:
+        """Rewrite agent authorship in bounded range and publish to local handoff branch."""
+
         operator_name = cast(str | None, metadata.get("operator_name"))
         operator_email = cast(str | None, metadata.get("operator_email"))
-        origin_sha = cast(str | None, metadata.get("origin_main_sha"))
-        remotes_data = metadata.get("remotes")
-        if not operator_name or not operator_email or not origin_sha:
+        if not operator_name or not operator_email:
             logger.info(
-                "Missing operator identity or origin baseline in metadata; skipping rewrite/push."
+                "Missing operator identity metadata; skipping rewrite/local publication."
             )
             return None
-        if not isinstance(remotes_data, dict):
-            logger.warning("Remote metadata unavailable; skipping rewrite/push.")
-            return None
         operator = OperatorIdentity(name=operator_name, email=operator_email)
-        remote_urls: dict[str, str] = {}
-        remotes_dict = cast(dict[str, object], remotes_data)
-        for remote_name in ("origin", "upstream"):
-            entry = remotes_dict.get(remote_name)
-            if not isinstance(entry, dict):
-                logger.warning(
-                    "Remote metadata for %s missing; skipping rewrite/push.",
-                    remote_name,
-                )
-                return None
-            entry_dict = cast(dict[str, object], entry)
-            fetch_url = entry_dict.get("fetch_url")
-            if not isinstance(fetch_url, str) or not fetch_url:
-                logger.warning(
-                    "Remote metadata for %s lacks fetch_url; skipping rewrite/push.",
-                    remote_name,
-                )
-                return None
-            remote_urls[remote_name] = fetch_url
 
         workspace = run_paths.workspace
         stash_created = False
@@ -396,34 +380,34 @@ class Forklift(Command):
                 )
                 _ = run_git(workspace, ["checkout", target_branch])
 
+            upstream_anchor = run_git(workspace, ["rev-parse", upstream_ref]).strip()
             current_head = run_git(workspace, ["rev-parse", "HEAD"]).strip()
-            if current_head == origin_sha:
+            rewrite_anchor = self._ensure_rewrite_anchor_branch(
+                workspace,
+                target_branch,
+                upstream_anchor,
+            )
+            rewrite_range = f"{rewrite_anchor}..{target_branch}"
+
+            if current_head == upstream_anchor:
                 logger.info(
-                    "Branch %s head %s matches stored origin %s; skipping rewrite/push.",
+                    "Branch %s head %s matches %s; skipping rewrite/local publication.",
                     target_branch,
                     current_head[:12],
-                    origin_sha[:12],
+                    upstream_ref,
                 )
                 if stash_created:
                     stash_conflicts = not self._pop_stash(workspace)
                 return RewriteResult(
                     branch=target_branch,
                     operator=operator,
-                    origin_sha=origin_sha,
-                    tag_name=None,
+                    rewrite_range=rewrite_range,
+                    publication_branch=None,
                     stash_created=stash_created,
                     stash_conflicts=stash_conflicts,
-                    pushed=False,
+                    rewritten=False,
+                    published=False,
                 )
-
-            for remote_name, url in remote_urls.items():
-                self._ensure_remote(workspace, remote_name, url)
-            for remote_name in remote_urls:
-                fetch_output = run_git(workspace, ["fetch", remote_name, "--prune"])
-                if fetch_output:
-                    logger.info(
-                        "Workspace fetch output for %s:\n%s", remote_name, fetch_output
-                    )
 
             self._validate_filter_repo(workspace)
             mailmap_path = self._write_mailmap(run_paths.run_dir, operator)
@@ -434,7 +418,7 @@ class Forklift(Command):
                         "filter-repo",
                         "--force",
                         f"--mailmap={mailmap_path}",
-                        f"--refs=refs/heads/{target_branch}",
+                        f"--refs={rewrite_range}",
                     ],
                 )
             finally:
@@ -443,23 +427,26 @@ class Forklift(Command):
                 except FileNotFoundError:
                     pass
 
-            self._assert_no_agent_commits(workspace)
+            self._assert_no_agent_commits(workspace, rewrite_range)
 
-            tag_timestamp = cast(str | None, metadata.get("created_at")) or "latest"
-            tag_name = f"forklift/{target_branch}/{tag_timestamp}/pre-push"
-            _ = run_git(workspace, ["tag", "-f", tag_name, origin_sha])
+            ensure_upstream_merged(workspace, upstream_ref, target_branch)
+            post_rewrite_upstream = run_git(workspace, ["rev-parse", upstream_ref]).strip()
+            if post_rewrite_upstream != upstream_anchor:
+                logger.error(
+                    "Rewrite boundary violation: %s moved from %s to %s.",
+                    upstream_ref,
+                    upstream_anchor[:12],
+                    post_rewrite_upstream[:12],
+                )
+                raise SystemExit(1)
 
-            push_output = run_git(
+            publication_branch = self._build_publication_branch(metadata, target_branch)
+            self._publish_to_local(
                 workspace,
-                [
-                    "push",
-                    "origin",
-                    f"{target_branch}:{target_branch}",
-                    f"--force-with-lease={target_branch}:{origin_sha}",
-                ],
+                repo_path,
+                target_branch,
+                publication_branch,
             )
-            if push_output:
-                logger.info("Push output", output=push_output)
 
             if stash_created:
                 stash_conflicts = not self._pop_stash(workspace)
@@ -467,14 +454,15 @@ class Forklift(Command):
             return RewriteResult(
                 branch=target_branch,
                 operator=operator,
-                origin_sha=origin_sha,
-                tag_name=tag_name,
+                rewrite_range=rewrite_range,
+                publication_branch=publication_branch,
                 stash_created=stash_created,
                 stash_conflicts=stash_conflicts,
-                pushed=True,
+                rewritten=True,
+                published=True,
             )
         except GitError as exc:
-            logger.exception("Failed to rewrite/push rewritten branch: %s", exc)
+            logger.exception("Failed to rewrite/publish branch locally: %s", exc)
             if stash_created:
                 logger.warning(
                     "Stash '%s' remains on the stack; recover it later via `git stash list` inside %s.",
@@ -483,22 +471,74 @@ class Forklift(Command):
                 )
             raise SystemExit(1) from exc
 
-    def _ensure_remote(self, workspace: Path, name: str, url: str) -> None:
+    def _ensure_rewrite_anchor_branch(
+        self, workspace: Path, target_branch: str, upstream_anchor: str
+    ) -> str:
+        """Ensure a stable local ref exists for bounded rewrite ranges."""
+
+        helper_branch = f"upstream-{target_branch.replace('/', '-')}"
         try:
-            current_url = run_git(workspace, ["remote", "get-url", name])
+            helper_sha = run_git(workspace, ["rev-parse", "--verify", helper_branch])
         except GitError:
-            logger.info("Reattaching remote", name=name, url=url)
-            _ = run_git(workspace, ["remote", "add", name, url])
-            return
-        if current_url == url:
-            return
+            logger.info(
+                "Recreating rewrite anchor branch",
+                branch=helper_branch,
+                upstream_sha=upstream_anchor,
+            )
+            _ = run_git(workspace, ["branch", "-f", helper_branch, upstream_anchor])
+            return helper_branch
+        if helper_sha == upstream_anchor:
+            return helper_branch
         logger.info(
-            "Updating remote",
-            name=name,
-            new_url=url,
-            old_url=current_url,
+            "Resetting rewrite anchor branch",
+            branch=helper_branch,
+            old_sha=helper_sha[:12],
+            new_sha=upstream_anchor[:12],
         )
-        _ = run_git(workspace, ["remote", "set-url", name, url])
+        _ = run_git(workspace, ["branch", "-f", helper_branch, upstream_anchor])
+        return helper_branch
+
+    def _build_publication_branch(
+        self, metadata: dict[str, object], target_branch: str
+    ) -> str:
+        """Build the local review branch name for rewritten output."""
+
+        raw_timestamp = cast(str | None, metadata.get("created_at"))
+        if raw_timestamp:
+            try:
+                parsed = datetime.strptime(raw_timestamp, "%Y%m%d_%H%M%S")
+            except ValueError:
+                logger.warning(
+                    "Unexpected metadata timestamp format; using normalized value.",
+                    value=raw_timestamp,
+                )
+                publication_timestamp = raw_timestamp.replace("_", "T")
+            else:
+                publication_timestamp = parsed.strftime("%Y%m%dT%H%M%S")
+        else:
+            publication_timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+        return f"upstream-merge/{publication_timestamp}/{target_branch}"
+
+    def _publish_to_local(
+        self,
+        workspace: Path,
+        repo_path: Path,
+        source_branch: str,
+        publication_branch: str,
+    ) -> None:
+        """Publish rewritten workspace commits to a local handoff branch."""
+
+        push_output = run_git(
+            workspace,
+            [
+                "push",
+                str(repo_path),
+                f"{source_branch}:{publication_branch}",
+                "--force",
+            ],
+        )
+        if push_output:
+            logger.info("Local publication output", output=push_output)
 
     def _validate_filter_repo(self, workspace: Path) -> None:
         try:
@@ -516,20 +556,21 @@ class Forklift(Command):
         _ = mailmap_path.write_text(mapping)
         return mailmap_path
 
-    def _assert_no_agent_commits(self, workspace: Path) -> None:
+    def _assert_no_agent_commits(self, workspace: Path, rewrite_range: str) -> None:
         residual = run_git(
             workspace,
             [
                 "log",
-                "--all",
                 "--format=%H",
                 f"--author={AGENT_NAME} <{AGENT_EMAIL}>",
+                rewrite_range,
             ],
         ).strip()
         if residual:
             sample = ", ".join(residual.splitlines()[:5])
             logger.error(
-                "Authorship rewrite incomplete; commits authored by %s <%s> remain: %s",
+                "Authorship rewrite incomplete in range %s; commits authored by %s <%s> remain: %s",
+                rewrite_range,
                 AGENT_NAME,
                 AGENT_EMAIL,
                 sample,
@@ -550,15 +591,14 @@ class Forklift(Command):
             logger.info("Stash pop output", output=output)
         return True
 
-    def _log_rewrite_summary(self, result: RewriteResult | None) -> None:
+    def _log_rewrite_summary(self, repo_path: Path, result: RewriteResult | None) -> None:
         if result is None:
-            logger.info("Rewrite/push pipeline skipped (metadata incomplete).")
+            logger.info("Rewrite/local publication pipeline skipped (metadata incomplete).")
             return
-        if not result.pushed:
+        if not result.rewritten:
             logger.info(
-                "Branch %s already matched origin %s; no rewrite/push required.",
+                "Branch %s already matches rewrite anchor; no rewrite/local publication required.",
                 result.branch,
-                result.origin_sha[:12],
             )
             if result.stash_created:
                 if result.stash_conflicts:
@@ -571,17 +611,27 @@ class Forklift(Command):
             return
 
         logger.info(
-            "Authorship rewrite complete: branch %s force-pushed to origin/%s with commits rewritten to %s <%s>.",
-            result.branch,
-            result.branch,
+            "Authorship rewrite complete for %s with commits rewritten to %s <%s>.",
+            result.rewrite_range,
             result.operator.name,
             result.operator.email,
         )
-        if result.tag_name:
+        if result.published and result.publication_branch:
             logger.info(
-                "Local safety tag %s points to baseline %s.",
-                result.tag_name,
-                result.origin_sha[:12],
+                "Published rewritten branch locally: %s -> %s",
+                result.branch,
+                result.publication_branch,
+            )
+            logger.info(
+                "Local review handoff: inspect from %s using `git log --oneline %s..%s` and `git diff --stat %s...%s`.",
+                repo_path,
+                result.branch,
+                result.publication_branch,
+                result.branch,
+                result.publication_branch,
+            )
+            logger.info(
+                "No GitHub push performed; publish manually after review if desired."
             )
         if result.stash_created:
             if result.stash_conflicts:
@@ -597,7 +647,8 @@ class Forklift(Command):
         if not stuck_file.exists():
             return
         logger.warning(
-            "STUCK.md detected at %s; skipping verification and PR.", stuck_file
+            "STUCK.md detected at %s; skipping verification and local publication.",
+            stuck_file,
         )
         try:
             contents = stuck_file.read_text().strip()
@@ -625,25 +676,6 @@ class Forklift(Command):
             return {}
         data = cast(dict[str, object], json.loads(raw))
         return data
-
-    def _create_pr_stub(
-        self, repo_path: Path, branch: str, result: RewriteResult | None
-    ) -> None:
-        if result is None or not result.pushed:
-            logger.info(
-                "PR stub: no rewritten commits were pushed for %s; nothing to do in %s.",
-                branch,
-                repo_path,
-            )
-            return
-        logger.info(
-            "PR stub: branch %s is already on origin/%s. Run `gh pr create --head %s --base %s` from %s when ready.",
-            branch,
-            branch,
-            branch,
-            branch,
-            repo_path,
-        )
 
     def _prepare_opencode_env(self) -> OpenCodeEnv:
         env_path = DEFAULT_ENV_PATH
