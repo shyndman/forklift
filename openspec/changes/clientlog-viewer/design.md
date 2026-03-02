@@ -1,6 +1,6 @@
 ## Context
 
-Forklift currently launches runs and leaves transcripts in `harness-state/opencode-client.log`, but the host CLI provides no structured way to read or tail them. Operators rely on `cat`/`less`/`tail -f` and mental parsing of JSON. We are adding a `clientlog` subcommand plus run-state metadata to deliver a formatted, Rosé Pine-themed transcript view with auto follow/pager behavior.
+Forklift currently launches runs and leaves transcripts in `harness-state/opencode-client.log`, but the host CLI provides no structured way to read or tail them. Operators rely on `cat`/`less`/`tail -f` and mental parsing of JSON. We are adding a `clientlog` subcommand plus run-state metadata to deliver a formatted, Rosé Pine-themed transcript view with a default one-shot dump and optional follow mode.
 
 Key code touch points:
 - `src/forklift/cli.py`: register the subcommand, parse args, resolve run paths, and wire logging.
@@ -10,8 +10,8 @@ Key code touch points:
 ## Goals / Non-Goals
 
 **Goals:**
-- Provide `forklift clientlog <run-id>` with sane defaults and override flags for follow/pager mode.
-- Render grouped steps with Rosé Pine palette, badges, relative timestamps, and configurable stdout preview lengths.
+- Provide `forklift clientlog <run-id>` with a default one-shot transcript dump and optional `-f`/`--follow` streaming mode.
+- Render grouped steps with Rosé Pine palette, badges, relative timestamps, and full tool output.
 - Introduce `run-state.json` persisted beside each run to advertise status (`starting`, `running`, `completed`, `failed`).
 - Handle signals in follow mode to keep terminal state clean.
 
@@ -23,20 +23,19 @@ Key code touch points:
 
 ## Decisions
 
-1. **Command structure**: implement `class Clientlog(Command)` with positional `run_id` and optional flags (`--follow`, `--once`, `--pager`, `--no-pager`, `--tool-lines`). Root `Forklift` gets `subcommand: Clientlog | None`. Rationale: aligns with clypi’s union subcommand pattern and keeps behavior self-contained.
+1. **Command structure**: implement `class Clientlog(Command)` with positional `run_id` and a single optional flag (`-f`/`--follow`). Root `Forklift` gets `subcommand: Clientlog | None`. Rationale: keeps CLI surface minimal while preserving live-tail utility.
 2. **Run state detection**: persist `/runs/<id>/run-state.json` containing `{status, run_id, prepared_at, container_started_at, finished_at, exit_code}`. `RunDirectoryManager` writes `status:"starting"` and `prepared_at` before container launch; `ContainerRunner` updates to `running` with `container_started_at`, then to `completed|failed|timed_out` on exit. Rationale: deterministic signal beats heuristics based on mtime.
-3. **Rendering pipeline**: treat log as event stream. Parser distinguishes ISO-prefixed harness lines vs JSON OpenCode events, tagging each with relative timestamp (ms offset from first event). Events are grouped by `messageID` (step) and `part.id`. The renderer uses Rosé Pine palette constants plus clypi styler to emit headings, tool badges, narration italics, and a distinct style for agent thought content. Rationale: grouping by logical step matches harness UI and keeps CLI readable.
-4. **Follow implementation**: use async-friendly blocking loop (e.g., `while True: new_bytes = file.read(); if not new_bytes: sleep`) plus `select`/`os.stat` to detect growth. Keep incomplete steps buffered until `step_finish`; for `--once` produce provisional blocks (dotted border). Rationale: simple tail semantics without external dependencies.
-5. **Pager handling**: Completed runs render into a buffer and pipe via `less -R` using `subprocess.run`; `--no-pager` writes directly to stdout. Follow mode streams immediately (no pager). Rationale: ensures colors display properly when viewing historical logs.
-6. **Signal handling**: register handlers for `SIGINT`/`SIGTERM` that set an `interrupted` flag, break loops, close files, and print a short dimmed status before exiting with appropriate code. Rationale: prevents half-rendered ANSI sequences when users press Ctrl+C.
-7. **Configuration knobs**: expose `--tool-lines` (default 10) and `--since <seconds>` to limit backlog when following. Rationale: large logs shouldn’t flood the terminal.
+3. **Rendering pipeline**: treat log as event stream. Parser distinguishes ISO-prefixed harness lines vs JSON OpenCode events, tagging each with relative timestamp (ms offset from first event). Events are grouped by `messageID` (step) and `part.id`. The renderer uses Rosé Pine palette constants plus clypi styler to emit headings, tool badges, narration italics, and a distinct style for agent thought content. Data fidelity is prioritized over styling: if an event is partial, unknown, or cannot be styled consistently, render its available content in a raw fallback representation instead of dropping fields. Rationale: grouping by logical step matches harness UI and keeps CLI readable while preserving developer-visible evidence.
+4. **Default rendering + follow implementation**: default command behavior parses and renders the available transcript once, then exits. If `-f`/`--follow` is set, the command renders existing history first, then enters an async-friendly blocking loop (e.g., `while True: new_bytes = file.read(); if not new_bytes: sleep`) plus `select`/`os.stat` to detect growth. Incomplete steps without `step_finish` render as provisional “pending” blocks that still include all currently available event content. Rationale: predictable default output with simple tail semantics when explicitly requested.
+5. **Signal handling**: register handlers for `SIGINT`/`SIGTERM` that set an `interrupted` flag, break loops, close files, and print a short dimmed status before exiting with appropriate code. Rationale: prevents half-rendered ANSI sequences when users press Ctrl+C.
+
 
 ## Risks / Trade-offs
 
-- **Risk**: Missing or corrupt `run-state.json` → viewer misclassifies mode.
-  - Mitigation: Fallback to heuristics (if missing, default to pager but honor `--follow`). Log warning.
-- **Risk**: Large logs could consume memory before paging.
-  - Mitigation: Stream to pager via pipe rather than building giant string; only buffer per-step when necessary.
+- **Risk**: Missing or corrupt `run-state.json` can reduce context for follow-mode messaging.
+  - Mitigation: Treat state metadata as advisory; default snapshot rendering still works from the log file alone.
+- **Risk**: Large logs could consume memory during one-shot rendering.
+  - Mitigation: Stream rendering directly to stdout and only retain per-step buffers needed for grouping.
 - **Risk**: Parser must tolerate partial JSON writes during follow.
   - Mitigation: use incremental decoder (e.g., `json.JSONDecoder().raw_decode`) with carryover buffer for incomplete chunks.
 - **Risk**: ANSI colors unreadable on non-24-bit terminals.

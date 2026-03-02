@@ -10,8 +10,10 @@ especially when trying to tail a live run.
 - Add a `forklift clientlog <run-id>` subcommand that renders agent steps,
  tool calls, and narration using the Rosé Pine palette, grouping related
  events into easy-to-scan boxes with relative timestamps.
-- Provide both paging and follow modes (auto-detected via run status) so logs
- for completed runs open in a pager while live runs stream like `tail -f`.
+- Make default invocation render and print the formatted transcript snapshot
+ to stdout (including pending/incomplete step blocks when `step_finish` is
+ missing) without omitting available event content, and support
+ `-f`/`--follow` to continue streaming new events.
 - Persist lightweight run-state metadata (status, timestamps, exit code) so the
  viewer and other tooling can reliably detect whether a run is still active.
 - Handle `SIGINT`/`SIGTERM` gracefully so follow mode exits cleanly without
@@ -22,10 +24,10 @@ especially when trying to tail a live run.
 ### New Capabilities
 - `clientlog-viewer`: Adds a CLI experience for formatting and interactively
  browsing agent log transcripts, including grouping by steps and colorized
- tool call output with configurable preview lengths.
+ tool call output.
 - `run-state-tracker`: Emits and maintains `run-state.json` alongside each run
- so host-side tooling can tell whether the sandbox is still executing and pick
- the appropriate viewing mode.
+ so host-side tooling can tell whether the sandbox is still executing and
+ support follow-mode behavior.
 
 ### Modified Capabilities
 - _None._

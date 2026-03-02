@@ -6,16 +6,18 @@
 
 ## 2. Clientlog command scaffolding
 
-- [ ] 2.1 Register `Clientlog` subcommand in `Forklift` CLI with `run_id` and flags (`--follow`, `--once`, `--no-pager`, `--tool-lines`, `--since`).
-- [ ] 2.2 Resolve run paths (respecting `$XDG_STATE_HOME`), validate required files, and auto-select follow or pager mode from run-state metadata.
+- [ ] 2.1 Register `Clientlog` subcommand in `Forklift` CLI with `run_id` and a single follow flag (`-f`/`--follow`).
+- [ ] 2.2 Resolve run paths (respecting `$XDG_STATE_HOME`), validate required files, and render a formatted one-shot transcript snapshot by default.
+- [ ] 2.3 When `-f`/`--follow` is set, render existing history first and then stream appended events.
 
 ## 3. Log parsing & rendering
 
 - [ ] 3.1 Implement incremental parsing for mixed ISO lines and JSON events, computing relative timestamps from session start.
 - [ ] 3.2 Group events by step and render tool calls/results, agent messages, and agent thoughts in Rosé Pine-styled boxed blocks.
-- [ ] 3.3 Render incomplete steps as pending blocks in `--once` mode when `step_finish` is absent.
+- [ ] 3.3 Render incomplete steps as pending blocks in default one-shot output when `step_finish` is absent.
+- [ ] 3.4 Ensure incomplete/unknown events are still emitted with all available fields/content (raw fallback allowed), including complete captured tool stdout/stderr, so formatting never omits diagnostic information.
 
 ## 4. Viewing modes & signal handling
 
-- [ ] 4.1 Implement pager output for completed runs (default `less -R`) and follow loop for active runs with `--follow`, `--once`, and `--since` overrides.
+- [ ] 4.1 Implement follow loop for `-f`/`--follow` mode without changing default one-shot output behavior.
 - [ ] 4.2 Trap `SIGINT`/`SIGTERM` to stop follow mode cleanly, close resources, and exit with a clear interruption message.
