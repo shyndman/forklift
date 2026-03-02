@@ -22,12 +22,31 @@ The clientlog command SHALL render all currently available log history in one pa
 - **WHEN** the user runs `forklift clientlog <run-id> --follow`
 - **THEN** the command SHALL render existing history first and then stream newly appended events until interrupted.
 
+#### Scenario: Follow mode sees unfinished steps
+- **WHEN** follow mode observes events for a message ID that has not yet received `step_finish`
+- **THEN** the command SHALL surface those events immediately as a pending step (without waiting for completion), keep streaming later events for that same step in event order, and emit each streamed event once.
+
+### Requirement: Require valid run-state metadata
+The clientlog command SHALL require `run-state.json` as a mandatory input for lifecycle/status context. If `run-state.json` is missing or unreadable, the command SHALL fail fast with a clear error and SHALL NOT proceed with transcript rendering.
+
+#### Scenario: Run-state metadata missing
+- **WHEN** `run-state.json` does not exist for a run that has a readable client log
+- **THEN** the command SHALL exit non-zero with a clear error indicating `run-state.json` is required and missing.
+
+#### Scenario: Run-state metadata malformed
+- **WHEN** `run-state.json` exists but cannot be parsed as valid JSON
+- **THEN** the command SHALL exit non-zero with a clear error indicating `run-state.json` is unreadable/malformed.
+
 ### Requirement: Render structured steps with Rosé Pine palette
-The viewer SHALL parse JSON events into step blocks containing step start, agent text, agent thought content, tool calls and results, and step finish metadata, displayed with Rosé Pine colors, bold headings, dim metadata, italics for narration, and relative timestamps based on session start (time zero). The viewer SHALL prioritize information fidelity over styling consistency and MUST NOT omit available event content solely because the event is incomplete or cannot be fully styled.
+The viewer SHALL parse JSON events into step blocks keyed by `messageID`, containing step start, agent text, agent thought content, tool calls and results, and step finish metadata, displayed with Rosé Pine colors, bold headings, dim metadata, italics for narration, and relative timestamps based on session start (time zero). `part.id` identifies individual events inside a step block and MUST NOT create separate step blocks. The viewer SHALL prioritize information fidelity over styling consistency and MUST NOT omit available event content solely because the event is incomplete or cannot be fully styled.
 
 #### Scenario: Completed step block
 - **WHEN** a `step_finish` event is received for a message ID
 - **THEN** the command SHALL render one boxed block containing all events with that message ID, including full tool output captured for that step.
+
+#### Scenario: Multiple parts within one step
+- **WHEN** multiple events share a message ID but have different `part.id` values
+- **THEN** the command SHALL render those events within the same step block (in event order) rather than creating separate step blocks.
 
 #### Scenario: Thought content present
 - **WHEN** a step includes thought content in event metadata

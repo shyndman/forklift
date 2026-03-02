@@ -23,7 +23,7 @@ Forklift SHALL update `run-state.json` when the sandbox container transitions to
 - **THEN** Forklift SHALL write `status:"failed"` (or `"timed_out"`), include `exit_code`, and `finished_at`.
 
 ### Requirement: Atomic writes and readability
-Updates to `run-state.json` SHALL be atomic (write-temp-rename or ensure flush) so readers never parse partial JSON, and the file SHALL remain valid UTF-8 JSON throughout the run.
+Updates to `run-state.json` SHALL use strict atomic replacement (write a temp file in the same directory, `fsync` it, `rename`/`replace` into place, then `fsync` the parent directory) so readers never parse partial JSON, and the file SHALL remain valid UTF-8 JSON throughout the run.
 
 #### Scenario: Concurrent reader
 - **WHEN** clientlog reads `run-state.json` while the container updates it
