@@ -3,6 +3,10 @@ from __future__ import annotations
 import os
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .cli import Forklift
 
 
 def _inject_editable_venv_site_packages() -> None:
@@ -32,11 +36,20 @@ def _inject_editable_venv_site_packages() -> None:
 
 
 _inject_editable_venv_site_packages()
-
-from .cli import Forklift
-
 __all__ = ["Forklift", "main"]
 
 
+def __getattr__(name: str) -> object:
+    """Lazily expose the CLI command class after path bootstrapping runs."""
+
+    if name == "Forklift":
+        from .cli import Forklift
+
+        return Forklift
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 def main() -> None:
+    from .cli import Forklift
+
     _ = Forklift.parse().start()
