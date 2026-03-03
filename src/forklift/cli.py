@@ -33,6 +33,7 @@ from .cli_runtime import (
     chown_artifact,
     resolve_chown_target,
     resolved_main_branch,
+    resolved_target_policy,
 )
 from .clientlog import Clientlog
 from .container_runner import ContainerRunner
@@ -40,10 +41,13 @@ from .git import (
     GitError,
     GitFetchResult,
     GitRemote,
+    ResolvedUpstreamTarget,
     current_branch,
     ensure_required_remotes,
     ensure_upstream_merged,
     fetch_remotes,
+    is_ancestor,
+    resolve_upstream_target,
     run_git,
 )
 from .logs import build_renderer
@@ -67,6 +71,10 @@ class Forklift(Command):
     repo: Path | str | None = None
     main_branch: str = arg(
         "main", help="Name of the primary branch to rebase (default: main)"
+    )
+    target_policy: str = arg(
+        "tip",
+        help="Upstream target policy: 'tip' or 'latest-version' (default: tip)",
     )
     debug: bool = arg(False, short="d", help="Enable debug logging")
     version: bool = arg(False, short="v", help="Print version and exit")
@@ -97,6 +105,7 @@ class Forklift(Command):
 
         operator_identity = self._capture_operator_identity(repo_path)
         main_branch = self._resolved_main_branch()
+        target_policy = self._resolved_target_policy()
         opencode_env = self._prepare_opencode_env()
         chown_uid, chown_gid = self._resolve_chown_target()
 
@@ -109,11 +118,38 @@ class Forklift(Command):
                 logger.info("Fetch output", remote=result.name, status="up to date")
         logger.info("Remote discovery and fetch complete.")
 
+        selected_target = self._resolve_upstream_target(
+            repo_path,
+            main_branch=main_branch,
+            target_policy=target_policy,
+        )
+        logger.info(
+            "Resolved upstream target",
+            target_policy=selected_target.policy,
+            target_ref=selected_target.target_ref,
+            target_sha=selected_target.target_sha,
+            target_tag=selected_target.resolved_tag,
+        )
+
+        if self._is_target_already_integrated(
+            repo_path,
+            target_sha=selected_target.target_sha,
+            main_branch=main_branch,
+        ):
+            logger.info(
+                "Selected upstream target already integrated; skipping container run",
+                target_policy=selected_target.policy,
+                target_sha=selected_target.target_sha,
+                target_ref=selected_target.target_ref,
+            )
+            return
+
         run_manager = RunDirectoryManager()
         run_paths = run_manager.prepare(
             repo_path,
             main_branch=main_branch,
-            extra_metadata=self._metadata_overrides(operator_identity),
+            selected_upstream_sha=selected_target.target_sha,
+            extra_metadata=self._metadata_overrides(operator_identity, selected_target),
         )
         _ = structlog.contextvars.bind_contextvars(run=run_paths.run_id)
         logger.info(
@@ -241,8 +277,57 @@ class Forklift(Command):
         logger.info("Captured operator identity", name=name, email=email)
         return OperatorIdentity(name=name, email=email)
 
-    def _metadata_overrides(self, identity: OperatorIdentity) -> dict[str, object]:
-        return {"operator_name": identity.name, "operator_email": identity.email}
+    def _metadata_overrides(
+        self,
+        identity: OperatorIdentity,
+        target: ResolvedUpstreamTarget,
+    ) -> dict[str, object]:
+        return {
+            "operator_name": identity.name,
+            "operator_email": identity.email,
+            "target_policy": target.policy,
+            "target_sha": target.target_sha,
+            "target_tag": target.resolved_tag,
+        }
+
+    def _resolve_upstream_target(
+        self,
+        repo_path: Path,
+        *,
+        main_branch: str,
+        target_policy: str,
+    ) -> ResolvedUpstreamTarget:
+        """Resolve and validate the upstream commit target selected for this run."""
+
+        try:
+            return resolve_upstream_target(
+                repo_path,
+                main_branch=main_branch,
+                policy=target_policy,
+            )
+        except GitError as exc:
+            logger.exception("Failed to resolve upstream target: %s", exc)
+            raise SystemExit(1) from exc
+
+    def _is_target_already_integrated(
+        self,
+        repo_path: Path,
+        *,
+        target_sha: str,
+        main_branch: str,
+    ) -> bool:
+        """Return whether selected upstream target is already merged into main branch."""
+
+        try:
+            return is_ancestor(repo_path, target_sha, main_branch)
+        except GitError as exc:
+            logger.exception(
+                "Unable to determine whether %s is already merged into %s: %s",
+                target_sha,
+                main_branch,
+                exc,
+            )
+            raise SystemExit(1) from exc
 
     def _discover_required_remotes(self, repo_path: Path) -> dict[str, GitRemote]:
         try:
@@ -352,6 +437,9 @@ class Forklift(Command):
 
     def _resolved_main_branch(self) -> str:
         return resolved_main_branch(self.main_branch)
+
+    def _resolved_target_policy(self) -> str:
+        return resolved_target_policy(self.target_policy)
 
     def _print_version(self) -> None:
         try:

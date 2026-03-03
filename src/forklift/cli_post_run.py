@@ -39,7 +39,9 @@ def post_container_results(
     target_branch = metadata_branch or configured_branch or current_branch_fn(workspace)
     upstream_ref_branch = metadata_branch or configured_branch
     upstream_ref = f"upstream/{upstream_ref_branch}"
-    upstream_sha = cast(str | None, metadata.get("upstream_main_sha"))
+    upstream_sha = cast(str | None, metadata.get("target_sha")) or cast(
+        str | None, metadata.get("upstream_main_sha")
+    )
 
     try:
         ensure_upstream_merged_fn(workspace, upstream_ref, target_branch)

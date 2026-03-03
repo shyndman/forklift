@@ -36,21 +36,35 @@ uv run forklift --debug
 uv run forklift --version  # Print version and exit
 ```
 
-By default Forklift targets the `main` branch. Use `--main-branch=<name>` (for example,
-`uv run forklift --main-branch=dev --debug`) when your fork tracks a differently named
-primary branch; the orchestrator will seed matching upstream refs and adjust the harness
-instructions accordingly. The container receives this value via the
-`FORKLIFT_MAIN_BRANCH` environment variable so `/opt/forklift/harness/run.sh` prints the
-right branch names. Rebuild `docker/kitchen-sink` after editing the harness so new
-instructions are present in the image.
+By default Forklift targets the `main` branch and rebases against upstream tip. Use
+`--main-branch=<name>` (for example, `uv run forklift --main-branch=dev --debug`) when
+your fork tracks a differently named primary branch.
+
+Forklift also supports upstream target policy selection:
+
+- `--target-policy=tip` (default): resolve target from `upstream/<main-branch>` tip.
+- `--target-policy=latest-version`: resolve target from the latest stable upstream tag
+  matching `X.Y.Z` or `vX.Y.Z`.
+
+Latest-version mode is fail-closed:
+
+- If no supported stable tags exist, Forklift exits non-zero with an actionable error.
+- If equivalent tags (`vX.Y.Z` and `X.Y.Z`) for the same version resolve to different
+  commits, Forklift exits non-zero with a fatal ambiguity error.
+
+The container receives the branch value via `FORKLIFT_MAIN_BRANCH` so
+`/opt/forklift/harness/run.sh` prints the right branch names. Rebuild
+`docker/kitchen-sink` after editing the harness so new instructions are present in the
+image.
 
 What happens:
 
-1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both.
-2. It creates `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...`) with:
-   - `workspace/` – self-contained clone of your repo with remotes removed (we avoid `git clone --shared` to ensure the sandbox never depends on external object stores). Forklift seeds `refs/remotes/upstream/<branch>` (matching whatever you passed to `--main-branch`, with helper branch `upstream-<branch>` such as `upstream-main`) with the captured upstream SHA so commands like `git rebase upstream/<branch>` still work even though `git remote -v` will be empty inside the sandbox.
+1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both remotes (including tags).
+2. It resolves an upstream target commit from the selected policy and performs a pre-run no-op check (`git merge-base --is-ancestor <target-sha> <main-branch>`). If the target is already integrated, Forklift exits successfully without creating a run directory or starting a container.
+3. It creates `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...`) with:
+   - `workspace/` – self-contained clone of your repo with remotes removed (we avoid `git clone --shared` to ensure the sandbox never depends on external object stores). Forklift seeds `refs/remotes/upstream/<branch>` (matching whatever you passed to `--main-branch`, with helper branch `upstream-<branch>` such as `upstream-main`) with the selected target SHA so commands like `git rebase upstream/<branch>` still work even though `git remote -v` will be empty inside the sandbox.
    - `harness-state/` – writable directory the container uses for logs and instructions
-   - `metadata.json` – records source repo, timestamp, main branch, and upstream SHA
+   - `metadata.json` – records source repo, timestamp, main branch, target policy, target SHA, selected tag (when present), and upstream/origin branch-tip SHAs
 3. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
 4. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. The harness prints default instructions into `/harness-state/instructions.txt`, echoes the FORK.md contents (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
 5. The agent has three and a half minutes (210 seconds). If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>`, rewrites only `upstream/<branch>..<branch>` to your identity, and publishes the rewritten tip to a local branch named `upstream-merge/<YYYYMMDDTHHMMSS>/<branch>` for review. Forklift does not push to GitHub automatically in this step. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.

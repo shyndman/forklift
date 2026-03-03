@@ -11,6 +11,7 @@ from typing import cast
 from .opencode_env import OpenCodeEnv, SAFE_VALUE_PATTERN
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
+TARGET_POLICY_OPTIONS = frozenset({"tip", "latest-version"})
 
 
 def build_container_env(
@@ -106,6 +107,24 @@ def resolved_main_branch(main_branch: str | None) -> str:
         )
         raise SystemExit(1)
     return branch
+
+
+def resolved_target_policy(target_policy: str | None) -> str:
+    """Normalize and validate the upstream target policy used by orchestration."""
+
+    policy = (target_policy or "tip").strip()
+    if not policy:
+        logger.error("--target-policy value must not be empty")
+        raise SystemExit(1)
+    if policy not in TARGET_POLICY_OPTIONS:
+        valid = ", ".join(sorted(TARGET_POLICY_OPTIONS))
+        logger.error(
+            "Invalid --target-policy value %r; expected one of: %s",
+            policy,
+            valid,
+        )
+        raise SystemExit(1)
+    return policy
 
 
 def resolve_chown_target(spec: str | None) -> tuple[int, int]:

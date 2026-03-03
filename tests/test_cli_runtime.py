@@ -4,7 +4,11 @@ import os
 import unittest
 from unittest.mock import patch
 
-from forklift.cli_runtime import build_container_env, resolve_chown_target
+from forklift.cli_runtime import (
+    build_container_env,
+    resolve_chown_target,
+    resolved_target_policy,
+)
 from forklift.opencode_env import OpenCodeEnv
 
 
@@ -35,6 +39,17 @@ class CliRuntimeHelperTests(unittest.TestCase):
         self.assertEqual(container_env["FORKLIFT_MAIN_BRANCH"], "main")
         self.assertEqual(container_env["FORKLIFT_RUN_ID"], "run-123")
         self.assertEqual(container_env["TZ"], "America/Vancouver")
+
+    def test_resolved_target_policy_defaults_to_tip(self) -> None:
+        self.assertEqual(resolved_target_policy(None), "tip")
+
+    def test_resolved_target_policy_accepts_tip_and_latest_version(self) -> None:
+        self.assertEqual(resolved_target_policy("tip"), "tip")
+        self.assertEqual(resolved_target_policy("latest-version"), "latest-version")
+
+    def test_resolved_target_policy_rejects_invalid_value(self) -> None:
+        with self.assertRaises(SystemExit):
+            _ = resolved_target_policy("bad-policy")
 
 
 if __name__ == "__main__":

@@ -56,8 +56,11 @@ class RunDirectoryManager:
         self,
         source_repo: Path,
         main_branch: str = "main",
+        selected_upstream_sha: str | None = None,
         extra_metadata: dict[str, object] | None = None,
     ) -> RunPaths:
+        """Create a detached run workspace seeded to the caller-selected upstream target."""
+
         source_repo = source_repo.resolve()
         timestamp = datetime.now().strftime(TIMESTAMP_FORMAT)
         project = source_repo.name
@@ -81,10 +84,11 @@ class RunDirectoryManager:
             metadata_payload.update(extra_metadata)
         metadata_payload["run_id"] = run_id
         upstream_main_sha = branch_info.get("upstream_main_sha")
+        seed_upstream_sha = selected_upstream_sha or upstream_main_sha
         self._write_metadata(run_dir, source_repo, timestamp, metadata_payload)
         _ = initialize_run_state(run_dir, run_id)
         self._remove_remotes(workspace)
-        self._seed_upstream_ref(workspace, upstream_main_sha, main_branch)
+        self._seed_upstream_ref(workspace, seed_upstream_sha, main_branch)
         self._ensure_permissions(workspace, harness_state, opencode_logs)
 
         return RunPaths(
