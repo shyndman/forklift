@@ -22,33 +22,27 @@ PALETTE = {
     "pine": "\x1b[38;2;49;116;143m",
 }
 
+# Compact output intentionally suppresses these protocol-level internals.
+SUPPRESSED_PROTOCOL_FIELDS = (
+    "messageID",
+    "part.id",
+    "callID",
+    "snapshot",
+    "token/cost payloads",
+)
+
+SUCCESS_TOOL_STATUSES = {"completed", "success", "succeeded", "ok"}
+
 
 class TranscriptRenderer:
-    """Renders parsed transcript events into Rosé Pine-inspired terminal output."""
+    """Render transcript events with a compact, operator-first layout."""
 
     def render_snapshot(self, events: list[ParsedEvent]) -> str:
-        """Render a one-shot transcript, grouping JSON events by messageID."""
+        """Render a one-shot transcript in event order with compact formatting."""
 
         output_lines: list[str] = []
-        grouped_steps: dict[str, list[ParsedEvent]] = {}
-        step_order: list[str] = []
-
         for event in events:
-            if not event.message_id:
-                output_lines.append(self._render_inline_event(event))
-                continue
-            if event.message_id not in grouped_steps:
-                grouped_steps[event.message_id] = []
-                step_order.append(event.message_id)
-            grouped_steps[event.message_id].append(event)
-
-        for message_id in step_order:
-            step_events = grouped_steps[message_id]
-            is_pending = not any(item.event_type == "step_finish" for item in step_events)
-            output_lines.extend(
-                self._render_step_block(message_id, step_events, pending=is_pending)
-            )
-
+            output_lines.extend(self._render_compact_event(event))
         return "\n".join(output_lines).rstrip() + ("\n" if output_lines else "")
 
     def initialize_follow_state(self, events: list[ParsedEvent]) -> FollowRenderState:
@@ -69,134 +63,130 @@ class TranscriptRenderer:
         events: list[ParsedEvent],
         follow_state: FollowRenderState,
     ) -> str:
-        """Render newly appended events while preserving per-step event order."""
+        """Render newly appended events using the same compact format as snapshots."""
 
         output_lines: list[str] = []
         for event in events:
-            if not event.message_id:
-                output_lines.append(self._render_inline_event(event))
-                continue
-
-            step_state = follow_state.steps.setdefault(event.message_id, FollowStepState())
-            pending = event.event_type != "step_finish"
-            status = "pending" if pending else "completed"
-            title = f"Step {event.message_id} • {status} • live"
-            output_lines.extend(self._box(title, self._render_step_event(event), pending=pending))
-
-            step_state.emitted_events += 1
-            if event.event_type == "step_finish":
-                step_state.finished = True
+            output_lines.extend(self._render_compact_event(event))
+            if event.message_id:
+                step_state = follow_state.steps.setdefault(event.message_id, FollowStepState())
+                step_state.emitted_events += 1
+                if event.event_type == "step_finish":
+                    step_state.finished = True
 
         return "\n".join(output_lines).rstrip() + ("\n" if output_lines else "")
+
+    def _render_compact_event(self, event: ParsedEvent) -> list[str]:
+        """Route each parsed event through the compact formatter used by all modes."""
+
+        if event.kind != "json" or event.payload is None:
+            return [self._render_inline_event(event)]
+
+        event_type = event.event_type or "unknown"
+        if event_type == "tool_use":
+            return self._render_compact_tool_event(event)
+
+        if self._is_text_bearing_event(event_type, event.text):
+            return self._render_compact_message_event(event)
+
+        return self._render_compact_generic_event(event_type, event.relative_ms)
 
     def _render_inline_event(self, event: ParsedEvent) -> str:
         prefix = paint(format_relative(event.relative_ms), "subtle")
         if event.kind == "iso":
             text = event.text or event.raw_line
-            return f"{prefix} {paint(text, 'foam')}"
+            return f"{prefix} {paint(f'INFO {text}', 'foam')}"
         if event.kind == "raw":
             text = event.text or event.raw_line
-            return f"{prefix} {paint(text, 'rose')}"
-        return f"{prefix} {paint(event.raw_line, 'subtle')}"
+            return f"{prefix} {paint(f'RAW {text}', 'rose')}"
+        return f"{prefix} {paint(f'EVENT {event.raw_line}', 'subtle')}"
 
-    def _render_step_block(
-        self,
-        message_id: str,
-        step_events: list[ParsedEvent],
-        *,
-        pending: bool,
-    ) -> list[str]:
-        status = "pending" if pending else "completed"
-        title = f"Step {message_id} • {status}"
-        body_lines: list[str] = []
-        for event in step_events:
-            body_lines.extend(self._render_step_event(event))
-        return self._box(title, body_lines, pending=pending)
+    def _render_compact_message_event(self, event: ParsedEvent) -> list[str]:
+        """Render text-bearing events as readable message blocks."""
 
-    def _render_step_event(self, event: ParsedEvent) -> list[str]:
         prefix = paint(format_relative(event.relative_ms), "subtle")
-        if event.kind != "json" or event.payload is None:
-            text = event.text or event.raw_line
-            return [f"{prefix} {paint(text, 'rose')}"]
-
-        event_type = event.event_type or "unknown"
-        payload = event.payload
-        part = as_dict(payload.get("part"))
-
-        if event_type == "step_start":
-            snapshot = as_str(part.get("snapshot")) if part else None
-            summary = f"step_start part={event.part_id or 'n/a'}"
-            if snapshot:
-                summary += f" snapshot={snapshot}"
-            return [f"{prefix} {paint(summary, 'foam')}"]
-
-        if event_type == "text":
-            text = event.text or ""
-            style_name = "pine" if looks_like_thought(text) else "text"
-            part_label = paint(f"part={event.part_id or 'n/a'}", "subtle")
-            return [f"{prefix} {part_label} {paint(text, style_name, italic=True)}"]
-
-        if event_type == "tool_use":
-            return self._render_tool_event(prefix, part)
-
-        if event_type == "step_finish":
-            reason = as_str(part.get("reason")) if part else None
-            tokens = as_dict(part.get("tokens")) if part else None
-            summary = f"step_finish part={event.part_id or 'n/a'}"
-            if reason:
-                summary += f" reason={reason}"
-            if tokens:
-                summary += f" tokens={json.dumps(tokens, separators=(',', ':'))}"
-            return [f"{prefix} {paint(summary, 'foam')}" ]
-
-        fallback = json.dumps(payload, indent=2, ensure_ascii=False)
-        fallback_title = f"event={event_type} part={event.part_id or 'n/a'} (raw fallback)"
-        lines = [f"{prefix} {paint(fallback_title, 'gold')}" ]
-        lines.extend(fallback.splitlines())
-        return lines
-
-    def _render_tool_event(
-        self,
-        prefix: str,
-        part: dict[str, object] | None,
-    ) -> list[str]:
-        part_id = as_str(part.get("id")) if part else None
-        tool_name = as_str(part.get("tool")) if part else None
-        call_id = as_str(part.get("callID")) if part else None
-        state = as_dict(part.get("state")) if part else None
-        input_payload = as_dict(state.get("input")) if state else None
-        metadata_payload = as_dict(state.get("metadata")) if state else None
-
-        lines = [
-            f"{prefix} {paint(f'tool {tool_name or "unknown"} part={part_id or "n/a"} call={call_id or "n/a"}', 'iris')}"
+        text = event.text or ""
+        is_thought = looks_like_thought(text)
+        style_name = "pine" if is_thought else "text"
+        return [
+            f"{prefix} {paint('MESSAGE', 'foam')}",
+            f"  {paint(text, style_name, italic=is_thought)}",
         ]
 
-        description = as_str(input_payload.get("description")) if input_payload else None
-        command = as_str(input_payload.get("command")) if input_payload else None
-        if description:
-            lines.append(f"{paint('description:', 'subtle')} {description}")
-        if command:
-            lines.append(f"{paint('command:', 'subtle')} {command}")
+    def _render_compact_tool_event(self, event: ParsedEvent) -> list[str]:
+        """Render tool events with only the operator-significant fields."""
 
-        output = as_str(state.get("output")) if state else None
-        if not output and metadata_payload:
-            output = as_str(metadata_payload.get("output"))
+        prefix = paint(format_relative(event.relative_ms), "subtle")
+        part = as_dict(event.payload.get("part")) if event.payload else None
+        tool_name = as_str(part.get("tool")) if part else None
+        state = as_dict(part.get("state")) if part else None
+
+        lines = [f"{prefix} {paint(f'TOOL {tool_name or "unknown"}', 'iris')}"]
+
+        args_lines = self._extract_tool_args(state)
+        if args_lines:
+            lines.append(paint("  args:", "subtle"))
+            lines.extend(f"    {line}" for line in args_lines)
+
+        output = self._extract_tool_output(state)
         if output:
-            lines.append(paint("output:", "subtle"))
-            lines.extend(output.splitlines() or [""])
+            lines.append(paint("  response:", "subtle"))
+            lines.extend(f"    {line}" for line in (output.splitlines() or [""]))
 
         status = as_str(state.get("status")) if state else None
-        if status:
-            lines.append(f"{paint('status:', 'subtle')} {status}")
+        if status and status.lower() not in SUCCESS_TOOL_STATUSES:
+            lines.append(f"{paint('  status:', 'subtle')} {paint(status, 'rose')}")
+
         return lines
 
-    def _box(self, title: str, lines: list[str], *, pending: bool) -> list[str]:
-        border_style = "gold" if pending else "iris"
-        rendered = [paint(f"╭─ {title}", border_style)]
-        for line in lines:
-            rendered.append(f"{paint('│', border_style)} {line}")
-        rendered.append(paint("╰─", border_style))
-        return rendered
+    def _render_compact_generic_event(self, event_type: str, relative_ms: int) -> list[str]:
+        """Keep unknown JSON events visible without dumping raw payloads."""
+
+        prefix = paint(format_relative(relative_ms), "subtle")
+        return [f"{prefix} {paint(f'EVENT {event_type}', 'gold')}"]
+
+    def _is_text_bearing_event(self, event_type: str, text: str | None) -> bool:
+        """Detect events that should render as message text in compact mode."""
+
+        if not text:
+            return False
+        return event_type not in {"tool_use", "step_start", "step_finish"}
+
+    def _extract_tool_args(self, state: dict[str, object] | None) -> list[str]:
+        """Extract concise tool argument lines, preferring description/command when present."""
+
+        if state is None:
+            return []
+        input_payload = as_dict(state.get("input"))
+        if input_payload is None:
+            return []
+
+        args: list[str] = []
+        description = as_str(input_payload.get("description"))
+        command = as_str(input_payload.get("command"))
+        if description:
+            args.append(f"description: {description}")
+        if command:
+            args.append(f"command: {command}")
+        if args:
+            return args
+
+        return [json.dumps(input_payload, ensure_ascii=False, sort_keys=True)]
+
+    def _extract_tool_output(self, state: dict[str, object] | None) -> str | None:
+        """Extract tool response text from state output with metadata fallback."""
+
+        if state is None:
+            return None
+
+        output = as_str(state.get("output"))
+        if output:
+            return output
+
+        metadata_payload = as_dict(state.get("metadata"))
+        if metadata_payload:
+            return as_str(metadata_payload.get("output"))
+        return None
 
 
 def paint(text: str, color_key: str, *, italic: bool = False) -> str:

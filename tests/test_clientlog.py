@@ -71,6 +71,18 @@ class ClientlogCommandTests(unittest.TestCase):
                     ),
                     json.dumps(
                         {
+                            "type": "text",
+                            "timestamp": 1772449302339,
+                            "part": {
+                                "id": "prt-1b",
+                                "messageID": "msg-1",
+                                "type": "text",
+                                "text": "I will run a command.",
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
                             "type": "tool_use",
                             "timestamp": 1772449302439,
                             "part": {
@@ -103,10 +115,22 @@ class ClientlogCommandTests(unittest.TestCase):
                     asyncio.run(command.run())
 
             rendered = stdout_capture.getvalue()
-            self.assertIn("Step msg-1 • pending", rendered)
-            self.assertIn("part=prt-1", rendered)
-            self.assertIn("tool bash part=prt-2 call=call-1", rendered)
+            self.assertIn("INFO Agent Starting...", rendered)
+            self.assertIn("MESSAGE", rendered)
+            self.assertIn("I will run a command.", rendered)
+            self.assertIn("TOOL bash", rendered)
+            self.assertIn("description: show output", rendered)
+            self.assertIn("command: echo hello", rendered)
+            self.assertIn("response:", rendered)
             self.assertIn("hello", rendered)
+            self.assertNotIn("Step msg-1", rendered)
+            self.assertNotIn("part=", rendered)
+            self.assertNotIn("call=", rendered)
+            self.assertNotIn("snapshot=", rendered)
+            self.assertNotIn("tokens=", rendered)
+            self.assertNotIn("open", rendered)
+            self.assertNotIn("incomplete", rendered)
+            self.assertNotIn("pending-group", rendered)
             self.assertEqual(stderr_capture.getvalue(), "")
 
 
@@ -154,8 +178,33 @@ class ClientlogParserTests(unittest.TestCase):
         )
         follow_render = renderer.render_follow_events(new_events, follow_state)
 
-        self.assertIn("Step msg-1 • completed • live", follow_render)
-        self.assertIn("part=prt-2", follow_render)
+        self.assertIn("EVENT step_finish", follow_render)
+        self.assertNotIn("Step msg-1", follow_render)
+        self.assertNotIn("part=", follow_render)
+
+    def test_unknown_json_event_renders_compact_event_line(self) -> None:
+        parser = ClientLogParser()
+        renderer = TranscriptRenderer()
+
+        events = parser.feed(
+            json.dumps(
+                {
+                    "type": "custom_event",
+                    "timestamp": 1772449303000,
+                    "part": {
+                        "id": "prt-custom",
+                        "messageID": "msg-custom",
+                        "snapshot": "keep-out",
+                    },
+                }
+            )
+            + "\n"
+        )
+        rendered = renderer.render_snapshot(events)
+
+        self.assertIn("EVENT custom_event", rendered)
+        self.assertNotIn("raw fallback", rendered)
+        self.assertNotIn("{", rendered)
 
 
 class ClientlogCommandHelperTests(unittest.TestCase):
