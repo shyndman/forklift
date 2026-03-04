@@ -125,6 +125,39 @@ def publish_to_local(
     )
     if push_output:
         logger.info("Local publication output", output=push_output)
+    checkout_publication_branch_best_effort(
+        repo_path,
+        publication_branch,
+        run_git_cmd=run_git_cmd,
+    )
+
+
+def checkout_publication_branch_best_effort(
+    repo_path: Path,
+    publication_branch: str,
+    *,
+    run_git_cmd: Callable[[Path, list[str]], str] = run_git,
+) -> None:
+    """Best-effort switch the local repository to the published branch."""
+
+    try:
+        checkout_output = run_git_cmd(repo_path, ["checkout", publication_branch])
+    except GitError as exc:
+        logger.warning(
+            "Published branch %s but could not check it out in %s: %s. Run `git checkout %s` manually when ready.",
+            publication_branch,
+            repo_path,
+            exc,
+            publication_branch,
+        )
+        return
+    if checkout_output:
+        logger.info("Publication branch checkout output", output=checkout_output)
+    logger.info(
+        "Checked out local publication branch",
+        branch=publication_branch,
+        repo_path=str(repo_path),
+    )
 
 
 def validate_filter_repo(
