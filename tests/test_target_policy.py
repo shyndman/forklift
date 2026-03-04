@@ -290,11 +290,81 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         container_name="forklift-test",
                     ),
                 ) as container_run_mock,
+                patch("forklift.cli.boxed", return_value="boxed output") as boxed_mock,
+                patch("builtins.print") as print_mock,
             ):
                 await forklift.run()
 
             prepare_mock.assert_called_once()
             container_run_mock.assert_called_once()
+            boxed_mock.assert_called_once_with(
+                "forklift clientlog run --follow",
+                title="Client log tail command",
+            )
+            print_mock.assert_called_once_with("boxed output", flush=True)
+
+    async def test_failed_container_logs_setup_details_before_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            _ = self._init_repo(repo)
+
+            run_paths = self._run_paths(root)
+            _ = (run_paths.harness_state / "setup.log").write_text(
+                "== Setup Command ==\nbun install\n== Setup Output ==\nerror\n",
+                encoding="utf-8",
+            )
+            forklift = self._build_forklift(repo)
+
+            with (
+                patch.object(
+                    Forklift,
+                    "_capture_operator_identity",
+                    return_value=OperatorIdentity("Forklift Tests", "tests@example.com"),
+                ),
+                patch.object(Forklift, "_prepare_opencode_env", return_value=self._dummy_env()),
+                patch.object(Forklift, "_resolve_chown_target", return_value=(1000, 1000)),
+                patch.object(Forklift, "_discover_required_remotes", return_value={}),
+                patch.object(Forklift, "_fetch_all", return_value=[]),
+                patch.object(Forklift, "_is_target_already_integrated", return_value=False),
+                patch.object(
+                    Forklift,
+                    "_resolve_upstream_target",
+                    return_value=ResolvedUpstreamTarget(
+                        policy="latest-version",
+                        target_ref="v2.0.0",
+                        target_sha="1234567890abcdef1234567890abcdef12345678",
+                        resolved_tag="v2.0.0",
+                    ),
+                ),
+                patch.object(Forklift, "_build_container_env", return_value={}),
+                patch.object(Forklift, "_chown_artifact", return_value=None),
+                patch(
+                    "forklift.cli.RunDirectoryManager.prepare",
+                    return_value=run_paths,
+                ),
+                patch(
+                    "forklift.cli.ContainerRunner.run",
+                    return_value=ContainerRunResult(
+                        exit_code=1,
+                        timed_out=False,
+                        stdout="",
+                        stderr="",
+                        container_name="forklift-test",
+                    ),
+                ),
+                patch.object(
+                    Forklift,
+                    "_log_setup_failure_details",
+                    return_value=None,
+                ) as setup_log_mock,
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    await forklift.run()
+
+            self.assertEqual(ctx.exception.code, 1)
+            setup_log_mock.assert_called_once_with(run_paths.harness_state)
 
 
 if __name__ == "__main__":

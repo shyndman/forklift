@@ -3,9 +3,10 @@ from __future__ import annotations
 import logging
 from importlib import metadata
 from pathlib import Path
+from shlex import quote as shell_quote
 from typing import cast, override
 
-from clypi import Command, arg
+from clypi import Command, arg, boxed
 import structlog
 from rich.traceback import install as install_rich_traceback
 from structlog.stdlib import BoundLogger
@@ -62,6 +63,9 @@ STASH_MESSAGE = AUTHORSHIP_STASH_MESSAGE
 FILTER_REPO_INSTALL_HELP = AUTHORSHIP_FILTER_REPO_INSTALL_HELP
 STUCK_EXIT_CODE = POST_RUN_STUCK_EXIT_CODE
 STUCK_PREVIEW_LINES = POST_RUN_STUCK_PREVIEW_LINES
+SETUP_LOG_TAIL_LINES = 120
+CLIENTLOG_HINT_TITLE = "Client log tail command"
+CLIENTLOG_HINT_TEMPLATE = "forklift clientlog {run_dir_name} --follow"
 
 
 class Forklift(Command):
@@ -159,6 +163,7 @@ class Forklift(Command):
             harness_state=run_paths.harness_state,
             opencode_logs=run_paths.opencode_logs,
         )
+        self._emit_clientlog_hint(run_paths.run_dir.name)
 
         container_runner = ContainerRunner()
         container_result = container_runner.run(
@@ -193,6 +198,7 @@ class Forklift(Command):
             )
             raise SystemExit(2)
         if container_result.exit_code != 0:
+            self._log_setup_failure_details(run_paths.harness_state)
             logger.error(
                 "Container %s exited with code %s",
                 container_result.container_name,
@@ -366,8 +372,44 @@ class Forklift(Command):
             ensure_upstream_merged_fn=ensure_upstream_merged,
         )
 
+    def _log_setup_failure_details(self, harness_state: Path) -> None:
+        """Emit setup.log tail so setup-command failures are visible in host logs."""
+
+        setup_log_path = harness_state / "setup.log"
+        if not setup_log_path.exists():
+            return
+
+        try:
+            setup_log = setup_log_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning(
+                "Unable to read setup log after failed run",
+                path=setup_log_path,
+                error=str(exc),
+            )
+            return
+
+        if not setup_log.strip():
+            return
+
+        lines = setup_log.splitlines()
+        setup_log_tail = "\n".join(lines[-SETUP_LOG_TAIL_LINES:])
+        logger.error(
+            "Setup log tail",
+            path=setup_log_path,
+            total_lines=len(lines),
+            tail_lines=min(len(lines), SETUP_LOG_TAIL_LINES),
+            output=setup_log_tail,
+        )
+
     def _workspace_has_changes(self, workspace: Path) -> bool:
         return workspace_has_changes(workspace)
+
+    def _emit_clientlog_hint(self, run_dir_name: str) -> None:
+        """Print a boxed command for tailing the current run's client transcript."""
+
+        command = CLIENTLOG_HINT_TEMPLATE.format(run_dir_name=shell_quote(run_dir_name))
+        print(boxed(command, title=CLIENTLOG_HINT_TITLE), flush=True)
 
     def _rewrite_and_publish_local(
         self,
