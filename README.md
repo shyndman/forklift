@@ -66,7 +66,7 @@ What happens:
    - `harness-state/` – writable directory the container uses for logs and instructions
    - `metadata.json` – records source repo, timestamp, main branch, target policy, target SHA, selected tag (when present), and upstream/origin branch-tip SHAs
 4. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
-5. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. The harness prints default instructions into `/harness-state/instructions.txt`, echoes the FORK.md contents (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
+5. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. If `FORK.md` starts with strict front matter (`---` on line 1 and matching closing `---`), the harness reads optional `setup` and runs it in `/workspace` via `bash -lc` with a 180-second timeout. Setup output is written to `/harness-state/setup.log`; malformed front matter, setup failures/timeouts, or tracked-file mutations fail closed before agent launch. The harness then prints default instructions into `/harness-state/instructions.txt`, appends the front-matter-stripped FORK body (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
 6. The agent has three and a half minutes (210 seconds). If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>`, rewrites only `upstream/<branch>..<branch>` to your identity, and publishes the rewritten tip to a local branch named `upstream-merge/<YYYYMMDDTHHMMSS>/<branch>` for review. Forklift does not push to GitHub automatically in this step. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
 
 ## Configuring OpenCode
@@ -126,7 +126,8 @@ Because the entrypoint is fixed, `FORKLIFT_DOCKER_COMMAND` is no longer honored.
 - Blocked run: `workspace/STUCK.md` describing what the agent needs
 - Always:
   - `/harness-state/instructions.txt` with rendered guidance
-  - `/harness-state/fork-context.md` snapshotting FORK.md (or noting that none was provided)
+  - `/harness-state/fork-context.md` snapshotting front-matter-stripped FORK context (or noting that none was provided)
+  - `/harness-state/setup.log` with setup command and bootstrap output (when `setup` is declared)
   - `/harness-state/opencode-server.log` with the server bootstrap and shutdown transcript
   - `/harness-state/opencode-client.log` with the OpenCode client stdout/stderr
   - `opencode-logs/` mirroring `~/.local/share/opencode/log` for deeper OpenCode debugging traces
@@ -141,7 +142,27 @@ Once the container launches the CLI prints a single pointer to `/harness-state/o
 
 ## FORK.md guidance
 
-Add a `FORK.md` at the repo root to explain what makes your fork special. Recommended sections:
+Add a `FORK.md` at the repo root to explain what makes your fork special.
+
+Optional strict front matter (line 1 must be `---`) can define harness-only bootstrap metadata:
+
+```md
+---
+setup: |
+  uv sync
+---
+```
+
+Rules for `setup`:
+
+- Optional; omit front matter entirely if not needed.
+- Parsed only when `---` starts at line 1 and a closing `---` delimiter exists.
+- Executed in `/workspace` via `bash -lc` with a fixed 180-second timeout.
+- Must leave tracked git files clean (`git status --porcelain --untracked-files=no` must be empty).
+- Failures are fail-closed (agent is not launched); inspect `/harness-state/setup.log`.
+- Front matter is stripped from agent-visible context (`instructions.txt`, `fork-context.md`, payload).
+
+Recommended body sections:
 
 ```
 # Fork Context
@@ -162,7 +183,7 @@ Add a `FORK.md` at the repo root to explain what makes your fork special. Recomm
 - Who to mention in STUCK.md for help
 ```
 
-Forklift copies this file into every workspace and appends its contents to the harness instructions. The exact text is also forwarded as the positional argument to `opencode run`, so keep it short, high-signal, and updated.
+Forklift copies this file into every workspace. The harness forwards the front-matter-stripped body as agent context, so keep the body short, high-signal, and updated.
 
 ## Smoke test
 
