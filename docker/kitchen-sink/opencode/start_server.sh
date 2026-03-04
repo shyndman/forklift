@@ -32,20 +32,20 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
-export OPENCODE_CONFIG="$CONFIG_PATH"
-
+server_env=("OPENCODE_CONFIG=$CONFIG_PATH")
 if [[ -n "${OPENCODE_API_KEY:-}" ]]; then
-  export OPENCODE_API_KEY
+  server_env+=("OPENCODE_API_KEY=$OPENCODE_API_KEY")
 fi
 #export OPENCODE_SERVER_PASSWORD
 if [[ -n "${OPENCODE_ORG:-}" ]]; then
-  export OPENCODE_ORG
+  server_env+=("OPENCODE_ORG=$OPENCODE_ORG")
 fi
 
-nohup stdbuf -oL -eL "$INSTALL_BIN" serve \
-  --hostname "$HOSTNAME" \
-  --port "$PORT" \
-	--log-level DEBUG >>"$LOG_FILE" 2>&1 &
+nohup runuser -u forklift -- env "${server_env[@]}" \
+  stdbuf -oL -eL "$INSTALL_BIN" serve \
+    --hostname "$HOSTNAME" \
+    --port "$PORT" \
+	  --log-level DEBUG >>"$LOG_FILE" 2>&1 &
 SERVER_PID=$!
 echo "$SERVER_PID" >"$PID_FILE"
 disown "$SERVER_PID"
