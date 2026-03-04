@@ -10,7 +10,7 @@ from forklift.cli import Forklift
 from forklift.run_manager import RunPaths
 
 
-class TestableForklift(Forklift):
+class ForkliftTestHarness(Forklift):
     def rewrite_and_publish_local(
         self,
         repo_path: Path,
@@ -54,7 +54,7 @@ class ForkliftPostRunTests(unittest.TestCase):
             run_paths = self._make_run_paths(root)
             repo_path = root / "local-repo"
             repo_path.mkdir()
-            forklift = TestableForklift()
+            forklift = ForkliftTestHarness()
 
             metadata: dict[str, object] = {
                 "operator_name": "Scott Hyndman",
@@ -132,7 +132,7 @@ class ForkliftPostRunTests(unittest.TestCase):
             run_paths = self._make_run_paths(root)
             repo_path = root / "local-repo"
             repo_path.mkdir()
-            forklift = TestableForklift()
+            forklift = ForkliftTestHarness()
 
             metadata: dict[str, object] = {
                 "operator_name": "Scott Hyndman",
@@ -180,7 +180,7 @@ class ForkliftPostRunTests(unittest.TestCase):
             )
 
     def test_assert_no_agent_commits_checks_only_requested_range(self) -> None:
-        forklift = TestableForklift()
+        forklift = ForkliftTestHarness()
         workspace = Path("/tmp/workspace")
 
         with patch("forklift.cli.run_git", return_value="") as run_git_mock:
