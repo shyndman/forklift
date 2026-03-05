@@ -132,7 +132,7 @@ Because the entrypoint is fixed, `FORKLIFT_DOCKER_COMMAND` is no longer honored.
   - `/harness-state/opencode-client.log` with the OpenCode client stdout/stderr
   - `opencode-logs/` mirroring `~/.local/share/opencode/log` for deeper OpenCode debugging traces
 
-Old run directories remain under `$XDG_STATE_HOME/forklift/runs/` (or `~/.local/state/forklift/runs/` if `XDG_STATE_HOME` is unset) for auditing. Safe to delete when no longer needed.
+Forklift evaluates run retention at startup and automatically deletes run directories older than 7 days under `$XDG_STATE_HOME/forklift/runs/` (or `~/.local/state/forklift/runs/` if `XDG_STATE_HOME` is unset). Recent runs remain available for audit and troubleshooting.
 
 ## Logs & correlators
 

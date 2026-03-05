@@ -106,6 +106,8 @@ class Forklift(Command):
         repo_path = self._resolve_repo_path()
         self._configure_logging()
         logger.info("Starting Forklift orchestration", repo=str(repo_path))
+        run_manager = RunDirectoryManager()
+        _ = run_manager.cleanup_expired_runs()
 
         operator_identity = self._capture_operator_identity(repo_path)
         main_branch = self._resolved_main_branch()
@@ -148,7 +150,6 @@ class Forklift(Command):
             )
             return
 
-        run_manager = RunDirectoryManager()
         run_paths = run_manager.prepare(
             repo_path,
             main_branch=main_branch,

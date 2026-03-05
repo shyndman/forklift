@@ -19,6 +19,9 @@ from .run_state import initialize_run_state
 
 CONTAINER_UID = 1000
 CONTAINER_GID = 1000
+SECONDS_PER_DAY = 24 * 60 * 60
+RUN_RETENTION_DAYS = 7
+RUN_RETENTION_WINDOW_SECONDS = RUN_RETENTION_DAYS * SECONDS_PER_DAY
 
 
 def _default_runs_root() -> Path:
@@ -48,9 +51,99 @@ class RunPaths:
     run_id: str
 
 
+@dataclass(frozen=True)
+class RunCleanupResult:
+    scanned: int
+    deleted: int
+    failed: int
+    skipped: int
+
+
 class RunDirectoryManager:
     def __init__(self, runs_root: Path | None = None) -> None:
         self._runs_root: Path = (runs_root or DEFAULT_RUNS_ROOT).expanduser().resolve()
+
+    def cleanup_expired_runs(
+        self,
+        *,
+        now: datetime | None = None,
+    ) -> RunCleanupResult:
+        """Delete run directories older than retention window without aborting execution."""
+
+        reference_time = now or datetime.now()
+        cutoff_epoch = reference_time.timestamp() - RUN_RETENTION_WINDOW_SECONDS
+        run_directories = self._list_run_directories()
+        deleted = 0
+        failed = 0
+        skipped = 0
+
+        for run_dir in run_directories:
+            try:
+                modified_at = run_dir.stat().st_mtime
+            except OSError as exc:
+                failed += 1
+                logger.warning(
+                    "Unable to read run directory metadata during cleanup",
+                    run_dir=run_dir,
+                    error=str(exc),
+                )
+                continue
+
+            if modified_at >= cutoff_epoch:
+                skipped += 1
+                continue
+
+            try:
+                shutil.rmtree(run_dir)
+            except FileNotFoundError:
+                skipped += 1
+                logger.debug("Run directory disappeared during cleanup", run_dir=run_dir)
+                continue
+            except OSError as exc:
+                failed += 1
+                logger.warning(
+                    "Failed to remove expired run directory",
+                    run_dir=run_dir,
+                    error=str(exc),
+                )
+                continue
+
+            deleted += 1
+
+        result = RunCleanupResult(
+            scanned=len(run_directories),
+            deleted=deleted,
+            failed=failed,
+            skipped=skipped,
+        )
+        logger.info(
+            "Run directory cleanup complete",
+            runs_root=self._runs_root,
+            retention_days=RUN_RETENTION_DAYS,
+            scanned=result.scanned,
+            deleted=result.deleted,
+            failed=result.failed,
+            skipped=result.skipped,
+        )
+        return result
+
+    def _list_run_directories(self) -> list[Path]:
+        """List candidate run directories under runs root for retention cleanup."""
+
+        if not self._runs_root.exists():
+            return []
+        try:
+            return sorted(
+                (entry for entry in self._runs_root.iterdir() if entry.is_dir()),
+                key=lambda path: path.name,
+            )
+        except OSError as exc:
+            logger.warning(
+                "Unable to list run directories for cleanup",
+                runs_root=self._runs_root,
+                error=str(exc),
+            )
+            return []
 
     def prepare(
         self,

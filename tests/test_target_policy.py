@@ -229,11 +229,16 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         resolved_tag="v1.0.0",
                     ),
                 ),
+                patch(
+                    "forklift.cli.RunDirectoryManager.cleanup_expired_runs",
+                    return_value=None,
+                ) as cleanup_mock,
                 patch("forklift.cli.RunDirectoryManager.prepare") as prepare_mock,
                 patch("forklift.cli.ContainerRunner.run") as container_run_mock,
             ):
                 await forklift.run()
 
+            cleanup_mock.assert_called_once()
             prepare_mock.assert_not_called()
             container_run_mock.assert_not_called()
 
@@ -277,6 +282,10 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(Forklift, "_chown_artifact", return_value=None),
                 patch.object(Forklift, "_post_container_results", return_value=None),
                 patch(
+                    "forklift.cli.RunDirectoryManager.cleanup_expired_runs",
+                    return_value=None,
+                ) as cleanup_mock,
+                patch(
                     "forklift.cli.RunDirectoryManager.prepare",
                     return_value=run_paths,
                 ) as prepare_mock,
@@ -295,6 +304,7 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ):
                 await forklift.run()
 
+            cleanup_mock.assert_called_once()
             prepare_mock.assert_called_once()
             container_run_mock.assert_called_once()
             boxed_mock.assert_called_once_with(
@@ -341,6 +351,10 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(Forklift, "_build_container_env", return_value={}),
                 patch.object(Forklift, "_chown_artifact", return_value=None),
                 patch(
+                    "forklift.cli.RunDirectoryManager.cleanup_expired_runs",
+                    return_value=None,
+                ) as cleanup_mock,
+                patch(
                     "forklift.cli.RunDirectoryManager.prepare",
                     return_value=run_paths,
                 ),
@@ -364,6 +378,7 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     await forklift.run()
 
             self.assertEqual(ctx.exception.code, 1)
+            cleanup_mock.assert_called_once()
             setup_log_mock.assert_called_once_with(run_paths.harness_state)
 
 
