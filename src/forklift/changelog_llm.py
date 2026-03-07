@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import asdict
 import json
+import os
 
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import (
@@ -24,9 +27,27 @@ NARRATIVE_SYSTEM_PROMPT = (
     "Only use deterministic evidence provided by the caller. "
     "Return markdown with exactly these headings in order:\n"
     "## Summary\n"
-    "## Notable Change Themes\n"
-    "## Risk and Review Notes"
+    "## Key Change Arcs\n"
+    "## Risk and Review Notes\n\n"
+    "In \"## Key Change Arcs\", use an abstraction ladder for each arc:\n"
+    "1) Define the arc in plain language.\n"
+    "2) Explain it at a conceptual level before technical details.\n"
+    "3) Bias toward several paragraphs when evidence supports it.\n\n"
+    "Prefer general language over source-local jargon. "
+    "If technical terms are necessary, define them before using them. "
+    "Do not invent files, metrics, conflicts, or behavior not present in evidence."
 )
+
+PROVIDER_ENV_MAPPINGS = (
+    ("openai_api_key", "OPENAI_API_KEY"),
+    ("anthropic_api_key", "ANTHROPIC_API_KEY"),
+    ("openrouter_api_key", "OPENROUTER_API_KEY"),
+    ("google_generative_ai_api_key", "GOOGLE_API_KEY"),
+    ("google_generative_ai_api_key", "GEMINI_API_KEY"),
+)
+PROVIDER_MODEL_ALIASES = {
+    "google": "google-gla",
+}
 
 
 def build_narrative_prompt(evidence: EvidenceBundle) -> str:
@@ -36,8 +57,7 @@ def build_narrative_prompt(evidence: EvidenceBundle) -> str:
     formatted = json.dumps(payload, indent=2, sort_keys=True)
     return (
         "Generate an operator-facing changelog narrative from this deterministic evidence.\n"
-        "Do not invent files, metrics, or conflicts that are absent from evidence.\n"
-        "Keep language concise and actionable.\n\n"
+        "Use only this evidence.\n\n"
         f"Evidence JSON:\n```json\n{formatted}\n```"
     )
 
@@ -50,18 +70,56 @@ def resolve_agent_model(env: OpenCodeEnv) -> str:
         raise ChangelogLlmError(
             "OPENCODE_MODEL must be set in OpenCode env for `forklift changelog` narrative generation."
         )
+    if ":" in model:
+        return model
+
+    if "/" in model:
+        provider, model_name = model.split("/", 1)
+        if provider and model_name:
+            normalized_provider = PROVIDER_MODEL_ALIASES.get(provider, provider)
+            return f"{normalized_provider}:{model_name}"
+
     return model
 
 
-def generate_changelog_narrative(evidence: EvidenceBundle, env: OpenCodeEnv) -> str:
+@contextmanager
+def provider_env_from_opencode(env: OpenCodeEnv) -> Iterator[None]:
+    """Temporarily bridge OpenCode provider keys into env vars expected by pydantic-ai."""
+
+    sentinel = object()
+    previous: dict[str, object] = {}
+    values_by_attr = {
+        "openai_api_key": env.openai_api_key,
+        "anthropic_api_key": env.anthropic_api_key,
+        "openrouter_api_key": env.openrouter_api_key,
+        "google_generative_ai_api_key": env.google_generative_ai_api_key,
+    }
+    for attr_name, env_name in PROVIDER_ENV_MAPPINGS:
+        value = values_by_attr[attr_name]
+        if not value:
+            continue
+        previous[env_name] = os.environ.get(env_name, sentinel)
+        os.environ[env_name] = value
+
+    try:
+        yield
+    finally:
+        for env_name, previous_value in previous.items():
+            if previous_value is sentinel:
+                _ = os.environ.pop(env_name, None)
+            else:
+                os.environ[env_name] = str(previous_value)
+
+
+async def generate_changelog_narrative(evidence: EvidenceBundle, env: OpenCodeEnv) -> str:
     """Generate markdown narrative text from deterministic evidence via pydantic-ai."""
 
     model_name = resolve_agent_model(env)
     prompt = build_narrative_prompt(evidence)
-    agent = Agent(model_name, system_prompt=NARRATIVE_SYSTEM_PROMPT)
-
     try:
-        result = agent.run_sync(prompt)
+        with provider_env_from_opencode(env):
+            agent = Agent(model_name, system_prompt=NARRATIVE_SYSTEM_PROMPT)
+            result = await agent.run(prompt)
     except UserError as exc:
         raise ChangelogLlmError(f"Changelog model configuration error: {exc}") from exc
     except ModelHTTPError as exc:

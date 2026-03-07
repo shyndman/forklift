@@ -51,7 +51,7 @@ class Changelog(Command):
 
         try:
             evidence = build_evidence_bundle(repo_path, branch)
-            narrative = generate_changelog_narrative(evidence, env)
+            narrative = await generate_changelog_narrative(evidence, env)
         except (ChangelogAnalysisError, ChangelogLlmError) as exc:
             logger.error("forklift changelog failed", error=str(exc))
             raise SystemExit(1) from exc

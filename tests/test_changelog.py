@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+# pyright: reportAny=false
+
+import asyncio
+from types import SimpleNamespace
+import os
 from pathlib import Path
 import unittest
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from forklift.changelog import Changelog
 from forklift.changelog_analysis import (
@@ -14,7 +19,7 @@ from forklift.changelog_analysis import (
     parse_numstat_output,
     resolve_merge_tree_hotspots,
 )
-from forklift.changelog_llm import ChangelogLlmError
+from forklift.changelog_llm import ChangelogLlmError, generate_changelog_narrative
 from forklift.changelog_models import (
     ChangedFileStat,
     ConflictHotspot,
@@ -23,6 +28,7 @@ from forklift.changelog_models import (
 )
 from forklift.cli import Forklift
 from forklift.opencode_env import OpenCodeEnv
+from forklift.changelog_renderer import render_changelog_terminal
 
 
 class ChangelogCliParsingTests(unittest.TestCase):
@@ -54,6 +60,80 @@ class ChangelogModelTests(unittest.TestCase):
         self.assertIsInstance(evidence.diff_summary, DiffSummary)
         self.assertIsInstance(evidence.top_changed_files, list)
         self.assertIsInstance(evidence.important_notes, list)
+
+
+class ChangelogLlmTests(unittest.TestCase):
+    def _sample_evidence(self) -> EvidenceBundle:
+        return EvidenceBundle(
+            base_sha="1234567890abcdef1234567890abcdef12345678",
+            main_branch="main",
+            upstream_ref="upstream/main",
+            diff_summary=DiffSummary(files_changed=0, insertions=0, deletions=0),
+        )
+
+    def test_generate_narrative_normalizes_slash_model_and_sets_google_provider_keys(
+        self,
+    ) -> None:
+        env = OpenCodeEnv(
+            api_key="opencode",
+            model="google/gemini-3-flash-preview",
+            variant="default",
+            agent="worker",
+            server_password="pw",
+            server_port=4096,
+            google_generative_ai_api_key="google-key",
+        )
+        captured: dict[str, str] = {}
+
+        class FakeAgent:
+            def __init__(self, model: str, *, system_prompt: str) -> None:
+                captured["model"] = model
+                captured["system_prompt"] = system_prompt
+                captured["google_api_key"] = os.environ.get("GOOGLE_API_KEY", "")
+                captured["gemini_api_key"] = os.environ.get("GEMINI_API_KEY", "")
+
+            async def run(self, prompt: str) -> SimpleNamespace:
+                captured["prompt"] = prompt
+                return SimpleNamespace(output="## Summary\nNormalized model name works")
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("forklift.changelog_llm.Agent", FakeAgent):
+                output = asyncio.run(
+                    generate_changelog_narrative(self._sample_evidence(), env)
+                )
+
+            self.assertEqual(captured["model"], "google-gla:gemini-3-flash-preview")
+            self.assertEqual(captured["google_api_key"], "google-key")
+            self.assertEqual(captured["gemini_api_key"], "google-key")
+            self.assertNotIn("GOOGLE_API_KEY", os.environ)
+            self.assertNotIn("GEMINI_API_KEY", os.environ)
+            self.assertIn("## Key Change Arcs", captured["system_prompt"])
+            self.assertIn("Define the arc in plain language", captured["system_prompt"])
+            self.assertIn("Use only this evidence.", captured["prompt"])
+            self.assertIn("Evidence JSON", captured["prompt"])
+
+        self.assertEqual(output, "## Summary\nNormalized model name works")
+
+
+class ChangelogRendererTests(unittest.TestCase):
+    def test_render_terminal_caps_width_at_110_columns(self) -> None:
+        console = Mock()
+        console.width = 180
+
+        render_changelog_terminal("## Summary\nTest", console=console)
+
+        args, kwargs = console.print.call_args
+        self.assertEqual(kwargs["width"], 110)
+        self.assertEqual(type(args[0]).__name__, "Markdown")
+
+    def test_render_terminal_passes_cap_width_even_when_console_is_narrow(self) -> None:
+        console = Mock()
+        console.width = 88
+
+        render_changelog_terminal("## Summary\nTest", console=console)
+
+        _, kwargs = console.print.call_args
+        self.assertEqual(kwargs["width"], 110)
 
 
 class ChangelogAnalysisTests(unittest.TestCase):
@@ -247,13 +327,15 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ) as evidence_mock,
             patch(
                 "forklift.changelog.generate_changelog_narrative",
-                return_value=(
+                new=AsyncMock(
+                    return_value=(
                     "## Summary\n"
                     "Main branch diverges from upstream.\n\n"
-                    "## Notable Change Themes\n"
+                    "## Key Change Arcs\n"
                     "- Refactors in src/.\n\n"
                     "## Risk and Review Notes\n"
                     "- Check parser edge cases."
+                    )
                 ),
             ) as llm_mock,
             patch(
@@ -286,7 +368,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "forklift.changelog.generate_changelog_narrative",
-                side_effect=ChangelogLlmError("model auth failed"),
+                new=AsyncMock(side_effect=ChangelogLlmError("model auth failed")),
             ),
             patch("forklift.changelog.render_changelog_terminal") as render_mock,
         ):

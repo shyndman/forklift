@@ -9,6 +9,7 @@ HOTSPOT_CAVEAT = (
     "Tip-merge hotspot predictions are directional and may repeat during "
     "later commit-by-commit rebase picks."
 )
+MAX_MARKDOWN_WIDTH = 110
 
 
 def render_changelog_markdown(evidence: EvidenceBundle, narrative: str) -> str:
@@ -72,4 +73,4 @@ def render_changelog_terminal(markdown: str, *, console: Console | None = None) 
     """Render changelog markdown in terminal output using Rich markdown APIs."""
 
     active_console = console or Console()
-    active_console.print(Markdown(markdown))
+    active_console.print(Markdown(markdown), width=MAX_MARKDOWN_WIDTH)
