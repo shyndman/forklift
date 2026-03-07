@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+from io import StringIO
 import tempfile
 import unittest
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
+from rich.console import Console
+
 from forklift.cli import Forklift
-from forklift.git import GitError
+from forklift.cli_authorship import OperatorIdentity
+from forklift.container_runner import ContainerRunResult
+from forklift.git import GitError, ResolvedUpstreamTarget
+from forklift.opencode_env import OpenCodeEnv
+from forklift.post_run_metrics import UsageSummary, render_usage_summary as real_render_usage_summary
 from forklift.run_manager import RunPaths
 
 
@@ -275,6 +282,124 @@ class ForkliftPostRunTests(unittest.TestCase):
         logged_args = cast(list[str], run_git_mock.call_args.args[1])
         self.assertIn("upstream-main..main", logged_args)
         self.assertNotIn("--all", logged_args)
+
+
+class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
+    def _dummy_env(self) -> OpenCodeEnv:
+        return OpenCodeEnv(
+            api_key="api",
+            model=None,
+            variant="default",
+            agent="worker",
+            server_password="pw",
+            server_port=4096,
+        )
+
+    def _run_paths(self, root: Path) -> RunPaths:
+        run_dir = root / "run"
+        workspace = run_dir / "workspace"
+        harness_state = run_dir / "harness-state"
+        opencode_logs = run_dir / "opencode-logs"
+        workspace.mkdir(parents=True, exist_ok=True)
+        harness_state.mkdir(parents=True, exist_ok=True)
+        opencode_logs.mkdir(parents=True, exist_ok=True)
+        return RunPaths(
+            run_dir=run_dir,
+            workspace=workspace,
+            harness_state=harness_state,
+            opencode_logs=opencode_logs,
+            run_id="STUCK1",
+        )
+
+    async def test_stuck_exit_renders_footer_before_exit(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo = root / "repo"
+            repo.mkdir(parents=True, exist_ok=True)
+            run_paths = self._run_paths(root)
+            output = StringIO()
+            footer_outcomes: list[str] = []
+
+            def render_with_capture(
+                outcome: str,
+                summary: UsageSummary,
+                *,
+                console: Console | None = None,
+            ) -> None:
+                footer_outcomes.append(outcome)
+                real_render_usage_summary(outcome, summary, console=console)
+
+            forklift = Forklift()
+            forklift.repo = repo
+            forklift.main_branch = "main"
+            forklift.target_policy = "tip"
+
+            with (
+                patch.object(Forklift, "_configure_logging", return_value=None),
+                patch.object(
+                    Forklift,
+                    "_capture_operator_identity",
+                    return_value=OperatorIdentity("Forklift Tests", "tests@example.com"),
+                ),
+                patch.object(Forklift, "_prepare_opencode_env", return_value=self._dummy_env()),
+                patch.object(Forklift, "_resolve_chown_target", return_value=(1000, 1000)),
+                patch.object(Forklift, "_discover_required_remotes", return_value={}),
+                patch.object(Forklift, "_fetch_all", return_value=[]),
+                patch.object(
+                    Forklift,
+                    "_resolve_upstream_target",
+                    return_value=ResolvedUpstreamTarget(
+                        policy="tip",
+                        target_ref="upstream/main",
+                        target_sha="1234567890abcdef1234567890abcdef12345678",
+                        resolved_tag=None,
+                    ),
+                ),
+                patch.object(Forklift, "_is_target_already_integrated", return_value=False),
+                patch.object(Forklift, "_build_container_env", return_value={}),
+                patch.object(Forklift, "_chown_artifact", return_value=None),
+                patch.object(Forklift, "_emit_clientlog_hint", return_value=None),
+                patch(
+                    "forklift.cli.RunDirectoryManager.cleanup_expired_runs",
+                    return_value=None,
+                ),
+                patch(
+                    "forklift.cli.RunDirectoryManager.prepare",
+                    return_value=run_paths,
+                ),
+                patch(
+                    "forklift.cli.ContainerRunner.run",
+                    return_value=ContainerRunResult(
+                        exit_code=0,
+                        timed_out=False,
+                        stdout="",
+                        stderr="",
+                        container_name="forklift-test",
+                    ),
+                ),
+                patch.object(
+                    Forklift,
+                    "_post_container_results",
+                    side_effect=SystemExit(4),
+                ),
+                patch("forklift.cli.parse_usage_summary", return_value=UsageSummary.unavailable("no usage events found")),
+                patch("forklift.cli.render_usage_summary", side_effect=render_with_capture),
+                patch(
+                    "forklift.cli.Console",
+                    return_value=Console(
+                        file=output,
+                        force_terminal=False,
+                        color_system=None,
+                        width=80,
+                    ),
+                ),
+            ):
+                with self.assertRaises(SystemExit) as ctx:
+                    await forklift.run()
+
+        self.assertEqual(ctx.exception.code, 4)
+        self.assertEqual(footer_outcomes, ["stuck"])
+        self.assertIn("Run complete: stuck", output.getvalue())
 
 
 if __name__ == "__main__":

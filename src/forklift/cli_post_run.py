@@ -14,7 +14,6 @@ from .run_manager import RunPaths
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
 STUCK_EXIT_CODE = 4
-STUCK_PREVIEW_LINES = 40
 
 
 def post_container_results(
@@ -79,21 +78,6 @@ def fail_if_stuck(workspace: Path) -> None:
         "STUCK.md detected at %s; skipping verification and local publication.",
         stuck_file,
     )
-    try:
-        contents = stuck_file.read_text().strip()
-    except OSError as exc:
-        logger.warning("Unable to read STUCK.md", error=exc)
-    else:
-        if contents:
-            preview_lines = contents.splitlines()[:STUCK_PREVIEW_LINES]
-            preview_text = "\n".join(preview_lines)
-            logger.warning(
-                "STUCK.md preview (first %s lines):\n%s",
-                STUCK_PREVIEW_LINES,
-                preview_text,
-            )
-        else:
-            logger.warning("STUCK.md is empty.")
     raise SystemExit(STUCK_EXIT_CODE)
 
 

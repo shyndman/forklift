@@ -9,6 +9,7 @@ from typing import cast, override
 from clypi import Command, arg, boxed
 import structlog
 from rich.traceback import install as install_rich_traceback
+from rich.console import Console
 from structlog.stdlib import BoundLogger
 
 from .cli_authorship import (
@@ -25,8 +26,12 @@ from .cli_authorship import (
 )
 from .cli_post_run import (
     STUCK_EXIT_CODE as POST_RUN_STUCK_EXIT_CODE,
-    STUCK_PREVIEW_LINES as POST_RUN_STUCK_PREVIEW_LINES,
     post_container_results,
+)
+from .post_run_metrics import (
+    parse_usage_summary,
+    render_completion_report,
+    render_usage_summary,
 )
 from .cli_runtime import (
     apply_cli_overrides,
@@ -62,7 +67,6 @@ AGENT_EMAIL = AUTHORSHIP_AGENT_EMAIL
 STASH_MESSAGE = AUTHORSHIP_STASH_MESSAGE
 FILTER_REPO_INSTALL_HELP = AUTHORSHIP_FILTER_REPO_INSTALL_HELP
 STUCK_EXIT_CODE = POST_RUN_STUCK_EXIT_CODE
-STUCK_PREVIEW_LINES = POST_RUN_STUCK_PREVIEW_LINES
 SETUP_LOG_TAIL_LINES = 120
 CLIENTLOG_HINT_TITLE = "Client log tail command"
 CLIENTLOG_HINT_TEMPLATE = "forklift clientlog {run_dir_name} --follow"
@@ -191,24 +195,40 @@ class Forklift(Command):
             logger.info("Container stdout", stdout=container_result.stdout.strip())
         if container_result.stderr.strip():
             logger.info("Container stderr", stderr=container_result.stderr.strip())
-        if container_result.timed_out:
-            logger.error(
-                "Container timed out",
-                container=container_result.container_name,
-                timeout_seconds=container_runner.timeout_seconds,
-            )
-            raise SystemExit(2)
-        if container_result.exit_code != 0:
-            self._log_setup_failure_details(run_paths.harness_state)
-            logger.error(
-                "Container %s exited with code %s",
-                container_result.container_name,
-                container_result.exit_code,
-            )
-            raise SystemExit(container_result.exit_code)
+        outcome = "success"
+        exit_code = 0
+        try:
+            if container_result.timed_out:
+                logger.error(
+                    "Container timed out",
+                    container=container_result.container_name,
+                    timeout_seconds=container_runner.timeout_seconds,
+                )
+                outcome = "timed out"
+                exit_code = 2
+            elif container_result.exit_code != 0:
+                self._log_setup_failure_details(run_paths.harness_state)
+                logger.error(
+                    "Container %s exited with code %s",
+                    container_result.container_name,
+                    container_result.exit_code,
+                )
+                outcome = "failure"
+                exit_code = container_result.exit_code
+            else:
+                logger.info("Container run completed successfully.")
+                self._post_container_results(repo_path, run_paths, main_branch)
+        except SystemExit as exc:
+            if exc.code == STUCK_EXIT_CODE:
+                outcome = "stuck"
+                exit_code = STUCK_EXIT_CODE
+            else:
+                outcome = "failure"
+                exit_code = self._resolved_exit_code(exc.code)
 
-        logger.info("Container run completed successfully.")
-        self._post_container_results(repo_path, run_paths, main_branch)
+        self._render_terminal_summary(outcome, agent_log_path, run_paths.workspace)
+        if exit_code != 0:
+            raise SystemExit(exit_code)
 
     def _configure_logging(self) -> None:
         """Bootstrap structlog + Rich so every module shares contextual logs."""
@@ -372,6 +392,28 @@ class Forklift(Command):
             current_branch_fn=current_branch,
             ensure_upstream_merged_fn=ensure_upstream_merged,
         )
+
+    def _render_terminal_summary(
+        self,
+        outcome: str,
+        agent_log_path: Path,
+        workspace: Path,
+    ) -> None:
+        """Emit the terminal-end usage summary and completion report exactly once."""
+
+        summary = parse_usage_summary(agent_log_path)
+        console = Console()
+        render_usage_summary(outcome, summary, console=console)
+        _ = render_completion_report(workspace, console=console)
+
+    def _resolved_exit_code(self, code: object) -> int:
+        """Normalize SystemExit payloads so re-raises preserve explicit integer codes."""
+
+        if isinstance(code, bool):
+            return 1
+        if isinstance(code, int):
+            return code
+        return 1
 
     def _log_setup_failure_details(self, harness_state: Path) -> None:
         """Emit setup.log tail so setup-command failures are visible in host logs."""
