@@ -3,7 +3,9 @@ from __future__ import annotations
 import tempfile
 import subprocess
 import unittest
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 from unittest.mock import patch
 
 from forklift.container_runner import ContainerRunner
@@ -116,6 +118,25 @@ class ContainerRunnerRunStateTests(unittest.TestCase):
             self.assertEqual(
                 update_state.call_args_list[-1].kwargs.get("exit_code"), -9
             )
+
+    def test_force_stop_prefers_graceful_docker_stop(self) -> None:
+        runner = ContainerRunner(timeout_seconds=1)
+        with patch("forklift.container_runner.subprocess.run") as run_mock:
+            force_stop = cast(Callable[[str], None], getattr(runner, "_force_stop"))
+            force_stop("forklift-test-container")
+
+        run_mock.assert_called_once_with(
+            [
+                "docker",
+                "stop",
+                "--time",
+                "10",
+                "forklift-test-container",
+            ],
+            check=False,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
 
 
 if __name__ == "__main__":

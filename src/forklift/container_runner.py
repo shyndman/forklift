@@ -191,7 +191,7 @@ class ContainerRunner:
         return masked
 
     def _force_stop(self, container_name: str) -> None:
-        stop_cmd = [DOCKER_BIN, "kill", container_name]
+        stop_cmd = [DOCKER_BIN, "stop", "--time", "10", container_name]
         try:
             _ = subprocess.run(
                 stop_cmd, check=False, stdout=subprocess.PIPE, stderr=subprocess.STDOUT
