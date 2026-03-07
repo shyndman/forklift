@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import datetime
-from typing import cast
+from typing import TypedDict, cast
 
 import structlog
 from structlog.dev import Column, ConsoleRenderer, KeyValueColumnFormatter
@@ -13,13 +13,45 @@ RESET = "\x1b[0m"
 RUN_STYLE = "\x1b[38;2;129;161;193m"
 
 
-LEVEL_STYLES: dict[str, tuple[str, str]] = {
-    "debug": ("\x1b[38;2;144;140;170m", "dbug"),
-    "info": ("\x1b[38;2;156;207;216m", "info"),
-    "warning": ("\x1b[38;2;246;193;119m", "warn"),
-    "error": ("\x1b[38;2;235;111;146m", "eror"),
-    "exception": ("\x1b[38;2;235;111;146m", "exc!"),
-    "critical": ("\x1b[48;2;235;111;146;38;2;33;32;46m", "crit"),
+class LevelStyle(TypedDict):
+    text: str
+    bracket: str
+
+
+def hex_to_ansi_fg(value: int) -> str:
+    """Convert a 24-bit RGB hex color to an ANSI foreground escape sequence."""
+
+    red = (value >> 16) & 0xFF
+    green = (value >> 8) & 0xFF
+    blue = value & 0xFF
+    return f"\x1b[38;2;{red};{green};{blue}m"
+
+
+LEVEL_MAPPING: dict[str, LevelStyle] = {
+    "debug": {
+        "text": f"{hex_to_ansi_fg(0x908CAA)}dbug{RESET}",
+        "bracket": hex_to_ansi_fg(0x817E99),
+    },
+    "info": {
+        "text": f"{hex_to_ansi_fg(0x9CCFD8)}info{RESET}",
+        "bracket": hex_to_ansi_fg(0x8CBAC2),
+    },
+    "warning": {
+        "text": f"{hex_to_ansi_fg(0xF6C177)}warn{RESET}",
+        "bracket": hex_to_ansi_fg(0xDDAD6B),
+    },
+    "error": {
+        "text": f"{hex_to_ansi_fg(0xEB6F92)}eror{RESET}",
+        "bracket": hex_to_ansi_fg(0xD46483),
+    },
+    "exception": {
+        "text": f"{hex_to_ansi_fg(0xEB6F92)}exc!{RESET}",
+        "bracket": hex_to_ansi_fg(0xD46483),
+    },
+    "critical": {
+        "text": "\x1b[48;2;235;111;146;38;2;33;32;46mcrit\x1b[0m",
+        "bracket": hex_to_ansi_fg(0xD46483),
+    },
 }
 
 
@@ -35,9 +67,11 @@ def compact_level_processor(
 ) -> EventDict:
     level_raw = cast(object, event_dict.get("level", ""))
     level = str(level_raw).lower()
-    if level in LEVEL_STYLES:
-        style, label = LEVEL_STYLES[level]
-        event_dict["level"] = f"{style}[{label}]{RESET}"
+    style = LEVEL_MAPPING.get(level)
+    if style is not None:
+        bracket = style["bracket"]
+        text = style["text"]
+        event_dict["level"] = f"{bracket}[{text}{bracket}]{RESET}"
     return event_dict
 
 
