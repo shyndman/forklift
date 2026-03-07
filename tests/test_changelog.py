@@ -31,6 +31,10 @@ from forklift.opencode_env import OpenCodeEnv
 from forklift.changelog_renderer import render_changelog_terminal
 
 
+def lines(*rows: str) -> str:
+    return "\n".join(rows)
+
+
 class ChangelogCliParsingTests(unittest.TestCase):
     def test_forklift_parse_routes_changelog_subcommand(self) -> None:
         command = Forklift.parse(["changelog"])
@@ -144,16 +148,14 @@ class ChangelogAnalysisTests(unittest.TestCase):
     def test_parse_merge_tree_conflicts_counts_multiple_blocks_for_one_file(
         self,
     ) -> None:
-        output = "\n".join(
-            [
-                "beadbeadbeadbeadbeadbeadbeadbeadbeadbead",
-                "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 src/conflict.py",
-                "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 src/conflict.py",
-                "100644 cccccccccccccccccccccccccccccccccccccccc 3 src/conflict.py",
-                "100644 dddddddddddddddddddddddddddddddddddddddd 1 src/conflict.py",
-                "100644 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 2 src/conflict.py",
-                "100644 ffffffffffffffffffffffffffffffffffffffff 3 src/conflict.py",
-            ]
+        output = lines(
+            "beadbeadbeadbeadbeadbeadbeadbeadbeadbead",
+            "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 src/conflict.py",
+            "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 src/conflict.py",
+            "100644 cccccccccccccccccccccccccccccccccccccccc 3 src/conflict.py",
+            "100644 dddddddddddddddddddddddddddddddddddddddd 1 src/conflict.py",
+            "100644 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 2 src/conflict.py",
+            "100644 ffffffffffffffffffffffffffffffffffffffff 3 src/conflict.py",
         )
 
         hotspots = parse_merge_tree_conflict_hotspots(output)
@@ -162,19 +164,17 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(hotspots[0].conflict_count, 2)
 
     def test_parse_merge_tree_conflicts_multiple_files(self) -> None:
-        output = "\n".join(
-            [
-                "beadbeadbeadbeadbeadbeadbeadbeadbeadbead",
-                "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 src/alpha.py",
-                "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 src/alpha.py",
-                "100644 cccccccccccccccccccccccccccccccccccccccc 3 src/alpha.py",
-                "100644 dddddddddddddddddddddddddddddddddddddddd 1 src/beta.py",
-                "100644 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 2 src/beta.py",
-                "100644 ffffffffffffffffffffffffffffffffffffffff 3 src/beta.py",
-                "100644 1111111111111111111111111111111111111111 1 src/beta.py",
-                "100644 2222222222222222222222222222222222222222 2 src/beta.py",
-                "100644 3333333333333333333333333333333333333333 3 src/beta.py",
-            ]
+        output = lines(
+            "beadbeadbeadbeadbeadbeadbeadbeadbeadbead",
+            "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 src/alpha.py",
+            "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 src/alpha.py",
+            "100644 cccccccccccccccccccccccccccccccccccccccc 3 src/alpha.py",
+            "100644 dddddddddddddddddddddddddddddddddddddddd 1 src/beta.py",
+            "100644 eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee 2 src/beta.py",
+            "100644 ffffffffffffffffffffffffffffffffffffffff 3 src/beta.py",
+            "100644 1111111111111111111111111111111111111111 1 src/beta.py",
+            "100644 2222222222222222222222222222222222222222 2 src/beta.py",
+            "100644 3333333333333333333333333333333333333333 3 src/beta.py",
         )
 
         hotspots = parse_merge_tree_conflict_hotspots(output)
@@ -188,13 +188,11 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(resolve_merge_tree_hotspots(result), [])
 
     def test_merge_tree_exit_one_parses_hotspots(self) -> None:
-        output = "\n".join(
-            [
-                "treeoid",
-                "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 src/conflict.py",
-                "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 src/conflict.py",
-                "100644 cccccccccccccccccccccccccccccccccccccccc 3 src/conflict.py",
-            ]
+        output = lines(
+            "treeoid",
+            "100644 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1 src/conflict.py",
+            "100644 bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb 2 src/conflict.py",
+            "100644 cccccccccccccccccccccccccccccccccccccccc 3 src/conflict.py",
         )
         result = MergeTreeResult(exit_code=1, output=output)
         hotspots = resolve_merge_tree_hotspots(result)
@@ -207,24 +205,20 @@ class ChangelogAnalysisTests(unittest.TestCase):
             _ = resolve_merge_tree_hotspots(result)
 
     def test_parse_diff_stats_handles_renames_and_binary(self) -> None:
-        numstat = "\n".join(
-            [
-                "5\t3\tsrc/feature.py",
-                "-\t-\tbinary/blob.dat",
-                "7\t2\told/name.py => new/name.py",
-            ]
+        numstat = lines(
+            "5\t3\tsrc/feature.py",
+            "-\t-\tbinary/blob.dat",
+            "7\t2\told/name.py => new/name.py",
         )
         parsed_numstat = parse_numstat_output(numstat)
         self.assertEqual(parsed_numstat["src/feature.py"], (5, 3))
         self.assertEqual(parsed_numstat["binary/blob.dat"], (0, 0))
         self.assertEqual(parsed_numstat["old/name.py => new/name.py"], (7, 2))
 
-        name_status = "\n".join(
-            [
-                "M\tsrc/feature.py",
-                "R100\told/name.py\tnew/name.py",
-                "A\tbinary/blob.dat",
-            ]
+        name_status = lines(
+            "M\tsrc/feature.py",
+            "R100\told/name.py\tnew/name.py",
+            "A\tbinary/blob.dat",
         )
         parsed_name_status = parse_name_status_output(name_status)
         self.assertEqual(parsed_name_status["src/feature.py"], "M")
@@ -308,6 +302,18 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             important_notes=["Conflict hotspots are deterministic predictions."],
         )
 
+    def _patch_env(self, command: Changelog):
+        return patch.object(
+            command, "_prepare_opencode_env", return_value=self._dummy_env()
+        )
+
+    def _assert_markdown_sections(self, output: str) -> None:
+        self.assertIn("# Forklift Changelog", output)
+        self.assertIn("## Branch Context", output)
+        self.assertIn("## Summary", output)
+        self.assertIn("## Predicted Conflict Hotspots", output)
+        self.assertIn("## Deterministic Supporting Metrics", output)
+
     async def test_successful_flow_builds_evidence_calls_llm_and_renders_sections(
         self,
     ) -> None:
@@ -318,9 +324,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             return captured.setdefault("markdown", markdown)
 
         with (
-            patch.object(
-                command, "_prepare_opencode_env", return_value=self._dummy_env()
-            ),
+            self._patch_env(command),
             patch(
                 "forklift.changelog.build_evidence_bundle",
                 return_value=self._sample_evidence(),
@@ -329,12 +333,12 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "forklift.changelog.generate_changelog_narrative",
                 new=AsyncMock(
                     return_value=(
-                    "## Summary\n"
-                    "Main branch diverges from upstream.\n\n"
-                    "## Key Change Arcs\n"
-                    "- Refactors in src/.\n\n"
-                    "## Risk and Review Notes\n"
-                    "- Check parser edge cases."
+                        "## Summary\n"
+                        "Main branch diverges from upstream.\n\n"
+                        "## Key Change Arcs\n"
+                        "- Refactors in src/.\n\n"
+                        "## Risk and Review Notes\n"
+                        "- Check parser edge cases."
                     )
                 ),
             ) as llm_mock,
@@ -349,19 +353,13 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         llm_mock.assert_called_once()
         render_mock.assert_called_once()
         output = captured["markdown"]
-        self.assertIn("# Forklift Changelog", output)
-        self.assertIn("## Branch Context", output)
-        self.assertIn("## Summary", output)
-        self.assertIn("## Predicted Conflict Hotspots", output)
-        self.assertIn("## Deterministic Supporting Metrics", output)
+        self._assert_markdown_sections(output)
 
     async def test_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
         command = Changelog(main_branch="main")
 
         with (
-            patch.object(
-                command, "_prepare_opencode_env", return_value=self._dummy_env()
-            ),
+            self._patch_env(command),
             patch(
                 "forklift.changelog.build_evidence_bundle",
                 return_value=self._sample_evidence(),
