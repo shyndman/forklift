@@ -41,6 +41,7 @@ from .cli_runtime import (
     resolved_main_branch,
     resolved_target_policy,
 )
+from .changelog import Changelog
 from .clientlog import Clientlog
 from .container_runner import ContainerRunner
 from .git import (
@@ -75,7 +76,7 @@ CLIENTLOG_HINT_TEMPLATE = "forklift clientlog {run_dir_name} --follow"
 class Forklift(Command):
     """Primary entrypoint for the Forklift host orchestrator."""
 
-    subcommand: Clientlog | None = None
+    subcommand: Changelog | Clientlog | None = None
     repo: Path | str | None = None
     main_branch: str = arg(
         "main", help="Name of the primary branch to rebase (default: main)"

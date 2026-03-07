@@ -57,6 +57,27 @@ The container receives the branch value via `FORKLIFT_MAIN_BRANCH` so
 `docker/kitchen-sink` after editing the harness so new instructions are present in the
 image.
 
+### `forklift changelog` (host-side preflight)
+
+Use the changelog subcommand when you want a read-only preflight report before any
+container orchestration or publication work starts.
+
+```bash
+uv run forklift changelog
+uv run forklift changelog --main-branch=dev
+```
+
+Behavior and constraints:
+
+- Runs entirely on the host repo: no run directory creation, no container launch, and no
+  local-history mutation.
+- Refreshes `origin` and `upstream` before analysis so results are based on current refs.
+- Requires host Git 2.38+ because changelog conflict prediction depends on modern
+  `git merge-tree --write-tree` output and exit semantics.
+- Renders Markdown in the terminal with deterministic metrics plus an LLM narrative.
+- Predicted conflict hotspots come from tip-merge analysis and may recur during
+  commit-by-commit rebases.
+
 What happens:
 
 1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both remotes (including tags).
