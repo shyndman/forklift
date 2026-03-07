@@ -14,6 +14,19 @@ CLIENT_ENV_VARS=(
   OPENCODE_SERVER_PASSWORD
   OPENCODE_TIMEOUT
 )
+HOST_UID=${FORKLIFT_HOST_UID:-}
+HOST_GID=${FORKLIFT_HOST_GID:-}
+
+restore_mount_ownership() {
+  if [[ ! "$HOST_UID" =~ ^[0-9]+$ ]]; then
+    return
+  fi
+  if [[ ! "$HOST_GID" =~ ^[0-9]+$ ]]; then
+    return
+  fi
+
+  chown -R "$HOST_UID:$HOST_GID" /workspace /harness-state /home/forklift/.local/share/opencode/log >/dev/null 2>&1 || true
+}
 
 mkdir -p /harness-state "$STATE_DIR"
 : >"$CLIENT_LOG"
@@ -29,6 +42,7 @@ cleanup() {
     fi
   fi
   rm -f "$PID_FILE" "$READY_FILE"
+  restore_mount_ownership
 }
 trap cleanup EXIT
 trap 'cleanup; exit 0' SIGTERM SIGINT

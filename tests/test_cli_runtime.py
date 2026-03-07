@@ -13,6 +13,8 @@ from rich.console import Console
 from forklift.cli import Forklift
 from forklift.cli_authorship import OperatorIdentity
 from forklift.cli_runtime import (
+    HOST_GID_ENV,
+    HOST_UID_ENV,
     build_container_env,
     resolve_chown_target,
     resolved_target_policy,
@@ -40,7 +42,10 @@ class CliRuntimeHelperTests(unittest.TestCase):
             server_password="pw",
             server_port=4096,
         )
-        with patch.dict(os.environ, {"TZ": "America/Vancouver"}, clear=False):
+        with (
+            patch.dict(os.environ, {"TZ": "America/Vancouver"}, clear=False),
+            patch("forklift.cli_runtime.default_host_ids", return_value=(321, 654)),
+        ):
             container_env = build_container_env(
                 env,
                 "main",
@@ -50,6 +55,8 @@ class CliRuntimeHelperTests(unittest.TestCase):
 
         self.assertEqual(container_env["FORKLIFT_MAIN_BRANCH"], "main")
         self.assertEqual(container_env["FORKLIFT_RUN_ID"], "run-123")
+        self.assertEqual(container_env[HOST_UID_ENV], "321")
+        self.assertEqual(container_env[HOST_GID_ENV], "654")
         self.assertEqual(container_env["TZ"], "America/Vancouver")
 
     def test_resolved_target_policy_defaults_to_tip(self) -> None:

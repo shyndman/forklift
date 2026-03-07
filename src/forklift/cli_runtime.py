@@ -12,6 +12,8 @@ from .opencode_env import OpenCodeEnv, SAFE_VALUE_PATTERN
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 TARGET_POLICY_OPTIONS = frozenset({"tip", "latest-version"})
+HOST_UID_ENV = "FORKLIFT_HOST_UID"
+HOST_GID_ENV = "FORKLIFT_HOST_GID"
 
 
 def build_container_env(
@@ -26,6 +28,9 @@ def build_container_env(
     container_env = dict(env.as_env())
     container_env["FORKLIFT_MAIN_BRANCH"] = main_branch
     container_env["FORKLIFT_RUN_ID"] = run_id
+    host_uid, host_gid = default_host_ids()
+    container_env[HOST_UID_ENV] = str(host_uid)
+    container_env[HOST_GID_ENV] = str(host_gid)
     tz_value = host_timezone_value(forward_tz=forward_tz)
     if tz_value is not None:
         container_env["TZ"] = tz_value
