@@ -114,6 +114,43 @@ def resolved_main_branch(main_branch: str | None) -> str:
     return branch
 
 
+def resolved_timeout_seconds(timeout_seconds: object | None) -> int | None:
+    """Normalize and validate the optional container watchdog timeout override."""
+
+    if timeout_seconds is None:
+        return None
+    if isinstance(timeout_seconds, bool):
+        logger.error(
+            "Invalid --timeout-seconds value %r; expected integer >= 1",
+            timeout_seconds,
+        )
+        raise SystemExit(1)
+    if not isinstance(timeout_seconds, (int, str)):
+        logger.error(
+            "Invalid --timeout-seconds value %r; expected integer >= 1",
+            timeout_seconds,
+        )
+        raise SystemExit(1)
+    if isinstance(timeout_seconds, int):
+        resolved = timeout_seconds
+    else:
+        try:
+            resolved = int(timeout_seconds, 10)
+        except ValueError:
+            logger.error(
+                "Invalid --timeout-seconds value %r; expected integer >= 1",
+                timeout_seconds,
+            )
+            raise SystemExit(1) from None
+    if resolved < 1:
+        logger.error(
+            "Invalid --timeout-seconds value %s; expected integer >= 1",
+            resolved,
+        )
+        raise SystemExit(1)
+    return resolved
+
+
 def resolved_target_policy(target_policy: str | None) -> str:
     """Normalize and validate the upstream target policy used by orchestration."""
 

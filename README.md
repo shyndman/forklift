@@ -127,16 +127,18 @@ The file should be owned by you with `0600` permissions. At runtime the CLI logs
 The CLI also exposes typed overrides:
 
 ```
-uv run forklift --model claude-35-sonnet --variant production --agent nightly
+uv run forklift --model claude-35-sonnet --variant production --agent nightly --timeout-seconds 300
 ```
 
-Each override must avoid shell metacharacters, but forward slashes are allowed for provider-scoped model names (e.g. `google/gemini-3-flash-preview`); invalid values abort the run before any secrets are forwarded. Overrides only adjust the client inputs—the Docker entrypoint is fixed to `/opt/opencode/entrypoint.sh`.
+Each override must avoid shell metacharacters, but forward slashes are allowed for provider-scoped model names (e.g. `google/gemini-3-flash-preview`); invalid values abort the run before any secrets are forwarded. `--timeout-seconds` must be a positive integer and only changes the host-side container watchdog for that one run. Overrides only adjust the client inputs—the Docker entrypoint is fixed to `/opt/opencode/entrypoint.sh`.
+
+Timeout precedence is: `--timeout-seconds` (per-run CLI override) → `FORKLIFT_TIMEOUT_SECONDS` (environment default) → built-in default (`600` seconds). This host watchdog is separate from `OPENCODE_TIMEOUT`, which configures the OpenCode client timeout forwarded into the sandbox.
 
 ### Environment overrides
 
 - `FORKLIFT_DOCKER_IMAGE` – alternate container image (defaults to `forklift/kitchen-sink:latest`)
 - `FORKLIFT_DOCKER_ARGS` – extra `docker run` flags appended before the image (for GPU devices, proxies, etc.)
-- `FORKLIFT_TIMEOUT_SECONDS` – adjust the watchdog (default 210 seconds / 3.5 minutes)
+- `FORKLIFT_TIMEOUT_SECONDS` – adjust the host watchdog default (default 600 seconds / 10 minutes)
 - `DOCKER_BIN` – override the Docker CLI binary name/path if needed
 
 Because the entrypoint is fixed, `FORKLIFT_DOCKER_COMMAND` is no longer honored.

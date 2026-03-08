@@ -17,6 +17,7 @@ from forklift.cli_runtime import (
     HOST_UID_ENV,
     build_container_env,
     resolve_chown_target,
+    resolved_timeout_seconds,
     resolved_target_policy,
 )
 from forklift.container_runner import ContainerRunResult
@@ -70,6 +71,26 @@ class CliRuntimeHelperTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             _ = resolved_target_policy("bad-policy")
 
+    def test_resolved_timeout_seconds_accepts_positive_values(self) -> None:
+        self.assertEqual(resolved_timeout_seconds(12), 12)
+        self.assertEqual(resolved_timeout_seconds("15"), 15)
+
+    def test_resolved_timeout_seconds_rejects_non_positive_values(self) -> None:
+        with self.assertRaises(SystemExit):
+            _ = resolved_timeout_seconds(0)
+        with self.assertRaises(SystemExit):
+            _ = resolved_timeout_seconds(-1)
+
+    def test_resolved_timeout_seconds_rejects_malformed_values(self) -> None:
+        with self.assertRaises(SystemExit):
+            _ = resolved_timeout_seconds("not-a-number")
+        with self.assertRaises(SystemExit):
+            _ = resolved_timeout_seconds(object())
+
+    def test_forklift_parse_accepts_timeout_seconds_flag(self) -> None:
+        command = Forklift.parse(["--timeout-seconds", "33"])
+        self.assertEqual(command.timeout_seconds, 33)
+
 
 class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
     def _dummy_env(self) -> OpenCodeEnv:
@@ -104,7 +125,8 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         container_result: ContainerRunResult,
         post_run_side_effect: Exception | None = None,
         monitor_logger_after_footer: bool = False,
-    ) -> tuple[str, int | None, list[tuple[str, bool]]]:
+        timeout_seconds: int | None = None,
+    ) -> tuple[str, int | None, list[tuple[str, bool]], dict[str, object]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             repo = root / "repo"
@@ -130,10 +152,22 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 footer_started = True
                 real_render_usage_summary(outcome, summary, console=console)
 
+            class _ContainerRunnerStub:
+                _result: ContainerRunResult
+                timeout_seconds: int
+
+                def __init__(self, result: ContainerRunResult, timeout: int | None) -> None:
+                    self._result = result
+                    self.timeout_seconds = timeout if timeout is not None else 600
+
+                def run(self, *_args: object, **_kwargs: object) -> ContainerRunResult:
+                    return self._result
+
             forklift = Forklift()
             forklift.repo = repo
             forklift.main_branch = "main"
             forklift.target_policy = "tip"
+            forklift.timeout_seconds = timeout_seconds
 
             post_run_patch = patch.object(Forklift, "_post_container_results", return_value=None)
             if post_run_side_effect is not None:
@@ -207,8 +241,10 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         return_value=run_paths,
                     )
                 )
-                _ = stack.enter_context(
-                    patch("forklift.cli.ContainerRunner.run", return_value=container_result)
+                container_runner_cls = stack.enter_context(patch("forklift.cli.ContainerRunner"))
+                container_runner_cls.return_value = _ContainerRunnerStub(
+                    container_result,
+                    timeout_seconds,
                 )
                 _ = stack.enter_context(
                     patch(
@@ -237,9 +273,24 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 try:
                     await forklift.run()
                 except SystemExit as exc:
-                    return footer_output.getvalue(), self._exit_code(exc.code), logger_events
+                    constructor_kwargs = (
+                        dict(container_runner_cls.call_args.kwargs)
+                        if container_runner_cls.call_args is not None
+                        else {}
+                    )
+                    return (
+                        footer_output.getvalue(),
+                        self._exit_code(exc.code),
+                        logger_events,
+                        constructor_kwargs,
+                    )
 
-            return footer_output.getvalue(), None, logger_events
+            constructor_kwargs = (
+                dict(container_runner_cls.call_args.kwargs)
+                if container_runner_cls.call_args is not None
+                else {}
+            )
+            return footer_output.getvalue(), None, logger_events, constructor_kwargs
 
     def _exit_code(self, code: object) -> int:
         if isinstance(code, bool):
@@ -249,7 +300,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         return 1
 
     async def test_footer_appears_for_success_and_failure(self) -> None:
-        success_output, success_code, _ = await self._run_cli(
+        success_output, success_code, _, _ = await self._run_cli(
             container_result=ContainerRunResult(
                 exit_code=0,
                 timed_out=False,
@@ -261,7 +312,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(success_code)
         self.assertIn("Run complete: success", success_output)
 
-        failure_output, failure_code, _ = await self._run_cli(
+        failure_output, failure_code, _, _ = await self._run_cli(
             container_result=ContainerRunResult(
                 exit_code=9,
                 timed_out=False,
@@ -273,8 +324,23 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failure_code, 9)
         self.assertIn("Run complete: failure", failure_output)
 
+    async def test_cli_timeout_override_is_forwarded_to_container_runner(self) -> None:
+        _, exit_code, _, constructor_kwargs = await self._run_cli(
+            container_result=ContainerRunResult(
+                exit_code=0,
+                timed_out=False,
+                stdout="",
+                stderr="",
+                container_name="forklift-test",
+            ),
+            timeout_seconds=37,
+        )
+
+        self.assertIsNone(exit_code)
+        self.assertEqual(constructor_kwargs.get("timeout_seconds"), 37)
+
     async def test_timeout_footer_keeps_exit_code_two(self) -> None:
-        output, exit_code, _ = await self._run_cli(
+        output, exit_code, _, _ = await self._run_cli(
             container_result=ContainerRunResult(
                 exit_code=-9,
                 timed_out=True,
@@ -288,7 +354,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Run complete: timed out", output)
 
     async def test_logger_calls_stop_after_footer_begins(self) -> None:
-        output, exit_code, logger_events = await self._run_cli(
+        output, exit_code, logger_events, _ = await self._run_cli(
             container_result=ContainerRunResult(
                 exit_code=5,
                 timed_out=False,
