@@ -49,6 +49,9 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,id=forklift-apt-lists,sharing=l
     xz-utils && \
     ln -s /usr/bin/fdfind /usr/local/bin/fd
 
+# Install uv via Astral's installer so FORK setup commands can use uv immediately.
+RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/bin sh
+
 # Prepare forklift user and writable tool directories ahead of installs
 RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi && \
     if ! getent group opencode >/dev/null 2>&1; then groupadd --system opencode; fi && \

@@ -26,7 +26,7 @@ Because of this behavior:
 docker build -t forklift/kitchen-sink:latest docker/kitchen-sink
 ```
 
-The image contains Ubuntu 24.04 plus Git, build-essential, Python 3, Node (via `n`), Bun, Rust (via rustup), jq, ripgrep, fd, tree, the OpenCode CLI, and the harness stack located under `/opt/opencode` + `/opt/forklift`.
+The image contains Ubuntu 24.04 plus Git, build-essential, Python 3, uv, Node (via `n`), Bun, Rust (via rustup), jq, ripgrep, fd, tree, the OpenCode CLI, and the harness stack located under `/opt/opencode` + `/opt/forklift`.
 
 ## Running Forklift
 
