@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 from importlib import metadata
 from pathlib import Path
@@ -177,6 +178,11 @@ class Forklift(Command):
         self._emit_clientlog_hint(run_paths.run_dir.name)
 
         timeout_seconds = self._resolved_timeout_seconds()
+        container_opencode_env = (
+            opencode_env
+            if timeout_seconds is None
+            else replace(opencode_env, timeout_seconds=timeout_seconds)
+        )
         container_runner = (
             ContainerRunner(timeout_seconds=timeout_seconds)
             if timeout_seconds is not None
@@ -187,7 +193,7 @@ class Forklift(Command):
             run_paths.harness_state,
             run_paths.opencode_logs,
             run_paths.run_dir / "run-state.json",
-            self._build_container_env(opencode_env, main_branch, run_paths.run_id),
+            self._build_container_env(container_opencode_env, main_branch, run_paths.run_id),
         )
 
         agent_log_path = run_paths.harness_state / "opencode-client.log"

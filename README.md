@@ -132,9 +132,11 @@ The CLI also exposes typed overrides:
 uv run forklift --model claude-35-sonnet --variant production --agent nightly --timeout-seconds 300
 ```
 
-Each override must avoid shell metacharacters, but forward slashes are allowed for provider-scoped model names (e.g. `google/gemini-3-flash-preview`); invalid values abort the run before any secrets are forwarded. `--timeout-seconds` must be a positive integer and only changes the host-side container watchdog for that one run. Overrides only adjust the client inputs—the Docker entrypoint is fixed to `/opt/opencode/entrypoint.sh`.
+Each override must avoid shell metacharacters, but forward slashes are allowed for provider-scoped model names (e.g. `google/gemini-3-flash-preview`); invalid values abort the run before any secrets are forwarded. `--timeout-seconds` must be a positive integer and sets both the host-side container watchdog and the forwarded `OPENCODE_TIMEOUT` value for that run so host/container deadlines stay aligned. Overrides only adjust the client inputs—the Docker entrypoint is fixed to `/opt/opencode/entrypoint.sh`.
 
-Timeout precedence is: `--timeout-seconds` (per-run CLI override) → `FORKLIFT_TIMEOUT_SECONDS` (environment default) → built-in default (`600` seconds). This host watchdog is separate from `OPENCODE_TIMEOUT`, which configures the OpenCode client timeout forwarded into the sandbox.
+Timeout precedence:
+- Host watchdog: `--timeout-seconds` (per-run CLI override) → `FORKLIFT_TIMEOUT_SECONDS` (environment default) → built-in default (`600` seconds)
+- OpenCode client timeout forwarded into sandbox: `--timeout-seconds` (per-run CLI override) → `OPENCODE_TIMEOUT` in `~/.config/forklift/opencode.env` → harness default (`600` seconds)
 
 ### Environment overrides
 

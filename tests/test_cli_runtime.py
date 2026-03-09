@@ -7,6 +7,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
+from typing import cast
 
 from rich.console import Console
 
@@ -220,7 +221,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 _ = stack.enter_context(
                     patch.object(Forklift, "_is_target_already_integrated", return_value=False)
                 )
-                _ = stack.enter_context(
+                build_container_env_mock = stack.enter_context(
                     patch.object(Forklift, "_build_container_env", return_value={})
                 )
                 _ = stack.enter_context(
@@ -278,6 +279,12 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         if container_runner_cls.call_args is not None
                         else {}
                     )
+                    if build_container_env_mock.call_args is not None:
+                        env_arg = cast(object, build_container_env_mock.call_args.args[0])
+                        if isinstance(env_arg, OpenCodeEnv):
+                            constructor_kwargs["build_env_timeout_seconds"] = (
+                                env_arg.timeout_seconds
+                            )
                     return (
                         footer_output.getvalue(),
                         self._exit_code(exc.code),
@@ -290,6 +297,10 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 if container_runner_cls.call_args is not None
                 else {}
             )
+            if build_container_env_mock.call_args is not None:
+                env_arg = cast(object, build_container_env_mock.call_args.args[0])
+                if isinstance(env_arg, OpenCodeEnv):
+                    constructor_kwargs["build_env_timeout_seconds"] = env_arg.timeout_seconds
             return footer_output.getvalue(), None, logger_events, constructor_kwargs
 
     def _exit_code(self, code: object) -> int:
@@ -338,6 +349,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(exit_code)
         self.assertEqual(constructor_kwargs.get("timeout_seconds"), 37)
+        self.assertEqual(constructor_kwargs.get("build_env_timeout_seconds"), 37)
 
     async def test_timeout_footer_keeps_exit_code_two(self) -> None:
         output, exit_code, _, _ = await self._run_cli(
