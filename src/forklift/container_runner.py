@@ -18,7 +18,7 @@ from .run_state import RunStateError, update_run_state, utc_now_iso8601
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
 DEFAULT_IMAGE = os.environ.get("FORKLIFT_DOCKER_IMAGE", "forklift/kitchen-sink:latest")
-DEFAULT_TIMEOUT_SECONDS = int(os.environ.get("FORKLIFT_TIMEOUT_SECONDS", "600"))
+DEFAULT_TIMEOUT_SECONDS = 600
 DOCKER_BIN = os.environ.get("DOCKER_BIN", "docker")
 DEFAULT_EXTRA_RUN_ARGS = shlex.split(os.environ.get("FORKLIFT_DOCKER_ARGS", ""))
 SENSITIVE_ENV_KEYS = {"OPENCODE_API_KEY", "OPENCODE_SERVER_PASSWORD"}

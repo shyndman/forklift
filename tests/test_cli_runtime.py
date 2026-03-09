@@ -18,6 +18,7 @@ from forklift.cli_runtime import (
     HOST_UID_ENV,
     build_container_env,
     resolve_chown_target,
+    resolved_effective_timeout_seconds,
     resolved_timeout_seconds,
     resolved_target_policy,
 )
@@ -87,6 +88,13 @@ class CliRuntimeHelperTests(unittest.TestCase):
             _ = resolved_timeout_seconds("not-a-number")
         with self.assertRaises(SystemExit):
             _ = resolved_timeout_seconds(object())
+        with self.assertRaises(SystemExit):
+            _ = resolved_timeout_seconds(True)
+
+    def test_resolved_effective_timeout_seconds_precedence(self) -> None:
+        self.assertEqual(resolved_effective_timeout_seconds(30, 45), 30)
+        self.assertEqual(resolved_effective_timeout_seconds(None, 45), 45)
+        self.assertEqual(resolved_effective_timeout_seconds(None, None), 600)
 
     def test_forklift_parse_accepts_timeout_seconds_flag(self) -> None:
         command = Forklift.parse(["--timeout-seconds", "33"])
@@ -94,12 +102,13 @@ class CliRuntimeHelperTests(unittest.TestCase):
 
 
 class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    def _dummy_env(self) -> OpenCodeEnv:
+    def _dummy_env(self, *, timeout_seconds: int | None = None) -> OpenCodeEnv:
         return OpenCodeEnv(
             api_key="api",
             model=None,
             variant="default",
             agent="worker",
+            timeout_seconds=timeout_seconds,
             server_password="pw",
             server_port=4096,
         )
@@ -127,6 +136,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         post_run_side_effect: Exception | None = None,
         monitor_logger_after_footer: bool = False,
         timeout_seconds: int | None = None,
+        env_timeout_seconds: int | None = None,
     ) -> tuple[str, int | None, list[tuple[str, bool]], dict[str, object]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -197,7 +207,11 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 _ = stack.enter_context(
-                    patch.object(Forklift, "_prepare_opencode_env", return_value=self._dummy_env())
+                    patch.object(
+                        Forklift,
+                        "_prepare_opencode_env",
+                        return_value=self._dummy_env(timeout_seconds=env_timeout_seconds),
+                    )
                 )
                 _ = stack.enter_context(
                     patch.object(Forklift, "_resolve_chown_target", return_value=(1000, 1000))
@@ -243,9 +257,16 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 container_runner_cls = stack.enter_context(patch("forklift.cli.ContainerRunner"))
+                effective_timeout = (
+                    timeout_seconds
+                    if timeout_seconds is not None
+                    else env_timeout_seconds
+                    if env_timeout_seconds is not None
+                    else 600
+                )
                 container_runner_cls.return_value = _ContainerRunnerStub(
                     container_result,
-                    timeout_seconds,
+                    effective_timeout,
                 )
                 _ = stack.enter_context(
                     patch(
@@ -350,6 +371,37 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(exit_code)
         self.assertEqual(constructor_kwargs.get("timeout_seconds"), 37)
         self.assertEqual(constructor_kwargs.get("build_env_timeout_seconds"), 37)
+
+    async def test_opencode_env_timeout_is_used_when_cli_timeout_missing(self) -> None:
+        _, exit_code, _, constructor_kwargs = await self._run_cli(
+            container_result=ContainerRunResult(
+                exit_code=0,
+                timed_out=False,
+                stdout="",
+                stderr="",
+                container_name="forklift-test",
+            ),
+            env_timeout_seconds=425,
+        )
+
+        self.assertIsNone(exit_code)
+        self.assertEqual(constructor_kwargs.get("timeout_seconds"), 425)
+        self.assertEqual(constructor_kwargs.get("build_env_timeout_seconds"), 425)
+
+    async def test_default_timeout_is_used_when_cli_and_env_missing(self) -> None:
+        _, exit_code, _, constructor_kwargs = await self._run_cli(
+            container_result=ContainerRunResult(
+                exit_code=0,
+                timed_out=False,
+                stdout="",
+                stderr="",
+                container_name="forklift-test",
+            ),
+        )
+
+        self.assertIsNone(exit_code)
+        self.assertEqual(constructor_kwargs.get("timeout_seconds"), 600)
+        self.assertEqual(constructor_kwargs.get("build_env_timeout_seconds"), 600)
 
     async def test_timeout_footer_keeps_exit_code_two(self) -> None:
         output, exit_code, _, _ = await self._run_cli(

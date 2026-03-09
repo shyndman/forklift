@@ -14,6 +14,7 @@ logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 TARGET_POLICY_OPTIONS = frozenset({"tip", "latest-version"})
 HOST_UID_ENV = "FORKLIFT_HOST_UID"
 HOST_GID_ENV = "FORKLIFT_HOST_GID"
+DEFAULT_RUN_TIMEOUT_SECONDS = 600
 
 
 def build_container_env(
@@ -149,6 +150,20 @@ def resolved_timeout_seconds(timeout_seconds: object | None) -> int | None:
         )
         raise SystemExit(1)
     return resolved
+
+
+def resolved_effective_timeout_seconds(
+    timeout_seconds: object | None,
+    env_timeout_seconds: int | None,
+) -> int:
+    """Resolve runtime timeout from CLI override, then OpenCode env, then default."""
+
+    cli_timeout = resolved_timeout_seconds(timeout_seconds)
+    if cli_timeout is not None:
+        return cli_timeout
+    if env_timeout_seconds is not None:
+        return env_timeout_seconds
+    return DEFAULT_RUN_TIMEOUT_SECONDS
 
 
 def resolved_target_policy(target_policy: str | None) -> str:

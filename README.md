@@ -90,7 +90,7 @@ What happens:
    - `metadata.json` – records source repo, timestamp, main branch, target policy, target SHA, selected tag (when present), and upstream/origin branch-tip SHAs
 4. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
 5. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. If `FORK.md` starts with strict front matter (`---` on line 1 and matching closing `---`), the harness validates optional `setup` and `changelog.exclude` metadata. `setup` runs in `/workspace` via `bash -lc` with a 180-second timeout. Setup output is written to `/harness-state/setup.log`; malformed front matter, setup failures/timeouts, or tracked-file mutations fail closed before agent launch. The harness then prints default instructions into `/harness-state/instructions.txt`, appends the front-matter-stripped FORK body (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
-6. The agent has three and a half minutes (210 seconds). If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>`, rewrites only `upstream/<branch>..<branch>` to your identity, and publishes the rewritten tip to a local branch named `upstream-merge/<YYYYMMDDTHHMMSS>/<branch>` for review. Forklift does not push to GitHub automatically in this step. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
+6. The agent runtime timeout uses one effective value for both host watchdog and forwarded `OPENCODE_TIMEOUT`: `--timeout-seconds` (per-run CLI override) → `OPENCODE_TIMEOUT` in `~/.config/forklift/opencode.env` → built-in default (`600` seconds). If the run finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>`, rewrites only `upstream/<branch>..<branch>` to your identity, and publishes the rewritten tip to a local branch named `upstream-merge/<YYYYMMDDTHHMMSS>/<branch>` for review. Forklift does not push to GitHub automatically in this step. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
 
 ## Configuring OpenCode
 
@@ -135,14 +135,12 @@ uv run forklift --model claude-35-sonnet --variant production --agent nightly --
 Each override must avoid shell metacharacters, but forward slashes are allowed for provider-scoped model names (e.g. `google/gemini-3-flash-preview`); invalid values abort the run before any secrets are forwarded. `--timeout-seconds` must be a positive integer and sets both the host-side container watchdog and the forwarded `OPENCODE_TIMEOUT` value for that run so host/container deadlines stay aligned. Overrides only adjust the client inputs—the Docker entrypoint is fixed to `/opt/opencode/entrypoint.sh`.
 
 Timeout precedence:
-- Host watchdog: `--timeout-seconds` (per-run CLI override) → `FORKLIFT_TIMEOUT_SECONDS` (environment default) → built-in default (`600` seconds)
-- OpenCode client timeout forwarded into sandbox: `--timeout-seconds` (per-run CLI override) → `OPENCODE_TIMEOUT` in `~/.config/forklift/opencode.env` → harness default (`600` seconds)
+- Effective run timeout (host watchdog + forwarded `OPENCODE_TIMEOUT`): `--timeout-seconds` (per-run CLI override) → `OPENCODE_TIMEOUT` in `~/.config/forklift/opencode.env` → built-in default (`600` seconds)
 
 ### Environment overrides
 
 - `FORKLIFT_DOCKER_IMAGE` – alternate container image (defaults to `forklift/kitchen-sink:latest`)
 - `FORKLIFT_DOCKER_ARGS` – extra `docker run` flags appended before the image (for GPU devices, proxies, etc.)
-- `FORKLIFT_TIMEOUT_SECONDS` – adjust the host watchdog default (default 600 seconds / 10 minutes)
 - `DOCKER_BIN` – override the Docker CLI binary name/path if needed
 
 Because the entrypoint is fixed, `FORKLIFT_DOCKER_COMMAND` is no longer honored.

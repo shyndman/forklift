@@ -39,8 +39,8 @@ from .cli_runtime import (
     build_container_env,
     chown_artifact,
     resolve_chown_target,
+    resolved_effective_timeout_seconds,
     resolved_main_branch,
-    resolved_timeout_seconds,
     resolved_target_policy,
 )
 from .changelog import Changelog
@@ -105,7 +105,7 @@ class Forklift(Command):
     )
     timeout_seconds: int | None = arg(
         None,
-        help="Override container watchdog timeout in seconds for this run.",
+        help="Override run timeout in seconds for this run.",
     )
 
     @override
@@ -177,17 +177,9 @@ class Forklift(Command):
         )
         self._emit_clientlog_hint(run_paths.run_dir.name)
 
-        timeout_seconds = self._resolved_timeout_seconds()
-        container_opencode_env = (
-            opencode_env
-            if timeout_seconds is None
-            else replace(opencode_env, timeout_seconds=timeout_seconds)
-        )
-        container_runner = (
-            ContainerRunner(timeout_seconds=timeout_seconds)
-            if timeout_seconds is not None
-            else ContainerRunner()
-        )
+        timeout_seconds = self._resolved_timeout_seconds(opencode_env.timeout_seconds)
+        container_opencode_env = replace(opencode_env, timeout_seconds=timeout_seconds)
+        container_runner = ContainerRunner(timeout_seconds=timeout_seconds)
         container_result = container_runner.run(
             run_paths.workspace,
             run_paths.harness_state,
@@ -543,8 +535,8 @@ class Forklift(Command):
     def _resolved_target_policy(self) -> str:
         return resolved_target_policy(self.target_policy)
 
-    def _resolved_timeout_seconds(self) -> int | None:
-        return resolved_timeout_seconds(self.timeout_seconds)
+    def _resolved_timeout_seconds(self, env_timeout_seconds: int | None) -> int:
+        return resolved_effective_timeout_seconds(self.timeout_seconds, env_timeout_seconds)
 
     def _print_version(self) -> None:
         try:
