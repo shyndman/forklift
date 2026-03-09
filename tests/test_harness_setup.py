@@ -91,6 +91,91 @@ printf '%s' "$FORK_CONTEXT_BODY" >"$HARNESS_STATE_DIR/fork-body.txt"
             expected_body,
         )
 
+    def test_setup_and_changelog_metadata_are_both_supported(self) -> None:
+        self._init_workspace_repo()
+        _ = (self.workspace / "FORK.md").write_text(
+            "\n".join(
+                [
+                    "---",
+                    "setup: |",
+                    "  echo bootstrap-ok",
+                    "changelog:",
+                    "  exclude:",
+                    "    - data/big-snapshot.json",
+                    "    - !data/keep.json",
+                    "---",
+                    "## Mission",
+                    "Preserve custom behavior.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = self._run_harness_shell(
+            """
+parse_fork_context
+run_setup_command
+printf '%s' "$FORK_CHANGELOG_EXCLUDE_PATTERNS" >"$HARNESS_STATE_DIR/changelog-excludes.txt"
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        excludes = (self.harness_state / "changelog-excludes.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(excludes, "data/big-snapshot.json\n!data/keep.json")
+        setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
+        self.assertIn("bootstrap-ok", setup_log)
+
+    def test_parse_fork_context_fails_closed_on_invalid_changelog_shape(self) -> None:
+        _ = (self.workspace / "FORK.md").write_text(
+            "---\nchangelog: []\n---\n## Mission\nNope\n",
+            encoding="utf-8",
+        )
+
+        result = self._run_harness_shell(
+            """
+if parse_fork_context; then
+  echo "expected parse failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("changelog must be an object", result.stderr)
+
+    def test_parse_fork_context_fails_closed_on_invalid_changelog_exclude_entry(self) -> None:
+        _ = (self.workspace / "FORK.md").write_text(
+            "\n".join(
+                [
+                    "---",
+                    "changelog:",
+                    "  exclude:",
+                    "    -",
+                    "      nested: value",
+                    "---",
+                    "## Mission",
+                    "Nope",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        result = self._run_harness_shell(
+            """
+if parse_fork_context; then
+  echo "expected parse failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("changelog.exclude entries must be non-empty strings", result.stderr)
+
     def test_setup_success_writes_setup_log(self) -> None:
         self._init_workspace_repo()
         _ = (self.workspace / "FORK.md").write_text(

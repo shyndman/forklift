@@ -19,6 +19,204 @@ from .opencode_env import (
 )
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
+FORK_CONTEXT_FILENAME = "FORK.md"
+
+
+def _consume_setup_front_matter(front_lines: list[str], start: int) -> int:
+    """Advance parser index across setup metadata while validating accepted forms."""
+
+    line = front_lines[start]
+    value = line[len("setup:") :].strip()
+    if value in ("|", "|-"):
+        idx = start + 1
+        saw_command_line = False
+        while idx < len(front_lines):
+            candidate = front_lines[idx]
+            if candidate.startswith("  "):
+                saw_command_line = True
+                idx += 1
+                continue
+            if candidate.strip() == "":
+                idx += 1
+                continue
+            break
+        if not saw_command_line:
+            raise ChangelogAnalysisError(
+                "FORK.md front matter is malformed: setup block string must include at least one command line."
+            )
+        return idx
+
+    if value == "":
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: setup must be a non-empty string or block string."
+        )
+    return start + 1
+
+
+def _consume_changelog_front_matter(
+    front_lines: list[str],
+    start: int,
+) -> tuple[list[str], int]:
+    """Parse changelog front matter and return ordered exclusion patterns."""
+
+    line = front_lines[start]
+    if line[len("changelog:") :].strip() != "":
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: changelog must be an object with nested keys."
+        )
+
+    idx = start + 1
+    nested_lines: list[str] = []
+    while idx < len(front_lines):
+        nested = front_lines[idx]
+        if nested.startswith("  ") or nested.strip() == "":
+            nested_lines.append(nested)
+            idx += 1
+            continue
+        break
+
+    if not nested_lines:
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: changelog must define nested metadata with changelog.exclude."
+        )
+
+    local_idx = 0
+    found_exclude = False
+    parsed_excludes: list[str] = []
+    while local_idx < len(nested_lines):
+        nested_line = nested_lines[local_idx]
+        stripped = nested_line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            local_idx += 1
+            continue
+
+        if not nested_line.startswith("  "):
+            raise ChangelogAnalysisError(
+                "FORK.md front matter is malformed: changelog metadata must be indented by two spaces."
+            )
+
+        key_line = nested_line[2:]
+        if not key_line.startswith("exclude:"):
+            raise ChangelogAnalysisError(
+                f"FORK.md front matter is malformed: unsupported changelog key line '{key_line}'. Only 'exclude' is allowed."
+            )
+        if found_exclude:
+            raise ChangelogAnalysisError(
+                "FORK.md front matter is malformed: duplicate changelog.exclude key."
+            )
+
+        trailing = key_line[len("exclude:") :].strip()
+        if trailing:
+            raise ChangelogAnalysisError(
+                "FORK.md front matter is malformed: changelog.exclude must be a list with one '- pattern' per line."
+            )
+
+        found_exclude = True
+        local_idx += 1
+        while local_idx < len(nested_lines):
+            candidate = nested_lines[local_idx]
+            if candidate.strip() == "":
+                local_idx += 1
+                continue
+            if candidate.lstrip().startswith("#"):
+                local_idx += 1
+                continue
+            if not candidate.startswith("    "):
+                break
+
+            item = candidate[4:]
+            if not item.startswith("-"):
+                raise ChangelogAnalysisError(
+                    "FORK.md front matter is malformed: changelog.exclude entries must be list items prefixed with '-'."
+                )
+            pattern = item[1:].strip()
+            if not pattern:
+                raise ChangelogAnalysisError(
+                    "FORK.md front matter is malformed: changelog.exclude entries must be non-empty strings."
+                )
+            parsed_excludes.append(pattern)
+            local_idx += 1
+
+    if not found_exclude:
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: changelog must include an 'exclude' key."
+        )
+    if not parsed_excludes:
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: changelog.exclude must contain at least one pattern."
+        )
+
+    return parsed_excludes, idx
+
+
+def load_changelog_exclude_patterns(repo_path: Path) -> list[str]:
+    """Load repo-owned changelog exclusion rules from strict FORK.md front matter."""
+
+    fork_path = repo_path / FORK_CONTEXT_FILENAME
+    if not fork_path.exists():
+        return []
+
+    try:
+        content = fork_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ChangelogAnalysisError(
+            f"Unable to read FORK.md for changelog metadata: {exc}"
+        ) from exc
+
+    lines = content.splitlines()
+    if not lines or lines[0] != "---":
+        return []
+
+    closing = None
+    for idx, line in enumerate(lines[1:], start=1):
+        if line == "---":
+            closing = idx
+            break
+    if closing is None:
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: missing closing '---' delimiter."
+        )
+
+    front_lines = lines[1:closing]
+    parsed_excludes: list[str] | None = None
+    setup_seen = False
+    changelog_seen = False
+
+    idx = 0
+    while idx < len(front_lines):
+        line = front_lines[idx]
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            idx += 1
+            continue
+
+        if line.startswith("setup:"):
+            if setup_seen:
+                raise ChangelogAnalysisError(
+                    "FORK.md front matter is malformed: duplicate 'setup' key."
+                )
+            setup_seen = True
+            idx = _consume_setup_front_matter(front_lines, idx)
+            continue
+
+        if line.startswith("changelog:"):
+            if changelog_seen:
+                raise ChangelogAnalysisError(
+                    "FORK.md front matter is malformed: duplicate 'changelog' key."
+                )
+            changelog_seen = True
+            parsed_excludes, idx = _consume_changelog_front_matter(front_lines, idx)
+            continue
+
+        if line.startswith("  "):
+            raise ChangelogAnalysisError(
+                f"FORK.md front matter is malformed: unexpected indentation for line '{line}'."
+            )
+        raise ChangelogAnalysisError(
+            f"FORK.md front matter is malformed: unsupported key line '{line}'. Only 'setup' and 'changelog' are allowed."
+        )
+
+    return parsed_excludes or []
 
 
 class Changelog(Command):
@@ -50,7 +248,12 @@ class Changelog(Command):
         env = self._prepare_opencode_env()
 
         try:
-            evidence = build_evidence_bundle(repo_path, branch)
+            exclusion_patterns = load_changelog_exclude_patterns(repo_path)
+            evidence = build_evidence_bundle(
+                repo_path,
+                branch,
+                exclusion_patterns=exclusion_patterns,
+            )
             narrative = await generate_changelog_narrative(evidence, env)
         except (ChangelogAnalysisError, ChangelogLlmError) as exc:
             logger.error("forklift changelog failed", error=str(exc))

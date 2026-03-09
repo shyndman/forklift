@@ -52,11 +52,12 @@ TXT
 
 # Parse optional FORK front matter into setup metadata while keeping agent-visible context body-only.
 parse_fork_context() {
-  local fork_file setup_tmp body_tmp
+  local fork_file setup_tmp body_tmp changelog_excludes_tmp
   fork_file="$WORKSPACE_DIR/FORK.md"
   FORK_CONTEXT_PRESENT=0
   FORK_CONTEXT_BODY=""
   FORK_SETUP_COMMAND=""
+  FORK_CHANGELOG_EXCLUDE_PATTERNS=""
 
   if [[ ! -f "$fork_file" ]]; then
     return 0
@@ -65,18 +66,139 @@ parse_fork_context() {
   FORK_CONTEXT_PRESENT=1
   setup_tmp=$(mktemp)
   body_tmp=$(mktemp)
+  changelog_excludes_tmp=$(mktemp)
 
-  if ! python3 - "$fork_file" "$setup_tmp" "$body_tmp" <<'PY'; then
+  if ! python3 - "$fork_file" "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp" <<'PY'; then
 from pathlib import Path
 import sys
 
 fork_path = Path(sys.argv[1])
 setup_out = Path(sys.argv[2])
 body_out = Path(sys.argv[3])
+changelog_excludes_out = Path(sys.argv[4])
 
 content = fork_path.read_text(encoding="utf-8")
 setup = ""
 body = content
+changelog_excludes: list[str] = []
+
+
+def parse_setup_value(front_lines: list[str], start: int, line: str) -> tuple[str, int]:
+    """Parse `setup` metadata while preserving existing inline and block forms."""
+
+    value = line[len("setup:") :].strip()
+    if value in ("|", "|-"):
+        idx = start + 1
+        block: list[str] = []
+        while idx < len(front_lines):
+            block_line = front_lines[idx]
+            if block_line.startswith("  "):
+                block.append(block_line[2:])
+                idx += 1
+                continue
+            if block_line.strip() == "":
+                block.append("")
+                idx += 1
+                continue
+            break
+        if not block:
+            raise SystemExit(
+                "FORK.md front matter is malformed: setup block string must include at least one command line."
+            )
+        return "\n".join(block).rstrip("\n"), idx
+
+    if value == "":
+        raise SystemExit(
+            "FORK.md front matter is malformed: setup must be a non-empty string or block string."
+        )
+    return value, start + 1
+
+
+def parse_changelog_metadata(
+    front_lines: list[str],
+    start: int,
+) -> tuple[list[str], int]:
+    """Parse `changelog.exclude` metadata as an ordered list of non-empty strings."""
+
+    idx = start + 1
+    nested_lines: list[str] = []
+    while idx < len(front_lines):
+        nested = front_lines[idx]
+        if nested.startswith("  ") or nested.strip() == "":
+            nested_lines.append(nested)
+            idx += 1
+            continue
+        break
+
+    if not nested_lines:
+        raise SystemExit(
+            "FORK.md front matter is malformed: changelog must define nested metadata with changelog.exclude."
+        )
+
+    local_idx = 0
+    parsed_excludes: list[str] = []
+    found_exclude = False
+    while local_idx < len(nested_lines):
+        nested_line = nested_lines[local_idx]
+        stripped = nested_line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            local_idx += 1
+            continue
+        if not nested_line.startswith("  "):
+            raise SystemExit(
+                "FORK.md front matter is malformed: changelog metadata must be indented by two spaces."
+            )
+
+        key_line = nested_line[2:]
+        if not key_line.startswith("exclude:"):
+            raise SystemExit(
+                f"FORK.md front matter is malformed: unsupported changelog key line '{key_line}'. Only 'exclude' is allowed."
+            )
+        if found_exclude:
+            raise SystemExit(
+                "FORK.md front matter is malformed: duplicate changelog.exclude key."
+            )
+        trailing = key_line[len("exclude:") :].strip()
+        if trailing:
+            raise SystemExit(
+                "FORK.md front matter is malformed: changelog.exclude must be a list with one '- pattern' per line."
+            )
+        found_exclude = True
+        local_idx += 1
+
+        while local_idx < len(nested_lines):
+            candidate = nested_lines[local_idx]
+            if candidate.strip() == "":
+                local_idx += 1
+                continue
+            if candidate.lstrip().startswith("#"):
+                local_idx += 1
+                continue
+            if not candidate.startswith("    "):
+                break
+            item = candidate[4:]
+            if not item.startswith("-"):
+                raise SystemExit(
+                    "FORK.md front matter is malformed: changelog.exclude entries must be list items prefixed with '-'."
+                )
+            pattern = item[1:].strip()
+            if not pattern:
+                raise SystemExit(
+                    "FORK.md front matter is malformed: changelog.exclude entries must be non-empty strings."
+                )
+            parsed_excludes.append(pattern)
+            local_idx += 1
+
+    if not found_exclude:
+        raise SystemExit(
+            "FORK.md front matter is malformed: changelog must include an 'exclude' key."
+        )
+    if not parsed_excludes:
+        raise SystemExit(
+            "FORK.md front matter is malformed: changelog.exclude must contain at least one pattern."
+        )
+
+    return parsed_excludes, idx
 
 lines = content.splitlines()
 if lines and lines[0] == "---":
@@ -93,60 +215,55 @@ if lines and lines[0] == "---":
 
     idx = 0
     parsed_setup = None
+    parsed_changelog_excludes: list[str] | None = None
     while idx < len(front_lines):
         line = front_lines[idx]
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             idx += 1
             continue
-        if not line.startswith("setup:"):
-            raise SystemExit(
-                f"FORK.md front matter is malformed: unsupported key line '{line}'. Only 'setup' is allowed."
-            )
-        if parsed_setup is not None:
-            raise SystemExit("FORK.md front matter is malformed: duplicate 'setup' key.")
-        value = line[len("setup:") :].strip()
-        if value in ("|", "|-"):
-            idx += 1
-            block: list[str] = []
-            while idx < len(front_lines):
-                block_line = front_lines[idx]
-                if block_line.startswith("  "):
-                    block.append(block_line[2:])
-                    idx += 1
-                    continue
-                if block_line.strip() == "":
-                    block.append("")
-                    idx += 1
-                    continue
+
+        if line.startswith("setup:"):
+            if parsed_setup is not None:
+                raise SystemExit("FORK.md front matter is malformed: duplicate 'setup' key.")
+            parsed_setup, idx = parse_setup_value(front_lines, idx, line)
+            continue
+
+        if line.startswith("changelog:"):
+            if line[len("changelog:") :].strip() != "":
                 raise SystemExit(
-                    "FORK.md front matter is malformed: setup block values must be indented by two spaces."
+                    "FORK.md front matter is malformed: changelog must be an object with nested keys."
                 )
-            if not block:
+            if parsed_changelog_excludes is not None:
                 raise SystemExit(
-                    "FORK.md front matter is malformed: setup block string must include at least one command line."
+                    "FORK.md front matter is malformed: duplicate 'changelog' key."
                 )
-            parsed_setup = "\n".join(block).rstrip("\n")
-            break
-        if value == "":
+            parsed_changelog_excludes, idx = parse_changelog_metadata(front_lines, idx)
+            continue
+
+        if line.startswith("  "):
             raise SystemExit(
-                "FORK.md front matter is malformed: setup must be a non-empty string or block string."
+                f"FORK.md front matter is malformed: unexpected indentation for line '{line}'."
             )
-        parsed_setup = value
-        idx += 1
+        raise SystemExit(
+            f"FORK.md front matter is malformed: unsupported key line '{line}'. Only 'setup' and 'changelog' are allowed."
+        )
 
     setup = parsed_setup or ""
+    changelog_excludes = parsed_changelog_excludes or []
 
 setup_out.write_text(setup, encoding="utf-8")
 body_out.write_text(body, encoding="utf-8")
+changelog_excludes_out.write_text("\n".join(changelog_excludes), encoding="utf-8")
 PY
-    rm -f "$setup_tmp" "$body_tmp"
+    rm -f "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp"
     return 1
   fi
 
   FORK_SETUP_COMMAND=$(cat "$setup_tmp")
   FORK_CONTEXT_BODY=$(cat "$body_tmp")
-  rm -f "$setup_tmp" "$body_tmp"
+  FORK_CHANGELOG_EXCLUDE_PATTERNS=$(cat "$changelog_excludes_tmp")
+  rm -f "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp"
   return 0
 }
 

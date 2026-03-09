@@ -3,7 +3,9 @@ from __future__ import annotations
 import re
 import subprocess
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import cast
 
 from .changelog_models import (
@@ -157,6 +159,85 @@ def resolve_merge_tree_hotspots(result: MergeTreeResult) -> list[ConflictHotspot
     )
 
 
+def canonicalize_changed_path(raw_path: str) -> str:
+    """Normalize git diff paths so rename/copy rows use destination-path semantics."""
+
+    path = raw_path.strip()
+    if " => " not in path:
+        return path
+
+    if "{" in path and "}" in path:
+        prefix, remainder = path.split("{", maxsplit=1)
+        middle, suffix = remainder.split("}", maxsplit=1)
+        if " => " in middle:
+            _old_name, new_name = middle.split(" => ", maxsplit=1)
+            return f"{prefix}{new_name}{suffix}".strip()
+
+    _old_path, new_path = path.split(" => ", maxsplit=1)
+    return new_path.strip()
+
+
+def path_matches_exclusion_pattern(path: str, pattern: str) -> bool:
+    """Apply gitignore-like path matching for one exclusion pattern."""
+
+    normalized_path = path.strip().lstrip("./")
+    normalized_pattern = pattern.strip().lstrip("/")
+    if not normalized_path or not normalized_pattern:
+        return False
+
+    if "/" not in normalized_pattern:
+        return any(
+            fnmatchcase(segment, normalized_pattern)
+            for segment in normalized_path.split("/")
+        )
+
+    return PurePosixPath(normalized_path).match(normalized_pattern)
+
+
+def is_path_excluded(path: str, exclusion_patterns: list[str]) -> bool:
+    """Evaluate ordered exclusion rules using last-match-wins semantics."""
+
+    included = True
+    for raw_pattern in exclusion_patterns:
+        is_negated = raw_pattern.startswith("!")
+        pattern = raw_pattern[1:] if is_negated else raw_pattern
+        if not pattern:
+            continue
+        if not path_matches_exclusion_pattern(path, pattern):
+            continue
+        included = is_negated
+    return not included
+
+
+def filter_changed_file_stats(
+    changed_file_stats: list[ChangedFileStat],
+    exclusion_patterns: list[str],
+) -> tuple[list[ChangedFileStat], int]:
+    """Filter changed-file rows using exclusion patterns and return excluded-count metadata."""
+
+    filtered: list[ChangedFileStat] = []
+    excluded_count = 0
+    for item in changed_file_stats:
+        if is_path_excluded(item.path, exclusion_patterns):
+            excluded_count += 1
+            continue
+        filtered.append(item)
+    return filtered, excluded_count
+
+
+def filter_conflict_hotspots(
+    hotspots: list[ConflictHotspot],
+    exclusion_patterns: list[str],
+) -> list[ConflictHotspot]:
+    """Apply exclusion rules to merge-tree conflict hotspots for consistent reporting."""
+
+    return [
+        hotspot
+        for hotspot in hotspots
+        if not is_path_excluded(hotspot.path, exclusion_patterns)
+    ]
+
+
 def parse_numstat_output(numstat_output: str) -> dict[str, tuple[int, int]]:
     """Parse git diff --numstat rows into per-file added/removed counts."""
 
@@ -171,6 +252,7 @@ def parse_numstat_output(numstat_output: str) -> dict[str, tuple[int, int]]:
         added_raw = parts[0].strip()
         removed_raw = parts[1].strip()
         path = parts[2].strip() if len(parts) == 3 else parts[-1].strip()
+        path = canonicalize_changed_path(path)
         if not path:
             continue
 
@@ -201,6 +283,7 @@ def parse_name_status_output(name_status_output: str) -> dict[str, str]:
             path = parts[2].strip()
         else:
             path = parts[1].strip()
+        path = canonicalize_changed_path(path)
         if not path:
             continue
         parsed[path] = status
@@ -271,9 +354,10 @@ def build_evidence_bundle(
     repo_path: Path,
     main_branch: str,
     *,
+    exclusion_patterns: list[str] | None = None,
     max_changed_files: int = DEFAULT_TOP_CHANGED_FILES,
 ) -> EvidenceBundle:
-    """Compute a bounded deterministic evidence bundle used by changelog generation."""
+    """Compute deterministic changelog evidence with optional exclusion-aware filtering."""
 
     _ = ensure_supported_git_version(repo_path)
 
@@ -290,19 +374,32 @@ def build_evidence_bundle(
     hotspots = resolve_merge_tree_hotspots(
         run_merge_tree(repo_path, resolved_main, upstream_ref)
     )
-    diff_summary, changed_file_stats = collect_supporting_diff_stats(
+    baseline_diff_summary, changed_file_stats = collect_supporting_diff_stats(
         repo_path,
         resolved_main,
         upstream_ref,
     )
+    active_exclusion_rules = [
+        pattern.strip() for pattern in (exclusion_patterns or []) if pattern.strip()
+    ]
+    filtered_changed_file_stats, excluded_file_count = filter_changed_file_stats(
+        changed_file_stats,
+        active_exclusion_rules,
+    )
+    filtered_hotspots = filter_conflict_hotspots(hotspots, active_exclusion_rules)
+    filtered_diff_summary = build_diff_summary(filtered_changed_file_stats)
 
     bounded_limit = max(0, max_changed_files)
     return EvidenceBundle(
         base_sha=base_sha,
         main_branch=resolved_main,
         upstream_ref=upstream_ref,
-        conflicts=hotspots,
-        diff_summary=diff_summary,
-        top_changed_files=changed_file_stats[:bounded_limit],
+        conflicts=filtered_hotspots,
+        baseline_diff_summary=baseline_diff_summary,
+        filtered_diff_summary=filtered_diff_summary,
+        active_exclusion_rules=active_exclusion_rules,
+        excluded_file_count=excluded_file_count,
+        diff_summary=filtered_diff_summary,
+        top_changed_files=filtered_changed_file_stats[:bounded_limit],
         important_notes=[IMPORTANT_NOTE_HOTSPOT_PREDICTION],
     )

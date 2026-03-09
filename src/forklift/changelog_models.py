@@ -32,12 +32,16 @@ class ChangedFileStat:
 
 @dataclass(frozen=True)
 class EvidenceBundle:
-    """Bundle bounded deterministic evidence forwarded to changelog rendering layers."""
+    """Bundle deterministic evidence and exclusion metadata used by changelog layers."""
 
     base_sha: str
     main_branch: str
     upstream_ref: str
     conflicts: list[ConflictHotspot] = field(default_factory=list)
+    baseline_diff_summary: DiffSummary = field(default_factory=DiffSummary)
+    filtered_diff_summary: DiffSummary = field(default_factory=DiffSummary)
+    active_exclusion_rules: list[str] = field(default_factory=list)
+    excluded_file_count: int = 0
     diff_summary: DiffSummary = field(default_factory=DiffSummary)
     top_changed_files: list[ChangedFileStat] = field(default_factory=list)
     important_notes: list[str] = field(default_factory=list)

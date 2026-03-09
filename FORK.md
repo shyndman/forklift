@@ -9,6 +9,11 @@ Optional strict front matter (line 1 must be `---`) supports harness bootstrap:
 ---
 setup: |
   uv sync
+changelog:
+  exclude:
+    - data/big-snapshot.json
+    - generated/**/*.json
+    - !generated/keep.json
 ---
 ```
 
@@ -16,6 +21,9 @@ setup: |
 - `setup` runs in `/workspace` before agent launch with a fixed 180-second timeout.
 - Setup must not modify tracked git files; tracked changes cause fail-closed exit.
 - Setup output is logged to `/harness-state/setup.log`.
+- `changelog.exclude` is optional; when present it must be an ordered list of non-empty patterns.
+- `changelog.exclude` uses gitignore-style matching, supports `!` negation, and resolves by last matching rule.
+- Changelog exclusion matching uses destination paths for rename/copy diff rows.
 - Front matter is stripped before FORK body text is sent to the agent.
 
 ## Mission / Themes
@@ -41,6 +49,11 @@ setup: |
 ```
 ---
 setup: bun install
+changelog:
+  exclude:
+    - data/vendor-snapshot.json
+    - generated/**/*.json
+    - !generated/keep.json
 ---
 
 Mission: Keep our offline vendor snapshot intact while rebasing weekly onto upstream/main.

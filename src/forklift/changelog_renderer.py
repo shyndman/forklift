@@ -15,6 +15,14 @@ MAX_MARKDOWN_WIDTH = 110
 def render_changelog_markdown(evidence: EvidenceBundle, narrative: str) -> str:
     """Assemble fixed-order changelog markdown from evidence and narrative text."""
 
+    baseline = evidence.baseline_diff_summary
+    filtered = evidence.filtered_diff_summary
+
+    def _delta(filtered_value: int, baseline_value: int) -> int:
+        """Compute filtered-minus-baseline deltas for transparency reporting."""
+
+        return filtered_value - baseline_value
+
     lines: list[str] = [
         "# Forklift Changelog",
         "",
@@ -42,9 +50,26 @@ def render_changelog_markdown(evidence: EvidenceBundle, narrative: str) -> str:
             f"- Caveat: {HOTSPOT_CAVEAT}",
             "",
             "## Deterministic Supporting Metrics",
-            f"- Files changed: {evidence.diff_summary.files_changed}",
-            f"- Insertions: {evidence.diff_summary.insertions}",
-            f"- Deletions: {evidence.diff_summary.deletions}",
+            "| Metric | All Files | Excluding Patterns | Delta |",
+            "| --- | ---: | ---: | ---: |",
+            (
+                "| Files changed | "
+                f"{baseline.files_changed} | "
+                f"{filtered.files_changed} | "
+                f"{_delta(filtered.files_changed, baseline.files_changed)} |"
+            ),
+            (
+                "| Insertions | "
+                f"{baseline.insertions} | "
+                f"{filtered.insertions} | "
+                f"{_delta(filtered.insertions, baseline.insertions)} |"
+            ),
+            (
+                "| Deletions | "
+                f"{baseline.deletions} | "
+                f"{filtered.deletions} | "
+                f"{_delta(filtered.deletions, baseline.deletions)} |"
+            ),
             "",
             "### Top Changed Files",
         ]
@@ -65,6 +90,17 @@ def render_changelog_markdown(evidence: EvidenceBundle, narrative: str) -> str:
         lines.append("### Important Notes")
         for note in evidence.important_notes:
             lines.append(f"- {note}")
+
+    lines.append("")
+    lines.append("### Exclusion Rules")
+    if evidence.active_exclusion_rules:
+        for pattern in evidence.active_exclusion_rules:
+            lines.append(f"- `{pattern}`")
+        lines.append(
+            f"- Matched files in baseline diff: {evidence.excluded_file_count}"
+        )
+    else:
+        lines.append("- No exclusion rules configured.")
 
     return "\n".join(lines).strip() + "\n"
 

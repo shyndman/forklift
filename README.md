@@ -75,6 +75,8 @@ Behavior and constraints:
 - Requires host Git 2.38+ because changelog conflict prediction depends on modern
   `git merge-tree --write-tree` output and exit semantics.
 - Renders Markdown in the terminal with deterministic metrics plus an LLM narrative.
+- Supports optional repo-level exclusions from `FORK.md` front matter (`changelog.exclude`) using gitignore-style matching with ordered rules, `!` negation, and last-match-wins behavior.
+- Deterministic metrics are shown as `all files` vs `excluding patterns` with explicit deltas.
 - Predicted conflict hotspots come from tip-merge analysis and may recur during
   commit-by-commit rebases.
 
@@ -87,7 +89,7 @@ What happens:
    - `harness-state/` – writable directory the container uses for logs and instructions
    - `metadata.json` – records source repo, timestamp, main branch, target policy, target SHA, selected tag (when present), and upstream/origin branch-tip SHAs
 4. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
-5. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. If `FORK.md` starts with strict front matter (`---` on line 1 and matching closing `---`), the harness reads optional `setup` and runs it in `/workspace` via `bash -lc` with a 180-second timeout. Setup output is written to `/harness-state/setup.log`; malformed front matter, setup failures/timeouts, or tracked-file mutations fail closed before agent launch. The harness then prints default instructions into `/harness-state/instructions.txt`, appends the front-matter-stripped FORK body (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
+5. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. If `FORK.md` starts with strict front matter (`---` on line 1 and matching closing `---`), the harness validates optional `setup` and `changelog.exclude` metadata. `setup` runs in `/workspace` via `bash -lc` with a 180-second timeout. Setup output is written to `/harness-state/setup.log`; malformed front matter, setup failures/timeouts, or tracked-file mutations fail closed before agent launch. The harness then prints default instructions into `/harness-state/instructions.txt`, appends the front-matter-stripped FORK body (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
 6. The agent has three and a half minutes (210 seconds). If it finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>`, rewrites only `upstream/<branch>..<branch>` to your identity, and publishes the rewritten tip to a local branch named `upstream-merge/<YYYYMMDDTHHMMSS>/<branch>` for review. Forklift does not push to GitHub automatically in this step. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
 
 ## Configuring OpenCode
@@ -173,6 +175,11 @@ Optional strict front matter (line 1 must be `---`) can define harness-only boot
 ---
 setup: |
   uv sync
+changelog:
+  exclude:
+    - data/big-snapshot.json
+    - generated/**/*.json
+    - !generated/keep.json
 ---
 ```
 
@@ -184,6 +191,14 @@ Rules for `setup`:
 - Must leave tracked git files clean (`git status --porcelain --untracked-files=no` must be empty).
 - Failures are fail-closed (agent is not launched); inspect `/harness-state/setup.log`.
 - Front matter is stripped from agent-visible context (`instructions.txt`, `fork-context.md`, payload).
+
+Rules for `changelog.exclude`:
+
+- Optional; omit when no changelog filtering is needed.
+- Must be an ordered list of non-empty string patterns.
+- Uses gitignore-style matching against repo-relative paths.
+- Supports `!` negation; last matching rule wins.
+- Rename/copy diff entries match using destination-path semantics.
 
 Recommended body sections:
 

@@ -6,14 +6,17 @@ import asyncio
 from types import SimpleNamespace
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest.mock import AsyncMock, Mock, patch
 
-from forklift.changelog import Changelog
+from forklift.changelog import Changelog, load_changelog_exclude_patterns
 from forklift.changelog_analysis import (
     ChangelogAnalysisError,
     MergeTreeResult,
     build_evidence_bundle,
+    filter_changed_file_stats,
+    is_path_excluded,
     parse_merge_tree_conflict_hotspots,
     parse_name_status_output,
     parse_numstat_output,
@@ -28,7 +31,7 @@ from forklift.changelog_models import (
 )
 from forklift.cli import Forklift
 from forklift.opencode_env import OpenCodeEnv
-from forklift.changelog_renderer import render_changelog_terminal
+from forklift.changelog_renderer import render_changelog_markdown, render_changelog_terminal
 
 
 def lines(*rows: str) -> str:
@@ -39,6 +42,49 @@ class ChangelogCliParsingTests(unittest.TestCase):
     def test_forklift_parse_routes_changelog_subcommand(self) -> None:
         command = Forklift.parse(["changelog"])
         self.assertIsInstance(command.subcommand, Changelog)
+
+
+class ChangelogForkMetadataTests(unittest.TestCase):
+    def test_load_exclusions_reads_changelog_front_matter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            _ = (repo / "FORK.md").write_text(
+                lines(
+                    "---",
+                    "setup: echo ok",
+                    "changelog:",
+                    "  exclude:",
+                    "    - data/big.json",
+                    "    - !data/keep.json",
+                    "---",
+                    "## Mission",
+                    "Keep behavior stable.",
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            excludes = load_changelog_exclude_patterns(repo)
+
+        self.assertEqual(excludes, ["data/big.json", "!data/keep.json"])
+
+    def test_load_exclusions_rejects_invalid_changelog_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            _ = (repo / "FORK.md").write_text(
+                lines(
+                    "---",
+                    "changelog: []",
+                    "---",
+                    "## Mission",
+                    "Keep behavior stable.",
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ChangelogAnalysisError):
+                _ = load_changelog_exclude_patterns(repo)
 
 
 class ChangelogModelTests(unittest.TestCase):
@@ -61,6 +107,10 @@ class ChangelogModelTests(unittest.TestCase):
         self.assertEqual(file_stat.removed, 0)
 
         self.assertIsInstance(evidence.conflicts, list)
+        self.assertIsInstance(evidence.baseline_diff_summary, DiffSummary)
+        self.assertIsInstance(evidence.filtered_diff_summary, DiffSummary)
+        self.assertIsInstance(evidence.active_exclusion_rules, list)
+        self.assertIsInstance(evidence.excluded_file_count, int)
         self.assertIsInstance(evidence.diff_summary, DiffSummary)
         self.assertIsInstance(evidence.top_changed_files, list)
         self.assertIsInstance(evidence.important_notes, list)
@@ -139,6 +189,30 @@ class ChangelogRendererTests(unittest.TestCase):
         _, kwargs = console.print.call_args
         self.assertEqual(kwargs["width"], 110)
 
+    def test_render_markdown_includes_metric_comparison_and_exclusion_summary(self) -> None:
+        evidence = EvidenceBundle(
+            base_sha="1234567890abcdef1234567890abcdef12345678",
+            main_branch="main",
+            upstream_ref="upstream/main",
+            conflicts=[ConflictHotspot(path="src/conflict.py", conflict_count=2)],
+            baseline_diff_summary=DiffSummary(files_changed=204, insertions=16628, deletions=4526),
+            filtered_diff_summary=DiffSummary(files_changed=57, insertions=1140, deletions=390),
+            active_exclusion_rules=["data/big-snapshot.json", "!data/keep.json"],
+            excluded_file_count=147,
+            diff_summary=DiffSummary(files_changed=57, insertions=1140, deletions=390),
+            top_changed_files=[
+                ChangedFileStat(path="src/conflict.py", added=7, removed=3, status="M")
+            ],
+        )
+
+        markdown = render_changelog_markdown(evidence, "## Summary\nNarrative")
+
+        self.assertIn("| Metric | All Files | Excluding Patterns | Delta |", markdown)
+        self.assertIn("| Files changed | 204 | 57 | -147 |", markdown)
+        self.assertIn("### Exclusion Rules", markdown)
+        self.assertIn("- `data/big-snapshot.json`", markdown)
+        self.assertIn("- Matched files in baseline diff: 147", markdown)
+
 
 class ChangelogAnalysisTests(unittest.TestCase):
     def test_parse_merge_tree_conflicts_no_conflicts(self) -> None:
@@ -213,7 +287,7 @@ class ChangelogAnalysisTests(unittest.TestCase):
         parsed_numstat = parse_numstat_output(numstat)
         self.assertEqual(parsed_numstat["src/feature.py"], (5, 3))
         self.assertEqual(parsed_numstat["binary/blob.dat"], (0, 0))
-        self.assertEqual(parsed_numstat["old/name.py => new/name.py"], (7, 2))
+        self.assertEqual(parsed_numstat["new/name.py"], (7, 2))
 
         name_status = lines(
             "M\tsrc/feature.py",
@@ -224,6 +298,26 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(parsed_name_status["src/feature.py"], "M")
         self.assertEqual(parsed_name_status["new/name.py"], "R")
         self.assertEqual(parsed_name_status["binary/blob.dat"], "A")
+
+    def test_exclusion_matching_supports_negation_and_last_match_wins(self) -> None:
+        rules = ["generated/**", "!generated/keep.json"]
+        self.assertTrue(is_path_excluded("generated/skip.json", rules))
+        self.assertFalse(is_path_excluded("generated/keep.json", rules))
+
+    def test_filter_changed_files_counts_excluded_rows(self) -> None:
+        changed = [
+            ChangedFileStat(path="generated/skip.json", added=10, removed=0, status="M"),
+            ChangedFileStat(path="generated/keep.json", added=3, removed=1, status="M"),
+            ChangedFileStat(path="src/app.py", added=1, removed=1, status="M"),
+        ]
+
+        filtered, excluded_count = filter_changed_file_stats(
+            changed,
+            ["generated/**", "!generated/keep.json"],
+        )
+
+        self.assertEqual(excluded_count, 1)
+        self.assertEqual([item.path for item in filtered], ["generated/keep.json", "src/app.py"])
 
     def test_build_evidence_bundle_fetches_remotes_and_truncates_top_files(
         self,
@@ -275,6 +369,59 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(
             [item.path for item in evidence.top_changed_files], ["src/a.py", "src/b.py"]
         )
+        self.assertEqual(evidence.baseline_diff_summary, diff_summary)
+        self.assertEqual(evidence.filtered_diff_summary, diff_summary)
+        self.assertEqual(evidence.excluded_file_count, 0)
+
+    def test_build_evidence_bundle_applies_exclusion_rules_to_metrics_and_hotspots(self) -> None:
+        changed_files = [
+            ChangedFileStat(path="data/big.json", added=100, removed=20, status="M"),
+            ChangedFileStat(path="src/app.py", added=5, removed=1, status="M"),
+        ]
+        baseline_summary = DiffSummary(files_changed=2, insertions=105, deletions=21)
+
+        with (
+            patch(
+                "forklift.changelog_analysis.ensure_supported_git_version",
+                return_value=(2, 40, 1),
+            ),
+            patch(
+                "forklift.changelog_analysis.ensure_required_remotes",
+                return_value={"origin": object(), "upstream": object()},
+            ),
+            patch("forklift.changelog_analysis.fetch_remotes", return_value=[]),
+            patch(
+                "forklift.changelog_analysis.resolve_analysis_refs",
+                return_value=("main", "upstream/main"),
+            ),
+            patch("forklift.changelog_analysis.compute_merge_base", return_value="abc123"),
+            patch(
+                "forklift.changelog_analysis.run_merge_tree",
+                return_value=MergeTreeResult(exit_code=1, output="treeoid"),
+            ),
+            patch(
+                "forklift.changelog_analysis.resolve_merge_tree_hotspots",
+                return_value=[
+                    ConflictHotspot(path="data/big.json", conflict_count=3),
+                    ConflictHotspot(path="src/app.py", conflict_count=1),
+                ],
+            ),
+            patch(
+                "forklift.changelog_analysis.collect_supporting_diff_stats",
+                return_value=(baseline_summary, changed_files),
+            ),
+        ):
+            evidence = build_evidence_bundle(
+                Path("."),
+                "main",
+                exclusion_patterns=["data/**"],
+            )
+
+        self.assertEqual(evidence.baseline_diff_summary.files_changed, 2)
+        self.assertEqual(evidence.filtered_diff_summary.files_changed, 1)
+        self.assertEqual(evidence.excluded_file_count, 1)
+        self.assertEqual([item.path for item in evidence.top_changed_files], ["src/app.py"])
+        self.assertEqual([item.path for item in evidence.conflicts], ["src/app.py"])
 
 
 class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
