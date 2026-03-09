@@ -9,6 +9,7 @@ from pathlib import Path
 from rich.console import Console
 
 from forklift.post_run_metrics import (
+    ToolCallTotal,
     UsageTotals,
     UsageSummary,
     parse_usage_summary,
@@ -30,10 +31,20 @@ class ParseUsageSummaryTests(unittest.TestCase):
                 root,
                 [
                     "2026-03-01T00:00:00Z harness: boot",
-                    json.dumps({"type": "step_start", "part": {"cost": 999}}),
+                    json.dumps({"type": "step_start", "timestamp": 1_000, "part": {"cost": 999}}),
+                    json.dumps(
+                        {
+                            "type": "tool_use",
+                            "timestamp": 2_000,
+                            "part": {
+                                "tool": "bash",
+                            },
+                        }
+                    ),
                     json.dumps(
                         {
                             "type": "step_finish",
+                            "timestamp": 3_000,
                             "part": {
                                 "cost": 0.125,
                                 "tokens": {
@@ -46,10 +57,29 @@ class ParseUsageSummaryTests(unittest.TestCase):
                             },
                         }
                     ),
+                    json.dumps(
+                        {
+                            "type": "tool_use",
+                            "timestamp": 6_000,
+                            "part": {
+                                "tool": "read",
+                            },
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "tool_use",
+                            "timestamp": 7_000,
+                            "part": {
+                                "tool": "bash",
+                            },
+                        }
+                    ),
                     "{bad-json",
                     json.dumps(
                         {
                             "type": "step_finish",
+                            "timestamp": 8_000,
                             "part": {
                                 "cost": 0.375,
                                 "tokens": {
@@ -75,6 +105,15 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertEqual(summary.totals.cache_read_tokens, 6)
         self.assertEqual(summary.totals.total_tokens, 181)
         self.assertAlmostEqual(summary.totals.total_cost, 0.5)
+        self.assertEqual(summary.totals.wall_clock_ms, 7_000)
+        self.assertEqual(summary.totals.tool_calls, 3)
+        self.assertEqual(
+            summary.totals.tool_breakdown,
+            (
+                ToolCallTotal(tool="bash", calls=2),
+                ToolCallTotal(tool="read", calls=1),
+            ),
+        )
 
     def test_defaults_missing_component_fields_to_zero(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -106,6 +145,9 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertEqual(summary.totals.cache_read_tokens, 0)
         self.assertEqual(summary.totals.total_tokens, 99)
         self.assertAlmostEqual(summary.totals.total_cost, 0.2)
+        self.assertEqual(summary.totals.wall_clock_ms, 0)
+        self.assertEqual(summary.totals.tool_calls, 0)
+        self.assertEqual(summary.totals.tool_breakdown, ())
 
     def test_returns_unavailable_when_no_valid_usage_payloads(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -141,6 +183,12 @@ class RenderUsageSummaryTests(unittest.TestCase):
                     cache_read_tokens=4,
                     total_tokens=360,
                     total_cost=0.12,
+                    wall_clock_ms=12_345,
+                    tool_calls=3,
+                    tool_breakdown=(
+                        ToolCallTotal(tool="read", calls=2),
+                        ToolCallTotal(tool="write", calls=1),
+                    ),
                 )
             ),
             console=self._console(rendered),
@@ -158,6 +206,10 @@ class RenderUsageSummaryTests(unittest.TestCase):
             "Reasoning",
             "Cache read",
             "Total tokens",
+            "Wall clock",
+            "Tool calls",
+            "↳ read",
+            "↳ write",
             "Total cost",
         ]
         positions = [output.index(label) for label in expected_rows]
@@ -176,6 +228,9 @@ class RenderUsageSummaryTests(unittest.TestCase):
                 cache_read_tokens=8,
                 total_tokens=1305,
                 total_cost=0.6562,
+                wall_clock_ms=67_890,
+                tool_calls=14,
+                tool_breakdown=(ToolCallTotal(tool="bash", calls=14),),
             )
         )
         rendered = StringIO()
@@ -187,6 +242,9 @@ class RenderUsageSummaryTests(unittest.TestCase):
         self.assertIn("1,234", output)
         self.assertIn("1,305", output)
         self.assertIn("$0.6562", output)
+        self.assertIn("01:07.890", output)
+        self.assertIn("14", output)
+        self.assertIn("↳ bash", output)
         self.assertIn("Metric", output)
         self.assertIn("Value", output)
 
@@ -257,6 +315,9 @@ class RenderCompletionReportTests(unittest.TestCase):
                     cache_read_tokens=0,
                     total_tokens=30,
                     total_cost=0.1000,
+                    wall_clock_ms=0,
+                    tool_calls=0,
+                    tool_breakdown=(),
                 )
             )
             render_usage_summary("success", summary, console=console)

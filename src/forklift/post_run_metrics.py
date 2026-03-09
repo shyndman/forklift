@@ -30,6 +30,14 @@ USAGE_COST_VALUE_STYLE = "bold green"
 
 
 @dataclass(frozen=True)
+class ToolCallTotal:
+    """Represents per-tool call counts for nested post-run summary rows."""
+
+    tool: str
+    calls: int
+
+
+@dataclass(frozen=True)
 class UsageTotals:
     """Represents finalized usage totals shown in the run footer."""
 
@@ -39,6 +47,9 @@ class UsageTotals:
     cache_read_tokens: int
     total_tokens: int
     total_cost: float
+    wall_clock_ms: int
+    tool_calls: int
+    tool_breakdown: tuple[ToolCallTotal, ...]
 
 
 @dataclass(frozen=True)
@@ -119,6 +130,9 @@ def _parse_usage_lines(lines: Iterable[str]) -> UsageSummary:
     total_cost = 0.0
     final_snapshot: dict[str, object] | None = None
     saw_usage_payload = False
+    first_timestamp_ms: int | None = None
+    last_timestamp_ms: int | None = None
+    tool_call_counts: dict[str, int] = {}
 
     for raw_line in lines:
         line = raw_line.strip()
@@ -127,6 +141,24 @@ def _parse_usage_lines(lines: Iterable[str]) -> UsageSummary:
         payload = _parse_json_object(line)
         if payload is None:
             continue
+
+        timestamp_ms = _timestamp_ms(payload.get("timestamp"))
+        if timestamp_ms is not None:
+            if first_timestamp_ms is None:
+                first_timestamp_ms = timestamp_ms
+            else:
+                first_timestamp_ms = min(first_timestamp_ms, timestamp_ms)
+
+            if last_timestamp_ms is None:
+                last_timestamp_ms = timestamp_ms
+            else:
+                last_timestamp_ms = max(last_timestamp_ms, timestamp_ms)
+
+        if payload.get("type") == "tool_use":
+            part = _as_dict(payload.get("part"))
+            tool_name = _tool_name(part)
+            tool_call_counts[tool_name] = tool_call_counts.get(tool_name, 0) + 1
+
         if payload.get("type") != "step_finish":
             continue
 
@@ -152,6 +184,13 @@ def _parse_usage_lines(lines: Iterable[str]) -> UsageSummary:
     if not saw_usage_payload or final_snapshot is None:
         return UsageSummary.unavailable("no usage events found")
 
+    total_tool_calls = sum(tool_call_counts.values())
+    tool_breakdown = tuple(
+        ToolCallTotal(tool=tool_name, calls=calls)
+        for tool_name, calls in sorted(tool_call_counts.items(), key=lambda item: (-item[1], item[0]))
+    )
+    wall_clock_ms = _elapsed_wall_clock_ms(first_timestamp_ms, last_timestamp_ms)
+
     totals = UsageTotals(
         input_tokens=_token_value(final_snapshot, "input"),
         output_tokens=_token_value(final_snapshot, "output"),
@@ -159,6 +198,9 @@ def _parse_usage_lines(lines: Iterable[str]) -> UsageSummary:
         cache_read_tokens=_cache_read_tokens(final_snapshot),
         total_tokens=_token_value(final_snapshot, "total"),
         total_cost=total_cost,
+        wall_clock_ms=wall_clock_ms,
+        tool_calls=total_tool_calls,
+        tool_breakdown=tool_breakdown,
     )
     return UsageSummary.from_totals(totals)
 
@@ -188,6 +230,31 @@ def _as_number(value: object) -> float | None:
     if isinstance(value, float):
         return value
     return None
+
+
+def _timestamp_ms(value: object) -> int | None:
+    number = _as_number(value)
+    if number is None:
+        return None
+    return int(number)
+
+
+def _tool_name(part: dict[str, object] | None) -> str:
+    if part is None:
+        return "unknown"
+
+    raw_tool = part.get("tool")
+    if isinstance(raw_tool, str):
+        cleaned = raw_tool.strip()
+        if cleaned:
+            return cleaned
+    return "unknown"
+
+
+def _elapsed_wall_clock_ms(first_timestamp_ms: int | None, last_timestamp_ms: int | None) -> int:
+    if first_timestamp_ms is None or last_timestamp_ms is None:
+        return 0
+    return max(last_timestamp_ms - first_timestamp_ms, 0)
 
 
 def _token_value(tokens: dict[str, object], key: str) -> int:
@@ -222,6 +289,13 @@ def _build_usage_table(totals: UsageTotals) -> Table:
     table.add_row("Cache read", Text(_format_tokens(totals.cache_read_tokens), style=USAGE_TOKEN_VALUE_STYLE))
     table.add_section()
     table.add_row("Total tokens", Text(_format_tokens(totals.total_tokens), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row("Wall clock", Text(_format_duration(totals.wall_clock_ms), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row("Tool calls", Text(_format_tokens(totals.tool_calls), style=USAGE_TOKEN_VALUE_STYLE))
+    for tool_total in totals.tool_breakdown:
+        table.add_row(
+            f"    ↳ {tool_total.tool}",
+            Text(_format_tokens(tool_total.calls), style=USAGE_LABEL_STYLE),
+        )
     table.add_row("Total cost", Text(_format_cost(totals.total_cost), style=USAGE_COST_VALUE_STYLE))
     return table
 
@@ -232,6 +306,13 @@ def _format_tokens(value: int) -> str:
 
 def _format_cost(value: float) -> str:
     return f"${value:.4f}"
+
+
+def _format_duration(value_ms: int) -> str:
+    total_ms = max(value_ms, 0)
+    minutes, ms_remainder = divmod(total_ms, 60_000)
+    seconds, milliseconds = divmod(ms_remainder, 1_000)
+    return f"{minutes:02}:{seconds:02}.{milliseconds:03}"
 
 
 def _select_report_path(workspace: Path) -> Path | None:
