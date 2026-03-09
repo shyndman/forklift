@@ -13,9 +13,20 @@ from pathlib import Path
 from collections.abc import Iterable
 from typing import cast
 
+from rich import box
+from rich.align import Align
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.table import Table
+from rich.text import Text
+
+
+USAGE_TABLE_WIDTH = 90
+USAGE_TABLE_HEADER_STYLE = "bold cyan"
+USAGE_TABLE_BORDER_STYLE = "dim"
+USAGE_LABEL_STYLE = "dim"
+USAGE_TOKEN_VALUE_STYLE = "bold white"
+USAGE_COST_VALUE_STYLE = "bold green"
 
 
 @dataclass(frozen=True)
@@ -79,8 +90,7 @@ def render_usage_summary(
         active_console.print(f"Reason: {reason}", markup=False)
         return
 
-    active_console.print("Grand total", markup=False)
-    active_console.print(_build_usage_table(summary.totals))
+    active_console.print(Align.center(_build_usage_table(summary.totals)))
 
 
 def render_completion_report(
@@ -195,16 +205,24 @@ def _cache_read_tokens(tokens: dict[str, object]) -> int:
 
 
 def _build_usage_table(totals: UsageTotals) -> Table:
-    table = Table(show_header=False, box=None, pad_edge=False, show_edge=False)
-    table.add_column("metric")
-    table.add_column("value", justify="right")
-    table.add_row("Input", _format_tokens(totals.input_tokens))
-    table.add_row("Output", _format_tokens(totals.output_tokens))
-    table.add_row("Reasoning", _format_tokens(totals.reasoning_tokens))
-    table.add_row("Cache read", _format_tokens(totals.cache_read_tokens))
-    table.add_row("", "")
-    table.add_row("Total tokens", _format_tokens(totals.total_tokens))
-    table.add_row("Total cost", _format_cost(totals.total_cost))
+    table = Table(
+        box=box.ROUNDED,
+        width=USAGE_TABLE_WIDTH,
+        header_style=USAGE_TABLE_HEADER_STYLE,
+        border_style=USAGE_TABLE_BORDER_STYLE,
+        pad_edge=True,
+        title="Grand total",
+        title_style="bold",
+    )
+    table.add_column("Metric", style=USAGE_LABEL_STYLE)
+    table.add_column("Value", justify="right")
+    table.add_row("Input", Text(_format_tokens(totals.input_tokens), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row("Output", Text(_format_tokens(totals.output_tokens), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row("Reasoning", Text(_format_tokens(totals.reasoning_tokens), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row("Cache read", Text(_format_tokens(totals.cache_read_tokens), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_section()
+    table.add_row("Total tokens", Text(_format_tokens(totals.total_tokens), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row("Total cost", Text(_format_cost(totals.total_cost), style=USAGE_COST_VALUE_STYLE))
     return table
 
 

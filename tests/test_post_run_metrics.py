@@ -127,9 +127,9 @@ class ParseUsageSummaryTests(unittest.TestCase):
 
 class RenderUsageSummaryTests(unittest.TestCase):
     def _console(self, buffer: StringIO) -> Console:
-        return Console(file=buffer, force_terminal=False, color_system=None, width=80)
+        return Console(file=buffer, force_terminal=False, color_system=None, width=110)
 
-    def test_renders_rows_in_expected_order_and_right_aligned_column(self) -> None:
+    def test_renders_centered_rounded_table_with_expected_rows(self) -> None:
         rendered = StringIO()
         render_usage_summary(
             "success",
@@ -147,37 +147,25 @@ class RenderUsageSummaryTests(unittest.TestCase):
         )
         output = rendered.getvalue()
 
-        expected_values = {
-            "Input": "1",
-            "Output": "22",
-            "Reasoning": "333",
-            "Cache read": "4",
-            "Total tokens": "360",
-            "Total cost": "$0.1200",
-        }
-        row_lines: dict[str, str] = {}
-        for line in output.splitlines():
-            for label in expected_values:
-                if line.startswith(label):
-                    row_lines[label] = line
+        self.assertIn("Metric", output)
+        self.assertIn("Value", output)
+        self.assertIn("╭", output)
+        self.assertIn("╰", output)
 
-        self.assertEqual(
-            list(row_lines),
-            [
-                "Input",
-                "Output",
-                "Reasoning",
-                "Cache read",
-                "Total tokens",
-                "Total cost",
-            ],
-        )
-        right_edges: set[int] = set()
-        for label, value in expected_values.items():
-            line = row_lines[label]
-            self.assertTrue(line.endswith(value))
-            right_edges.add(line.index(value) + len(value))
-        self.assertEqual(len(right_edges), 1)
+        expected_rows = [
+            "Input",
+            "Output",
+            "Reasoning",
+            "Cache read",
+            "Total tokens",
+            "Total cost",
+        ]
+        positions = [output.index(label) for label in expected_rows]
+        self.assertEqual(positions, sorted(positions))
+
+        top_border = next(line for line in output.splitlines() if "╭" in line)
+        self.assertGreater(len(top_border) - len(top_border.lstrip(" ")), 5)
+        self.assertGreaterEqual(len(top_border.strip()), 80)
 
     def test_formats_numbers_and_unavailable_path(self) -> None:
         totals_summary = UsageSummary.from_totals(
@@ -199,6 +187,8 @@ class RenderUsageSummaryTests(unittest.TestCase):
         self.assertIn("1,234", output)
         self.assertIn("1,305", output)
         self.assertIn("$0.6562", output)
+        self.assertIn("Metric", output)
+        self.assertIn("Value", output)
 
         unavailable = StringIO()
         render_usage_summary(
@@ -214,7 +204,7 @@ class RenderUsageSummaryTests(unittest.TestCase):
 
 class RenderCompletionReportTests(unittest.TestCase):
     def _console(self, buffer: StringIO) -> Console:
-        return Console(file=buffer, force_terminal=False, color_system=None, width=80)
+        return Console(file=buffer, force_terminal=False, color_system=None, width=110)
 
     def test_prefers_stuck_report_over_done(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
