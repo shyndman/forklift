@@ -79,6 +79,8 @@ Behavior and constraints:
 - Deterministic metrics are shown as `all files` vs `excluding patterns` with explicit deltas.
 - Predicted conflict hotspots come from tip-merge analysis and may recur during
   commit-by-commit rebases.
+- For each conflicted path, Forklift now renders a deterministic fork-vs-upstream side comparison with commit samples, side-local churn, and `@@ ... @@` hunk headers.
+- When evidence sampling caps trim output, the markdown includes explicit truncation counts in `<shown>/<total> (cap <n>)` format plus a warning that additional evidence exists.
 
 What happens:
 

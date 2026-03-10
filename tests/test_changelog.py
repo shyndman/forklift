@@ -3,6 +3,7 @@ from __future__ import annotations
 # pyright: reportAny=false
 
 import asyncio
+from dataclasses import asdict
 from types import SimpleNamespace
 import os
 from pathlib import Path
@@ -13,21 +14,36 @@ from unittest.mock import AsyncMock, Mock, patch
 from forklift.changelog import Changelog, load_changelog_exclude_patterns
 from forklift.changelog_analysis import (
     ChangelogAnalysisError,
+    DEFAULT_SIDE_COMMIT_SAMPLE_CAP,
+    DEFAULT_SIDE_HUNK_HEADER_CAP,
     MergeTreeResult,
+    build_conflict_side_comparisons,
     build_evidence_bundle,
+    collect_conflict_side_evidence,
+    compute_side_local_churn,
+    extract_hunk_headers,
     filter_changed_file_stats,
     is_path_excluded,
+    parse_oneline_commit_samples,
     parse_merge_tree_conflict_hotspots,
     parse_name_status_output,
     parse_numstat_output,
     resolve_merge_tree_hotspots,
 )
-from forklift.changelog_llm import ChangelogLlmError, generate_changelog_narrative
+from forklift.changelog_llm import (
+    ChangelogLlmError,
+    NARRATIVE_SYSTEM_PROMPT,
+    generate_changelog_narrative,
+)
 from forklift.changelog_models import (
     ChangedFileStat,
+    CommitSample,
     ConflictHotspot,
+    ConflictSideComparison,
+    ConflictSideEvidence,
     DiffSummary,
     EvidenceBundle,
+    TruncationMetadata,
 )
 from forklift.cli import Forklift
 from forklift.opencode_env import OpenCodeEnv
@@ -92,10 +108,26 @@ class ChangelogModelTests(unittest.TestCase):
         hotspot = ConflictHotspot(path="src/app.py")
         summary = DiffSummary()
         file_stat = ChangedFileStat(path="src/app.py")
+        truncation = TruncationMetadata(shown=2, total=5, cap=2)
+        commit_sample = CommitSample(short_sha="abc1234", subject="Refactor parser")
+        side = ConflictSideEvidence(
+            commit_samples=[commit_sample],
+            insertions=4,
+            deletions=1,
+            hunk_headers=["@@ -10,2 +10,3 @@"],
+            commit_samples_truncation=truncation,
+        )
+        comparison = ConflictSideComparison(
+            path="src/app.py",
+            conflict_count=3,
+            fork_side=side,
+            upstream_side=ConflictSideEvidence(),
+        )
         evidence = EvidenceBundle(
             base_sha="abc123",
             main_branch="main",
             upstream_ref="upstream/main",
+            conflict_side_comparisons=[comparison],
         )
 
         self.assertEqual(hotspot.conflict_count, 1)
@@ -105,6 +137,10 @@ class ChangelogModelTests(unittest.TestCase):
         self.assertEqual(file_stat.status, "M")
         self.assertEqual(file_stat.added, 0)
         self.assertEqual(file_stat.removed, 0)
+        self.assertEqual(commit_sample.short_sha, "abc1234")
+        self.assertEqual(truncation.cap, 2)
+        self.assertEqual(side.insertions, 4)
+        self.assertEqual(side.deletions, 1)
 
         self.assertIsInstance(evidence.conflicts, list)
         self.assertIsInstance(evidence.baseline_diff_summary, DiffSummary)
@@ -113,7 +149,17 @@ class ChangelogModelTests(unittest.TestCase):
         self.assertIsInstance(evidence.excluded_file_count, int)
         self.assertIsInstance(evidence.diff_summary, DiffSummary)
         self.assertIsInstance(evidence.top_changed_files, list)
+        self.assertIsInstance(evidence.conflict_side_comparisons, list)
         self.assertIsInstance(evidence.important_notes, list)
+
+        serialized = asdict(evidence)
+        self.assertIn("conflict_side_comparisons", serialized)
+        self.assertEqual(
+            serialized["conflict_side_comparisons"][0]["fork_side"]["commit_samples"][0][
+                "short_sha"
+            ],
+            "abc1234",
+        )
 
 
 class ChangelogLlmTests(unittest.TestCase):
@@ -162,11 +208,24 @@ class ChangelogLlmTests(unittest.TestCase):
             self.assertNotIn("GOOGLE_API_KEY", os.environ)
             self.assertNotIn("GEMINI_API_KEY", os.environ)
             self.assertIn("## Key Change Arcs", captured["system_prompt"])
+            self.assertIn("## Conflict Pair Evaluations", captured["system_prompt"])
+            self.assertIn("Fork-side intent", captured["system_prompt"])
+            self.assertIn("insufficient evidence", captured["system_prompt"])
             self.assertIn("Define the arc in plain language", captured["system_prompt"])
             self.assertIn("Use only this evidence.", captured["prompt"])
+            self.assertIn(
+                "Conflict side comparisons and any truncation metadata are authoritative",
+                captured["prompt"],
+            )
             self.assertIn("Evidence JSON", captured["prompt"])
 
         self.assertEqual(output, "## Summary\nNormalized model name works")
+
+    def test_narrative_contract_requires_conflict_pair_evaluations_heading(self) -> None:
+        self.assertIn("## Conflict Pair Evaluations", NARRATIVE_SYSTEM_PROMPT)
+
+    def test_narrative_contract_requires_insufficient_evidence_wording(self) -> None:
+        self.assertIn("insufficient evidence", NARRATIVE_SYSTEM_PROMPT)
 
 
 class ChangelogRendererTests(unittest.TestCase):
@@ -203,6 +262,31 @@ class ChangelogRendererTests(unittest.TestCase):
             top_changed_files=[
                 ChangedFileStat(path="src/conflict.py", added=7, removed=3, status="M")
             ],
+            conflict_side_comparisons=[
+                ConflictSideComparison(
+                    path="src/conflict.py",
+                    conflict_count=2,
+                    fork_side=ConflictSideEvidence(
+                        commit_samples=[
+                            CommitSample(short_sha="abc1234", subject="Adjust conflict flow")
+                        ],
+                        insertions=7,
+                        deletions=3,
+                        hunk_headers=["@@ -5,2 +5,4 @@"],
+                        commit_samples_truncation=TruncationMetadata(
+                            shown=1,
+                            total=3,
+                            cap=1,
+                        ),
+                    ),
+                    upstream_side=ConflictSideEvidence(
+                        commit_samples=[],
+                        insertions=2,
+                        deletions=1,
+                        hunk_headers=[],
+                    ),
+                )
+            ],
         )
 
         markdown = render_changelog_markdown(evidence, "## Summary\nNarrative")
@@ -212,6 +296,22 @@ class ChangelogRendererTests(unittest.TestCase):
         self.assertIn("### Exclusion Rules", markdown)
         self.assertIn("- `data/big-snapshot.json`", markdown)
         self.assertIn("- Matched files in baseline diff: 147", markdown)
+        self.assertIn("## Conflict Side Comparisons", markdown)
+        self.assertIn("### `src/conflict.py` (conflict count: 2)", markdown)
+        self.assertIn("- Commit samples truncation: 1/3 (cap 1)", markdown)
+        self.assertIn("- Warning: additional evidence exists beyond configured limits.", markdown)
+
+    def test_render_markdown_omits_conflict_side_section_when_comparisons_absent(self) -> None:
+        evidence = EvidenceBundle(
+            base_sha="1234567890abcdef1234567890abcdef12345678",
+            main_branch="main",
+            upstream_ref="upstream/main",
+            conflicts=[],
+        )
+
+        markdown = render_changelog_markdown(evidence, "## Summary\nNarrative")
+
+        self.assertNotIn("## Conflict Side Comparisons", markdown)
 
 
 class ChangelogAnalysisTests(unittest.TestCase):
@@ -299,6 +399,102 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(parsed_name_status["new/name.py"], "R")
         self.assertEqual(parsed_name_status["binary/blob.dat"], "A")
 
+    def test_helper_parsers_extract_commit_samples_hunk_headers_and_churn(self) -> None:
+        commit_lines = lines("abc1234 Add parser guard", "def5678")
+        samples = parse_oneline_commit_samples(commit_lines)
+        self.assertEqual(
+            samples,
+            [
+                CommitSample(short_sha="abc1234", subject="Add parser guard"),
+                CommitSample(short_sha="def5678", subject=""),
+            ],
+        )
+
+        diff_text = lines(
+            "diff --git a/src/app.py b/src/app.py",
+            "@@ -1,2 +1,3 @@ def run():",
+            "+print('x')",
+            "@@ -10 +11 @@ class X:",
+        )
+        self.assertEqual(
+            extract_hunk_headers(diff_text),
+            ["@@ -1,2 +1,3 @@ def run():", "@@ -10 +11 @@ class X:"],
+        )
+
+        churn = compute_side_local_churn(lines("5\t2\tsrc/app.py", "-\t-\tbinary/blob.dat"))
+        self.assertEqual(churn, (5, 2))
+
+    def test_collect_conflict_side_evidence_applies_caps_and_sets_truncation(self) -> None:
+        self.assertGreater(DEFAULT_SIDE_COMMIT_SAMPLE_CAP, 0)
+        self.assertGreater(DEFAULT_SIDE_HUNK_HEADER_CAP, 0)
+
+        with patch(
+            "forklift.changelog_analysis.run_git",
+            side_effect=[
+                lines("aaa1111 first", "bbb2222 second", "ccc3333 third"),
+                lines(
+                    "diff --git a/src/app.py b/src/app.py",
+                    "@@ -1 +1 @@",
+                    "@@ -10,2 +12,3 @@ def parse():",
+                ),
+                lines("9\t4\tsrc/app.py"),
+            ],
+        ):
+            side = collect_conflict_side_evidence(
+                Path("."),
+                base_sha="base",
+                side_ref="main",
+                conflict_path="src/app.py",
+                commit_sample_cap=1,
+                hunk_header_cap=1,
+            )
+
+        self.assertEqual(len(side.commit_samples), 1)
+        self.assertEqual(side.commit_samples[0].short_sha, "aaa1111")
+        self.assertEqual(side.hunk_headers, ["@@ -1 +1 @@"])
+        self.assertEqual(side.insertions, 9)
+        self.assertEqual(side.deletions, 4)
+        self.assertEqual(side.commit_samples_truncation, TruncationMetadata(1, 3, 1))
+        self.assertEqual(side.hunk_headers_truncation, TruncationMetadata(1, 2, 1))
+
+    def test_build_conflict_side_comparisons_preserves_order_and_sparse_sides(self) -> None:
+        hotspots = [
+            ConflictHotspot(path="b.py", conflict_count=5),
+            ConflictHotspot(path="a.py", conflict_count=5),
+            ConflictHotspot(path="c.py", conflict_count=2),
+        ]
+
+        def _fake_side(
+            _repo_path: Path,
+            *,
+            conflict_path: str,
+            side_ref: str,
+            **_: object,
+        ) -> ConflictSideEvidence:
+            if side_ref == "upstream/main" and conflict_path == "c.py":
+                return ConflictSideEvidence()
+            return ConflictSideEvidence(
+                commit_samples=[CommitSample(short_sha=f"{conflict_path}-1", subject=side_ref)],
+                insertions=1,
+                deletions=0,
+                hunk_headers=["@@ -1 +1 @@"],
+            )
+
+        with patch(
+            "forklift.changelog_analysis.collect_conflict_side_evidence",
+            side_effect=_fake_side,
+        ):
+            comparisons = build_conflict_side_comparisons(
+                Path("."),
+                base_sha="base",
+                main_branch="main",
+                upstream_ref="upstream/main",
+                hotspots=hotspots,
+            )
+
+        self.assertEqual([item.path for item in comparisons], ["a.py", "b.py", "c.py"])
+        self.assertEqual(comparisons[2].upstream_side.commit_samples, [])
+
     def test_exclusion_matching_supports_negation_and_last_match_wins(self) -> None:
         rules = ["generated/**", "!generated/keep.json"]
         self.assertTrue(is_path_excluded("generated/skip.json", rules))
@@ -372,6 +568,7 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(evidence.baseline_diff_summary, diff_summary)
         self.assertEqual(evidence.filtered_diff_summary, diff_summary)
         self.assertEqual(evidence.excluded_file_count, 0)
+        self.assertEqual(evidence.conflict_side_comparisons, [])
 
     def test_build_evidence_bundle_applies_exclusion_rules_to_metrics_and_hotspots(self) -> None:
         changed_files = [
@@ -379,6 +576,12 @@ class ChangelogAnalysisTests(unittest.TestCase):
             ChangedFileStat(path="src/app.py", added=5, removed=1, status="M"),
         ]
         baseline_summary = DiffSummary(files_changed=2, insertions=105, deletions=21)
+        side_comparison = ConflictSideComparison(
+            path="src/app.py",
+            conflict_count=1,
+            fork_side=ConflictSideEvidence(),
+            upstream_side=ConflictSideEvidence(),
+        )
 
         with (
             patch(
@@ -410,6 +613,10 @@ class ChangelogAnalysisTests(unittest.TestCase):
                 "forklift.changelog_analysis.collect_supporting_diff_stats",
                 return_value=(baseline_summary, changed_files),
             ),
+            patch(
+                "forklift.changelog_analysis.build_conflict_side_comparisons",
+                return_value=[side_comparison],
+            ) as comparisons_mock,
         ):
             evidence = build_evidence_bundle(
                 Path("."),
@@ -422,6 +629,13 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(evidence.excluded_file_count, 1)
         self.assertEqual([item.path for item in evidence.top_changed_files], ["src/app.py"])
         self.assertEqual([item.path for item in evidence.conflicts], ["src/app.py"])
+        self.assertEqual(
+            [item.path for item in evidence.conflict_side_comparisons],
+            ["src/app.py"],
+        )
+
+        kwargs = comparisons_mock.call_args.kwargs
+        self.assertEqual([item.path for item in kwargs["hotspots"]], ["src/app.py"])
 
 
 class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):

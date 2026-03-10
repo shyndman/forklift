@@ -10,15 +10,21 @@ from typing import cast
 
 from .changelog_models import (
     ChangedFileStat,
+    CommitSample,
     ConflictHotspot,
+    ConflictSideComparison,
+    ConflictSideEvidence,
     DiffSummary,
     EvidenceBundle,
+    TruncationMetadata,
 )
 from .cli_runtime import resolved_main_branch
 from .git import GitError, ensure_required_remotes, fetch_remotes, run_git
 
 MIN_GIT_VERSION = (2, 38, 0)
 DEFAULT_TOP_CHANGED_FILES = 30
+DEFAULT_SIDE_COMMIT_SAMPLE_CAP = 8
+DEFAULT_SIDE_HUNK_HEADER_CAP = 12
 IMPORTANT_NOTE_HOTSPOT_PREDICTION = (
     "Conflict hotspots are predicted from a tip merge and may recur during later "
     "commit-by-commit rebase picks."
@@ -350,6 +356,146 @@ def collect_supporting_diff_stats(
     return build_diff_summary(changed_file_stats), changed_file_stats
 
 
+def parse_oneline_commit_samples(log_output: str) -> list[CommitSample]:
+    """Convert `git log --oneline` output into explicit commit sample records."""
+
+    samples: list[CommitSample] = []
+    for raw_line in log_output.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        short_sha, _, subject = line.partition(" ")
+        if not short_sha:
+            continue
+        samples.append(CommitSample(short_sha=short_sha, subject=subject.strip()))
+    return samples
+
+
+def extract_hunk_headers(diff_output: str) -> list[str]:
+    """Keep only unified-diff hunk headers so side intent stays compact and deterministic."""
+
+    headers: list[str] = []
+    for raw_line in diff_output.splitlines():
+        line = raw_line.rstrip()
+        if line.startswith("@@"):
+            headers.append(line)
+    return headers
+
+
+def compute_side_local_churn(numstat_output: str) -> tuple[int, int]:
+    """Aggregate path-scoped numstat output into insertion/deletion totals for one side."""
+
+    parsed = parse_numstat_output(numstat_output)
+    insertions = sum(added for added, _ in parsed.values())
+    deletions = sum(removed for _, removed in parsed.values())
+    return insertions, deletions
+
+
+def apply_cap_with_truncation[T](
+    items: list[T],
+    cap: int,
+) -> tuple[list[T], TruncationMetadata | None]:
+    """Apply evidence cap and report machine-readable truncation metadata when needed."""
+
+    bounded_cap = max(0, cap)
+    shown = items[:bounded_cap]
+    if len(items) <= bounded_cap:
+        return shown, None
+    return shown, TruncationMetadata(shown=len(shown), total=len(items), cap=bounded_cap)
+
+
+def collect_conflict_side_evidence(
+    repo_path: Path,
+    *,
+    base_sha: str,
+    side_ref: str,
+    conflict_path: str,
+    commit_sample_cap: int,
+    hunk_header_cap: int,
+) -> ConflictSideEvidence:
+    """Collect one side's deterministic commit/diff evidence for a conflicted path."""
+
+    revision_range = f"{base_sha}..{side_ref}"
+    diff_range = f"{base_sha}...{side_ref}"
+    try:
+        log_output = run_git(
+            repo_path,
+            ["log", "--oneline", revision_range, "--", conflict_path],
+        )
+        diff_output = run_git(
+            repo_path,
+            ["diff", "--unified=0", diff_range, "--", conflict_path],
+        )
+        numstat_output = run_git(
+            repo_path,
+            ["diff", "--numstat", diff_range, "--", conflict_path],
+        )
+    except GitError as exc:
+        raise ChangelogAnalysisError(
+            f"Unable to collect side-specific conflict evidence for {conflict_path!r} in range {revision_range}: {exc}"
+        ) from exc
+
+    all_commits = parse_oneline_commit_samples(log_output)
+    all_headers = extract_hunk_headers(diff_output)
+    shown_commits, commit_truncation = apply_cap_with_truncation(
+        all_commits,
+        commit_sample_cap,
+    )
+    shown_headers, header_truncation = apply_cap_with_truncation(
+        all_headers,
+        hunk_header_cap,
+    )
+    insertions, deletions = compute_side_local_churn(numstat_output)
+    return ConflictSideEvidence(
+        commit_samples=shown_commits,
+        insertions=insertions,
+        deletions=deletions,
+        hunk_headers=shown_headers,
+        commit_samples_truncation=commit_truncation,
+        hunk_headers_truncation=header_truncation,
+    )
+
+
+def build_conflict_side_comparisons(
+    repo_path: Path,
+    *,
+    base_sha: str,
+    main_branch: str,
+    upstream_ref: str,
+    hotspots: list[ConflictHotspot],
+    commit_sample_cap: int = DEFAULT_SIDE_COMMIT_SAMPLE_CAP,
+    hunk_header_cap: int = DEFAULT_SIDE_HUNK_HEADER_CAP,
+) -> list[ConflictSideComparison]:
+    """Build ordered fork-vs-upstream evidence pairs for each predicted conflict path."""
+
+    ordered_hotspots = sorted(hotspots, key=lambda item: (-item.conflict_count, item.path))
+    comparisons: list[ConflictSideComparison] = []
+    for hotspot in ordered_hotspots:
+        comparisons.append(
+            ConflictSideComparison(
+                path=hotspot.path,
+                conflict_count=hotspot.conflict_count,
+                fork_side=collect_conflict_side_evidence(
+                    repo_path,
+                    base_sha=base_sha,
+                    side_ref=main_branch,
+                    conflict_path=hotspot.path,
+                    commit_sample_cap=commit_sample_cap,
+                    hunk_header_cap=hunk_header_cap,
+                ),
+                upstream_side=collect_conflict_side_evidence(
+                    repo_path,
+                    base_sha=base_sha,
+                    side_ref=upstream_ref,
+                    conflict_path=hotspot.path,
+                    commit_sample_cap=commit_sample_cap,
+                    hunk_header_cap=hunk_header_cap,
+                ),
+            )
+        )
+    return comparisons
+
+
 def build_evidence_bundle(
     repo_path: Path,
     main_branch: str,
@@ -388,6 +534,13 @@ def build_evidence_bundle(
     )
     filtered_hotspots = filter_conflict_hotspots(hotspots, active_exclusion_rules)
     filtered_diff_summary = build_diff_summary(filtered_changed_file_stats)
+    conflict_side_comparisons = build_conflict_side_comparisons(
+        repo_path,
+        base_sha=base_sha,
+        main_branch=resolved_main,
+        upstream_ref=upstream_ref,
+        hotspots=filtered_hotspots,
+    )
 
     bounded_limit = max(0, max_changed_files)
     return EvidenceBundle(
@@ -401,5 +554,6 @@ def build_evidence_bundle(
         excluded_file_count=excluded_file_count,
         diff_summary=filtered_diff_summary,
         top_changed_files=filtered_changed_file_stats[:bounded_limit],
+        conflict_side_comparisons=conflict_side_comparisons,
         important_notes=[IMPORTANT_NOTE_HOTSPOT_PREDICTION],
     )

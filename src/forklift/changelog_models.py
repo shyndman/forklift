@@ -31,6 +31,45 @@ class ChangedFileStat:
 
 
 @dataclass(frozen=True)
+class TruncationMetadata:
+    """Describe how much evidence is shown when collection caps are reached."""
+
+    shown: int
+    total: int
+    cap: int
+
+
+@dataclass(frozen=True)
+class CommitSample:
+    """Represent one path-scoped commit sample for side-intent evaluation."""
+
+    short_sha: str
+    subject: str
+
+
+@dataclass(frozen=True)
+class ConflictSideEvidence:
+    """Capture deterministic evidence for one side of a single conflict path."""
+
+    commit_samples: list[CommitSample] = field(default_factory=list)
+    insertions: int = 0
+    deletions: int = 0
+    hunk_headers: list[str] = field(default_factory=list)
+    commit_samples_truncation: TruncationMetadata | None = None
+    hunk_headers_truncation: TruncationMetadata | None = None
+
+
+@dataclass(frozen=True)
+class ConflictSideComparison:
+    """Pair fork/upstream evidence for one conflict path in mechanical order."""
+
+    path: str
+    conflict_count: int
+    fork_side: ConflictSideEvidence = field(default_factory=ConflictSideEvidence)
+    upstream_side: ConflictSideEvidence = field(default_factory=ConflictSideEvidence)
+
+
+@dataclass(frozen=True)
 class EvidenceBundle:
     """Bundle deterministic evidence and exclusion metadata used by changelog layers."""
 
@@ -44,4 +83,5 @@ class EvidenceBundle:
     excluded_file_count: int = 0
     diff_summary: DiffSummary = field(default_factory=DiffSummary)
     top_changed_files: list[ChangedFileStat] = field(default_factory=list)
+    conflict_side_comparisons: list[ConflictSideComparison] = field(default_factory=list)
     important_notes: list[str] = field(default_factory=list)

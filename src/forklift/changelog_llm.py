@@ -28,11 +28,18 @@ NARRATIVE_SYSTEM_PROMPT = (
     "Return markdown with exactly these headings in order:\n"
     "## Summary\n"
     "## Key Change Arcs\n"
+    "## Conflict Pair Evaluations\n"
     "## Risk and Review Notes\n\n"
     "In \"## Key Change Arcs\", use an abstraction ladder for each arc:\n"
     "1) Define the arc in plain language.\n"
     "2) Explain it at a conceptual level before technical details.\n"
     "3) Bias toward several paragraphs when evidence supports it.\n\n"
+    "In \"## Conflict Pair Evaluations\", create one subsection per conflict path from the evidence, and include these labels in each subsection:\n"
+    "- Fork-side intent\n"
+    "- Upstream-side intent\n"
+    "- Conceptual relationship\n"
+    "- Merge discussion starters\n"
+    "If deterministic signals for a path are too sparse, explicitly write \"insufficient evidence\" and avoid unsupported claims.\n\n"
     "Prefer general language over source-local jargon. "
     "If technical terms are necessary, define them before using them. "
     "Do not invent files, metrics, conflicts, or behavior not present in evidence."
@@ -58,6 +65,7 @@ def build_narrative_prompt(evidence: EvidenceBundle) -> str:
     return (
         "Generate an operator-facing changelog narrative from this deterministic evidence.\n"
         "Use only this evidence.\n\n"
+        "Conflict side comparisons and any truncation metadata are authoritative; do not infer beyond them.\n\n"
         f"Evidence JSON:\n```json\n{formatted}\n```"
     )
 

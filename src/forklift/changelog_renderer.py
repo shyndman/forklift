@@ -3,13 +3,60 @@ from __future__ import annotations
 from rich.console import Console
 from rich.markdown import Markdown
 
-from .changelog_models import EvidenceBundle
+from .changelog_models import ConflictSideEvidence, EvidenceBundle, TruncationMetadata
 
 HOTSPOT_CAVEAT = (
     "Tip-merge hotspot predictions are directional and may repeat during "
     "later commit-by-commit rebase picks."
 )
 MAX_MARKDOWN_WIDTH = 110
+
+
+def _render_truncation_notice(
+    label: str,
+    metadata: TruncationMetadata | None,
+) -> list[str]:
+    """Render cap metadata so operators see when extra evidence was trimmed."""
+
+    if metadata is None:
+        return []
+    counts = f"{metadata.shown}/{metadata.total} (cap {metadata.cap})"
+    return [
+        f"- {label} truncation: {counts}",
+        "- Warning: additional evidence exists beyond configured limits.",
+    ]
+
+
+def _render_conflict_side_summary(
+    side_label: str,
+    side: ConflictSideEvidence,
+) -> list[str]:
+    """Render one side's deterministic samples and churn for a conflict path."""
+
+    lines = [
+        f"#### {side_label} Side",
+        f"- Churn: +{side.insertions} / -{side.deletions}",
+        "- Commit samples:",
+    ]
+    if side.commit_samples:
+        for sample in side.commit_samples:
+            subject = sample.subject or "(no subject)"
+            lines.append(f"  - `{sample.short_sha}` {subject}")
+    else:
+        lines.append("  - (none)")
+
+    lines.append("- Hunk headers:")
+    if side.hunk_headers:
+        for header in side.hunk_headers:
+            lines.append(f"  - `{header}`")
+    else:
+        lines.append("  - (none)")
+
+    lines.extend(
+        _render_truncation_notice("Commit samples", side.commit_samples_truncation)
+    )
+    lines.extend(_render_truncation_notice("Hunk headers", side.hunk_headers_truncation))
+    return lines
 
 
 def render_changelog_markdown(evidence: EvidenceBundle, narrative: str) -> str:
@@ -43,6 +90,23 @@ def render_changelog_markdown(evidence: EvidenceBundle, narrative: str) -> str:
             lines.append(f"| `{hotspot.path}` | {hotspot.conflict_count} |")
     else:
         lines.append("- No hotspot paths detected for the analyzed branch tips.")
+
+    if evidence.conflict_side_comparisons:
+        lines.append("")
+        lines.append("## Conflict Side Comparisons")
+        ordered_comparisons = sorted(
+            evidence.conflict_side_comparisons,
+            key=lambda item: (-item.conflict_count, item.path),
+        )
+        for comparison in ordered_comparisons:
+            lines.extend(
+                [
+                    "",
+                    f"### `{comparison.path}` (conflict count: {comparison.conflict_count})",
+                    *_render_conflict_side_summary("Fork", comparison.fork_side),
+                    *_render_conflict_side_summary("Upstream", comparison.upstream_side),
+                ]
+            )
 
     lines.extend(
         [
