@@ -2,6 +2,8 @@
 
 We already detect likely conflicts using `git merge-tree`, then summarize results in changelog output. That is useful for triage, but too thin for design-level merge conversations.
 
+Note: this archived design describes the change that originally introduced full-evidence conflict-side comparisons into changelog synthesis. The current implementation has since been tightened by `split-the-agent`, which keeps this fork-aware evidence in the bottom-half sections (`Conflict Pair Evaluations` and `Risk and Review Notes`) while restoring an upstream-only top half.
+
 The user requirement is explicit:
 
 1. Scope strictly to merge-tree conflict paths.

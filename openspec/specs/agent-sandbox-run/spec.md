@@ -25,7 +25,7 @@ The repository SHALL provide `docker/kitchen-sink/Dockerfile` that builds the `f
 - **THEN** the build completes without manual intervention and the resulting image contains the listed toolchain and harness entrypoint
 
 ### Requirement: Agent instructions and STUCK reporting
-Upon startup the harness SHALL parse optional `FORK.md` front matter only when line 1 is `---` and a closing `---` delimiter is present. The front matter MAY define `setup` as a string command (including multiline block strings). If parsing fails, the harness SHALL terminate before agent launch with a non-zero exit status. When `setup` is present, the harness SHALL execute it with `bash -lc` in `/workspace`, enforce a 180-second timeout, write stdout/stderr to `/harness-state/setup.log`, and fail closed (non-zero exit before agent launch) if setup exits non-zero, times out, or leaves tracked git changes in the workspace. If `FORK.md` exists, the harness SHALL provide only the body content (front matter stripped) to the agent context before work begins. Immediately after rendering these instructions the harness SHALL invoke the bundled `opencode run` client, passing the rendered instructions plus stripped FORK context as inputs, and MUST log the client’s stdout/stderr to `/harness-state/opencode-client.log` for auditing. `STUCK.md` SHALL remain dedicated to agent-authored blocked-work outcomes.
+Upon startup the harness SHALL parse optional `FORK.md` front matter only when line 1 is `---` and a closing `---` delimiter is present. The front matter MAY define `setup` as a string command (including multiline block strings) and MAY define `changelog.exclude` as an ordered list of non-empty string patterns. Unknown front-matter keys, invalid `changelog` object shapes, or non-string exclusion entries SHALL cause parse failure. If parsing fails, the harness SHALL terminate before agent launch with a non-zero exit status. When `setup` is present, the harness SHALL execute it with `bash -lc` in `/workspace`, enforce a 180-second timeout, write stdout/stderr to `/harness-state/setup.log`, and fail closed (non-zero exit before agent launch) if setup exits non-zero, times out, or leaves tracked git changes in the workspace. If `FORK.md` exists, the harness SHALL provide only the body content (front matter stripped) to the agent context before work begins. Immediately after rendering these instructions the harness SHALL invoke the bundled `opencode run` client, passing the rendered instructions plus stripped FORK context as inputs, and MUST log the client’s stdout/stderr to `/harness-state/opencode-client.log` for auditing. `STUCK.md` SHALL remain dedicated to agent-authored blocked-work outcomes.
 
 #### Scenario: Setup succeeds and agent launches
 - **WHEN** `FORK.md` includes valid front matter with `setup: uv sync` and the command exits successfully within 180 seconds without tracked git changes
@@ -34,6 +34,10 @@ Upon startup the harness SHALL parse optional `FORK.md` front matter only when l
 #### Scenario: Setup fails closed
 - **WHEN** `FORK.md` includes `setup`, and the setup command exits non-zero or exceeds 180 seconds
 - **THEN** the harness exits non-zero before invoking `opencode run`, and setup diagnostics are available in `/harness-state/setup.log`
+
+#### Scenario: Changelog metadata is accepted without altering setup behavior
+- **WHEN** `FORK.md` front matter includes a valid `changelog.exclude` list and an optional valid `setup` entry
+- **THEN** front matter parsing succeeds, setup execution semantics remain unchanged, and agent launch proceeds when setup gates pass
 
 #### Scenario: Malformed front matter prevents agent launch
 - **WHEN** `FORK.md` begins with `---` but lacks valid closing front matter delimiters or parsable structure
