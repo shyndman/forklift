@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict
+from decimal import Decimal
 from types import SimpleNamespace
 import os
 from pathlib import Path
@@ -205,10 +206,14 @@ class ChangelogLlmTests(unittest.TestCase):
                 captured["prompt"] = prompt
                 return SimpleNamespace(
                     output="## Summary\nNormalized model name works",
+                    response=SimpleNamespace(
+                        cost=lambda: SimpleNamespace(total_price=Decimal("0.0001875"))
+                    ),
                     usage=lambda: RunUsage(
                         input_tokens=120,
                         output_tokens=45,
                         cache_read_tokens=7,
+                        details={"thoughts_tokens": 50},
                         tool_calls=0,
                     ),
                 )
@@ -241,6 +246,7 @@ class ChangelogLlmTests(unittest.TestCase):
         self.assertEqual(output.markdown, "## Summary\nNormalized model name works")
         self.assertEqual(output.usage.input_tokens, 120)
         self.assertEqual(output.usage.total_tokens, 165)
+        self.assertEqual(output.estimated_cost, Decimal("0.0001875"))
 
     def test_build_changelog_usage_summary_maps_run_usage_into_shared_table_shape(
         self,
@@ -251,9 +257,10 @@ class ChangelogLlmTests(unittest.TestCase):
                 output_tokens=80,
                 cache_read_tokens=10,
                 tool_calls=2,
-                details={"reasoning_tokens": 33},
+                details={"thoughts_tokens": 33},
             ),
             wall_clock_ms=4_321,
+            estimated_cost=Decimal("0.0001875"),
         )
 
         assert summary.totals is not None
@@ -265,7 +272,7 @@ class ChangelogLlmTests(unittest.TestCase):
         self.assertEqual(summary.totals.total_tokens, 280)
         self.assertEqual(summary.totals.wall_clock_ms, 4_321)
         self.assertEqual(summary.totals.tool_calls, 2)
-        self.assertIsNone(summary.totals.total_cost)
+        self.assertEqual(summary.totals.total_cost, Decimal("0.0001875"))
 
     def test_narrative_contract_requires_conflict_pair_evaluations_heading(self) -> None:
         self.assertIn("## Conflict Pair Evaluations", NARRATIVE_SYSTEM_PROMPT)
@@ -282,6 +289,38 @@ class ChangelogLlmTests(unittest.TestCase):
             'Write "Upstream-side intent" as a short paragraph',
             NARRATIVE_SYSTEM_PROMPT,
         )
+
+    def test_generate_narrative_wraps_cost_lookup_failures(self) -> None:
+        env = OpenCodeEnv(
+            api_key="opencode",
+            model="google/gemini-3-flash-preview",
+            variant="default",
+            agent="worker",
+            server_password="pw",
+            server_port=4096,
+            google_generative_ai_api_key="google-key",
+        )
+
+        class FakeAgent:
+            def __init__(self, model: str, *, system_prompt: str) -> None:
+                del model, system_prompt
+
+            async def run(self, prompt: str) -> SimpleNamespace:
+                del prompt
+                return SimpleNamespace(
+                    output="## Summary\nWorks",
+                    response=SimpleNamespace(
+                        cost=lambda: (_ for _ in ()).throw(LookupError("missing price"))
+                    ),
+                    usage=lambda: RunUsage(input_tokens=1, output_tokens=1),
+                )
+
+        with patch.dict(os.environ, {}, clear=True):
+            with patch("forklift.changelog_llm.Agent", FakeAgent):
+                with self.assertRaises(ChangelogLlmError) as ctx:
+                    _ = asyncio.run(generate_changelog_narrative(self._sample_evidence(), env))
+
+        self.assertIn("Unable to estimate changelog model cost", str(ctx.exception))
 
 
 class ChangelogRendererTests(unittest.TestCase):
@@ -768,8 +807,10 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
                             input_tokens=300,
                             output_tokens=120,
                             cache_read_tokens=15,
+                            details={"thoughts_tokens": 44},
                             tool_calls=0,
                         ),
+                        estimated_cost=Decimal("0.0001875"),
                     )
                 ),
             ) as llm_mock,
@@ -795,6 +836,8 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         assert usage_summary.totals is not None
         self.assertEqual(usage_summary.totals.input_tokens, 300)
         self.assertEqual(usage_summary.totals.output_tokens, 120)
+        self.assertEqual(usage_summary.totals.reasoning_tokens, 44)
+        self.assertEqual(usage_summary.totals.total_cost, Decimal("0.0001875"))
 
     async def test_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
         command = Changelog(main_branch="main")

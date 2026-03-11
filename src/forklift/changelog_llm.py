@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
+from decimal import Decimal
 import json
 import os
 
@@ -29,6 +30,7 @@ class ChangelogNarrativeResult:
 
     markdown: str
     usage: RunUsage
+    estimated_cost: Decimal | None
 
 
 NARRATIVE_SYSTEM_PROMPT = (
@@ -163,4 +165,12 @@ async def generate_changelog_narrative(
     output = result.output.strip()
     if not output:
         raise ChangelogLlmError("Changelog model returned empty narrative output.")
-    return ChangelogNarrativeResult(markdown=output, usage=result.usage())
+    try:
+        estimated_cost = result.response.cost().total_price
+    except LookupError as exc:
+        raise ChangelogLlmError(f"Unable to estimate changelog model cost: {exc}") from exc
+    return ChangelogNarrativeResult(
+        markdown=output,
+        usage=result.usage(),
+        estimated_cost=estimated_cost,
+    )

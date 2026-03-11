@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 from pathlib import Path
 import time
 from typing import cast, override
@@ -35,16 +36,26 @@ def _usage_detail(usage: RunUsage, *keys: str) -> int:
     return 0
 
 
-def build_changelog_usage_summary(usage: RunUsage, wall_clock_ms: int) -> UsageSummary:
+def build_changelog_usage_summary(
+    usage: RunUsage,
+    wall_clock_ms: int,
+    *,
+    estimated_cost: Decimal | float | None = None,
+) -> UsageSummary:
     """Convert pydantic-ai usage into the shared terminal post-run summary shape."""
 
     totals = UsageTotals(
         input_tokens=usage.input_tokens,
         output_tokens=usage.output_tokens,
-        reasoning_tokens=_usage_detail(usage, "reasoning_tokens", "reasoning"),
+        reasoning_tokens=_usage_detail(
+            usage,
+            "reasoning_tokens",
+            "reasoning",
+            "thoughts_tokens",
+        ),
         cache_read_tokens=usage.cache_read_tokens,
         total_tokens=usage.total_tokens,
-        total_cost=None,
+        total_cost=estimated_cost,
         wall_clock_ms=max(wall_clock_ms, 0),
         tool_calls=usage.tool_calls,
         tool_breakdown=(),
@@ -294,6 +305,7 @@ class Changelog(Command):
         usage_summary = build_changelog_usage_summary(
             narrative_result.usage,
             wall_clock_ms,
+            estimated_cost=narrative_result.estimated_cost,
         )
         markdown = render_changelog_markdown(evidence, narrative_result.markdown)
         render_changelog_terminal(markdown)

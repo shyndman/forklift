@@ -8,6 +8,7 @@ for every run outcome.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
 import json
 from pathlib import Path
 from collections.abc import Iterable
@@ -46,7 +47,7 @@ class UsageTotals:
     reasoning_tokens: int
     cache_read_tokens: int
     total_tokens: int
-    total_cost: float | None
+    total_cost: Decimal | float | None
     wall_clock_ms: int
     tool_calls: int
     tool_breakdown: tuple[ToolCallTotal, ...]
@@ -304,10 +305,17 @@ def _format_tokens(value: int) -> str:
     return f"{value:,}"
 
 
-def _format_cost(value: float | None) -> str:
+def _format_cost(value: Decimal | float | None) -> str:
     if value is None:
         return "n/a"
-    return f"${value:.4f}"
+    decimal_value = value if isinstance(value, Decimal) else Decimal(str(value))
+    normalized = format(decimal_value.normalize(), "f")
+    if "." not in normalized:
+        normalized = f"{normalized}.0000"
+    else:
+        whole, fractional = normalized.split(".", 1)
+        normalized = f"{whole}.{fractional.rstrip('0').ljust(4, '0')}"
+    return f"${normalized}"
 
 
 def _format_duration(value_ms: int) -> str:

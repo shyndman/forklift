@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import json
 from io import StringIO
 import tempfile
@@ -105,7 +106,7 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertEqual(summary.totals.cache_read_tokens, 6)
         self.assertEqual(summary.totals.total_tokens, 181)
         assert summary.totals.total_cost is not None
-        self.assertAlmostEqual(summary.totals.total_cost, 0.5)
+        self.assertEqual(summary.totals.total_cost, 0.5)
         self.assertEqual(summary.totals.wall_clock_ms, 7_000)
         self.assertEqual(summary.totals.tool_calls, 3)
         self.assertEqual(
@@ -146,7 +147,7 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertEqual(summary.totals.cache_read_tokens, 0)
         self.assertEqual(summary.totals.total_tokens, 99)
         assert summary.totals.total_cost is not None
-        self.assertAlmostEqual(summary.totals.total_cost, 0.2)
+        self.assertEqual(summary.totals.total_cost, 0.2)
         self.assertEqual(summary.totals.wall_clock_ms, 0)
         self.assertEqual(summary.totals.tool_calls, 0)
         self.assertEqual(summary.totals.tool_breakdown, ())
@@ -249,6 +250,29 @@ class RenderUsageSummaryTests(unittest.TestCase):
         self.assertIn("↳ bash", output)
         self.assertIn("Metric", output)
         self.assertIn("Value", output)
+
+    def test_formats_fractional_cent_cost_without_rounding_away_precision(self) -> None:
+        rendered = StringIO()
+        render_usage_summary(
+            "success",
+            UsageSummary.from_totals(
+                UsageTotals(
+                    input_tokens=9,
+                    output_tokens=61,
+                    reasoning_tokens=60,
+                    cache_read_tokens=0,
+                    total_tokens=70,
+                    total_cost=Decimal("0.0001875"),
+                    wall_clock_ms=321,
+                    tool_calls=0,
+                    tool_breakdown=(),
+                )
+            ),
+            console=self._console(rendered),
+        )
+        output = rendered.getvalue()
+
+        self.assertIn("$0.0001875", output)
 
         unavailable = StringIO()
         render_usage_summary(
