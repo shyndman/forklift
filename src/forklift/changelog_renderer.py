@@ -3,7 +3,7 @@ from __future__ import annotations
 from rich.console import Console
 from rich.markdown import Markdown
 
-from .changelog_models import EvidenceBundle
+from .changelog_models import ChangelogReportSections, EvidenceBundle
 
 HOTSPOT_CAVEAT = (
     "Tip-merge hotspot predictions are directional and may repeat during "
@@ -12,8 +12,11 @@ HOTSPOT_CAVEAT = (
 MAX_MARKDOWN_WIDTH = 110
 
 
-def render_changelog_markdown(evidence: EvidenceBundle, narrative: str) -> str:
-    """Assemble fixed-order changelog markdown from evidence and narrative text."""
+def render_changelog_markdown(
+    evidence: EvidenceBundle,
+    sections: ChangelogReportSections,
+) -> str:
+    """Assemble fixed-order changelog markdown from section-owned report bodies."""
 
     baseline = evidence.baseline_diff_summary
     filtered = evidence.filtered_diff_summary
@@ -31,7 +34,17 @@ def render_changelog_markdown(evidence: EvidenceBundle, narrative: str) -> str:
         f"- Upstream ref: `{evidence.upstream_ref}`",
         f"- Merge base: `{evidence.base_sha[:12]}`",
         "",
-        narrative.strip(),
+        "## Summary",
+        sections.summary_markdown.strip(),
+        "",
+        "## Key Change Arcs",
+        sections.key_change_arcs_markdown.strip(),
+        "",
+        "## Conflict Pair Evaluations",
+        sections.conflict_pair_evaluations_markdown.strip(),
+        "",
+        "## Risk and Review Notes",
+        sections.risk_and_review_notes_markdown.strip(),
         "",
         "## Predicted Conflict Hotspots",
     ]

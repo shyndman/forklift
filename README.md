@@ -79,9 +79,10 @@ Behavior and constraints:
 - Deterministic metrics are shown as `all files` vs `excluding patterns` with explicit deltas.
 - Predicted conflict hotspots come from tip-merge analysis and may recur during
   commit-by-commit rebases.
-- For each conflicted path, Forklift now renders a conceptual fork-vs-upstream comparison that explains what each side is changing, whether the overlap is conceptual or mostly mechanical, and what to think about during merge review.
+- The top half of the report (`Summary` and `Key Change Arcs`) is generated from an upstream-only payload, so it stays focused on what changed upstream rather than re-describing fork intent.
+- The bottom half of the report (`Conflict Pair Evaluations` and `Risk and Review Notes`) still uses full fork-vs-upstream evidence so merge review retains the conflict context it needs.
 - Raw evidence such as commit samples, churn, hunk headers, and truncation metadata remains internal to the synthesis step and is not shown in the default changelog output.
-- After changelog output renders, Forklift shows the same post-run usage summary table style used by the main `forklift` command, populated from the changelog model run plus end-to-end wall clock time and estimated model cost.
+- After changelog output renders, Forklift shows the same post-run usage summary table style used by the main `forklift` command, populated from the combined changelog model runs plus end-to-end wall clock time and estimated model cost.
 
 What happens:
 

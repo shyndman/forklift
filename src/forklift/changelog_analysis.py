@@ -17,6 +17,7 @@ from .changelog_models import (
     DiffSummary,
     EvidenceBundle,
     TruncationMetadata,
+    UpstreamNarrativeEvidence,
 )
 from .cli_runtime import resolved_main_branch
 from .git import GitError, ensure_required_remotes, fetch_remotes, run_git
@@ -327,6 +328,25 @@ def build_diff_summary(changed_file_stats: list[ChangedFileStat]) -> DiffSummary
         files_changed=len(changed_file_stats),
         insertions=sum(item.added for item in changed_file_stats),
         deletions=sum(item.removed for item in changed_file_stats),
+    )
+
+
+def build_upstream_narrative_evidence(
+    evidence: EvidenceBundle,
+) -> UpstreamNarrativeEvidence:
+    """Project full changelog evidence into the upstream-only payload for top-half synthesis."""
+
+    return UpstreamNarrativeEvidence(
+        base_sha=evidence.base_sha,
+        main_branch=evidence.main_branch,
+        upstream_ref=evidence.upstream_ref,
+        baseline_diff_summary=evidence.baseline_diff_summary,
+        filtered_diff_summary=evidence.filtered_diff_summary,
+        active_exclusion_rules=list(evidence.active_exclusion_rules),
+        excluded_file_count=evidence.excluded_file_count,
+        diff_summary=evidence.diff_summary,
+        top_changed_files=list(evidence.top_changed_files),
+        important_notes=list(evidence.important_notes),
     )
 
 

@@ -25,6 +25,7 @@ from forklift.changelog_analysis import (
     DEFAULT_SIDE_COMMIT_SAMPLE_CAP,
     DEFAULT_SIDE_HUNK_HEADER_CAP,
     MergeTreeResult,
+    build_upstream_narrative_evidence,
     build_conflict_side_comparisons,
     build_evidence_bundle,
     collect_conflict_side_evidence,
@@ -40,19 +41,28 @@ from forklift.changelog_analysis import (
 )
 from forklift.changelog_llm import (
     ChangelogLlmError,
-    ChangelogNarrativeResult,
-    NARRATIVE_SYSTEM_PROMPT,
-    generate_changelog_narrative,
+    CONFLICT_REVIEW_SYSTEM_PROMPT,
+    ConflictReviewResult,
+    UPSTREAM_NARRATIVE_SYSTEM_PROMPT,
+    UpstreamNarrativeResult,
+    build_conflict_review_prompt,
+    build_upstream_narrative_prompt,
+    generate_conflict_review,
+    generate_upstream_narrative,
 )
 from forklift.changelog_models import (
     ChangedFileStat,
+    ChangelogReportSections,
     CommitSample,
     ConflictHotspot,
     ConflictSideComparison,
     ConflictSideEvidence,
+    ConflictReviewSections,
     DiffSummary,
     EvidenceBundle,
     TruncationMetadata,
+    UpstreamNarrativeEvidence,
+    UpstreamNarrativeSections,
 )
 from forklift.cli import Forklift
 from forklift.opencode_env import OpenCodeEnv
@@ -171,6 +181,37 @@ class ChangelogModelTests(unittest.TestCase):
             "abc1234",
         )
 
+    def test_upstream_only_dataclasses_capture_section_owned_outputs(self) -> None:
+        payload = UpstreamNarrativeEvidence(
+            base_sha="abc123",
+            main_branch="main",
+            upstream_ref="upstream/main",
+            top_changed_files=[ChangedFileStat(path="src/app.py", added=3, removed=1)],
+        )
+        upstream_sections = UpstreamNarrativeSections(
+            summary_markdown="Upstream summary",
+            key_change_arcs_markdown="Upstream arc",
+        )
+        conflict_sections = ConflictReviewSections(
+            conflict_pair_evaluations_markdown="Conflict eval",
+            risk_and_review_notes_markdown="Risk notes",
+        )
+        report_sections = ChangelogReportSections(
+            summary_markdown=upstream_sections.summary_markdown,
+            key_change_arcs_markdown=upstream_sections.key_change_arcs_markdown,
+            conflict_pair_evaluations_markdown=(
+                conflict_sections.conflict_pair_evaluations_markdown
+            ),
+            risk_and_review_notes_markdown=conflict_sections.risk_and_review_notes_markdown,
+        )
+
+        self.assertEqual(payload.top_changed_files[0].path, "src/app.py")
+        self.assertEqual(report_sections.summary_markdown, "Upstream summary")
+        self.assertEqual(
+            report_sections.conflict_pair_evaluations_markdown,
+            "Conflict eval",
+        )
+
 
 class ChangelogLlmTests(unittest.TestCase):
     def _sample_evidence(self) -> EvidenceBundle:
@@ -178,10 +219,28 @@ class ChangelogLlmTests(unittest.TestCase):
             base_sha="1234567890abcdef1234567890abcdef12345678",
             main_branch="main",
             upstream_ref="upstream/main",
-            diff_summary=DiffSummary(files_changed=0, insertions=0, deletions=0),
+            diff_summary=DiffSummary(files_changed=2, insertions=9, deletions=4),
+            top_changed_files=[
+                ChangedFileStat(path="src/conflict.py", added=7, removed=3, status="M")
+            ],
+            conflict_side_comparisons=[
+                ConflictSideComparison(
+                    path="src/conflict.py",
+                    conflict_count=2,
+                    fork_side=ConflictSideEvidence(
+                        commit_samples=[CommitSample(short_sha="abc1234", subject="fork")]
+                    ),
+                    upstream_side=ConflictSideEvidence(
+                        commit_samples=[CommitSample(short_sha="def5678", subject="upstream")]
+                    ),
+                )
+            ],
         )
 
-    def test_generate_narrative_normalizes_slash_model_and_sets_google_provider_keys(
+    def _sample_upstream_evidence(self) -> UpstreamNarrativeEvidence:
+        return build_upstream_narrative_evidence(self._sample_evidence())
+
+    def test_generate_upstream_narrative_normalizes_model_and_uses_sanitized_prompt(
         self,
     ) -> None:
         env = OpenCodeEnv(
@@ -205,7 +264,12 @@ class ChangelogLlmTests(unittest.TestCase):
             async def run(self, prompt: str) -> SimpleNamespace:
                 captured["prompt"] = prompt
                 return SimpleNamespace(
-                    output="## Summary\nNormalized model name works",
+                    output=(
+                        "## Summary\n"
+                        "Normalized model name works.\n\n"
+                        "## Key Change Arcs\n"
+                        "Upstream arc description."
+                    ),
                     response=SimpleNamespace(
                         cost=lambda: SimpleNamespace(total_price=Decimal("0.0001875"))
                     ),
@@ -221,7 +285,7 @@ class ChangelogLlmTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             with patch("forklift.changelog_llm.Agent", FakeAgent):
                 output = asyncio.run(
-                    generate_changelog_narrative(self._sample_evidence(), env)
+                    generate_upstream_narrative(self._sample_upstream_evidence(), env)
                 )
 
             self.assertEqual(captured["model"], "google-gla:gemini-3-flash-preview")
@@ -230,23 +294,90 @@ class ChangelogLlmTests(unittest.TestCase):
             self.assertNotIn("GOOGLE_API_KEY", os.environ)
             self.assertNotIn("GEMINI_API_KEY", os.environ)
             self.assertIn("## Key Change Arcs", captured["system_prompt"])
-            self.assertIn("## Conflict Pair Evaluations", captured["system_prompt"])
-            self.assertIn("Fork-side intent", captured["system_prompt"])
-            self.assertIn("explain what it does in plain English", captured["system_prompt"])
-            self.assertIn("Write \"Upstream-side intent\" as a short paragraph", captured["system_prompt"])
-            self.assertIn("insufficient evidence", captured["system_prompt"])
-            self.assertIn("Do not restate churn counts", captured["system_prompt"])
+            self.assertNotIn("## Conflict Pair Evaluations", captured["system_prompt"])
+            self.assertIn("Do not infer or describe what the fork changed", captured["system_prompt"])
             self.assertIn("Use only this evidence.", captured["prompt"])
-            self.assertIn(
-                "synthesize them into feature-level summaries without repeating the raw evidence structure",
-                captured["prompt"],
-            )
             self.assertIn("Evidence JSON", captured["prompt"])
+            self.assertNotIn("conflict_side_comparisons", captured["prompt"])
+            self.assertNotIn("fork_side", captured["prompt"])
 
-        self.assertEqual(output.markdown, "## Summary\nNormalized model name works")
+        self.assertEqual(output.sections.summary_markdown, "Normalized model name works.")
+        self.assertEqual(output.sections.key_change_arcs_markdown, "Upstream arc description.")
         self.assertEqual(output.usage.input_tokens, 120)
         self.assertEqual(output.usage.total_tokens, 165)
         self.assertEqual(output.estimated_cost, Decimal("0.0001875"))
+
+    def test_generate_conflict_review_uses_full_conflict_prompt(self) -> None:
+        env = OpenCodeEnv(
+            api_key="opencode",
+            model="openai:gpt-5-mini",
+            variant="default",
+            agent="worker",
+            server_password="pw",
+            server_port=4096,
+        )
+        captured: dict[str, str] = {}
+
+        class FakeAgent:
+            def __init__(self, model: str, *, system_prompt: str) -> None:
+                captured["model"] = model
+                captured["system_prompt"] = system_prompt
+
+            async def run(self, prompt: str) -> SimpleNamespace:
+                captured["prompt"] = prompt
+                return SimpleNamespace(
+                    output=(
+                        "## Conflict Pair Evaluations\n"
+                        "### `src/conflict.py`\n"
+                        "- Fork-side intent: Adjust fork behavior.\n"
+                        "- Upstream-side intent: Adjust upstream behavior.\n\n"
+                        "## Risk and Review Notes\n"
+                        "- Review parser edge cases."
+                    ),
+                    response=SimpleNamespace(
+                        cost=lambda: SimpleNamespace(total_price=Decimal("0.0003125"))
+                    ),
+                    usage=lambda: RunUsage(
+                        input_tokens=140,
+                        output_tokens=60,
+                        cache_read_tokens=5,
+                        details={"thoughts_tokens": 22},
+                        tool_calls=0,
+                    ),
+                )
+
+        with patch("forklift.changelog_llm.Agent", FakeAgent):
+            output = asyncio.run(generate_conflict_review(self._sample_evidence(), env))
+
+        self.assertEqual(captured["model"], "openai:gpt-5-mini")
+        self.assertIn("## Conflict Pair Evaluations", captured["system_prompt"])
+        self.assertIn("Fork-side intent", captured["system_prompt"])
+        self.assertIn("insufficient evidence", captured["system_prompt"])
+        self.assertIn('Do not write "## Summary" or "## Key Change Arcs"', captured["system_prompt"])
+        self.assertIn("conflict_side_comparisons", captured["prompt"])
+        self.assertIn("fork_side", captured["prompt"])
+        self.assertEqual(
+            output.sections.conflict_pair_evaluations_markdown,
+            "### `src/conflict.py`\n- Fork-side intent: Adjust fork behavior.\n- Upstream-side intent: Adjust upstream behavior.",
+        )
+        self.assertEqual(output.sections.risk_and_review_notes_markdown, "- Review parser edge cases.")
+
+    def test_build_upstream_prompt_excludes_conflict_side_payloads(self) -> None:
+        prompt = build_upstream_narrative_prompt(self._sample_upstream_evidence())
+
+        self.assertIn("Use only this evidence.", prompt)
+        self.assertNotIn("conflict_side_comparisons", prompt)
+        self.assertNotIn("fork_side", prompt)
+
+    def test_build_conflict_prompt_includes_conflict_side_payloads(self) -> None:
+        prompt = build_conflict_review_prompt(self._sample_evidence())
+
+        self.assertIn("conflict_side_comparisons", prompt)
+        self.assertIn("fork_side", prompt)
+        self.assertIn(
+            "synthesize them into feature-level summaries without repeating the raw evidence structure",
+            prompt,
+        )
 
     def test_build_changelog_usage_summary_maps_run_usage_into_shared_table_shape(
         self,
@@ -274,23 +405,31 @@ class ChangelogLlmTests(unittest.TestCase):
         self.assertEqual(summary.totals.tool_calls, 2)
         self.assertEqual(summary.totals.total_cost, Decimal("0.0001875"))
 
-    def test_narrative_contract_requires_conflict_pair_evaluations_heading(self) -> None:
-        self.assertIn("## Conflict Pair Evaluations", NARRATIVE_SYSTEM_PROMPT)
+    def test_upstream_prompt_contract_bans_conflict_sections(self) -> None:
+        self.assertIn("## Summary", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("## Key Change Arcs", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertNotIn("## Conflict Pair Evaluations", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("Do not infer or describe what the fork changed", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
 
-    def test_narrative_contract_requires_insufficient_evidence_wording(self) -> None:
-        self.assertIn("insufficient evidence", NARRATIVE_SYSTEM_PROMPT)
-
-    def test_narrative_contract_requires_plain_english_feature_explanations(self) -> None:
-        self.assertIn("plain English", NARRATIVE_SYSTEM_PROMPT)
-        self.assertIn("Do not leave unexplained labels", NARRATIVE_SYSTEM_PROMPT)
-
-    def test_narrative_contract_requires_paragraph_upstream_intent(self) -> None:
+    def test_conflict_prompt_contract_requires_intent_labels_and_evidence_wording(
+        self,
+    ) -> None:
+        self.assertIn("## Conflict Pair Evaluations", CONFLICT_REVIEW_SYSTEM_PROMPT)
+        self.assertIn("Fork-side intent", CONFLICT_REVIEW_SYSTEM_PROMPT)
+        self.assertIn("insufficient evidence", CONFLICT_REVIEW_SYSTEM_PROMPT)
         self.assertIn(
             'Write "Upstream-side intent" as a short paragraph',
-            NARRATIVE_SYSTEM_PROMPT,
+            CONFLICT_REVIEW_SYSTEM_PROMPT,
         )
+        self.assertIn("Do not write \"## Summary\"", CONFLICT_REVIEW_SYSTEM_PROMPT)
 
-    def test_generate_narrative_wraps_cost_lookup_failures(self) -> None:
+    def test_both_prompts_require_plain_english_feature_explanations(self) -> None:
+        self.assertIn("plain English", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("plain English", CONFLICT_REVIEW_SYSTEM_PROMPT)
+        self.assertIn("Do not leave unexplained labels", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("Do not leave unexplained labels", CONFLICT_REVIEW_SYSTEM_PROMPT)
+
+    def test_generate_conflict_review_wraps_cost_lookup_failures(self) -> None:
         env = OpenCodeEnv(
             api_key="opencode",
             model="google/gemini-3-flash-preview",
@@ -308,7 +447,12 @@ class ChangelogLlmTests(unittest.TestCase):
             async def run(self, prompt: str) -> SimpleNamespace:
                 del prompt
                 return SimpleNamespace(
-                    output="## Summary\nWorks",
+                    output=(
+                        "## Conflict Pair Evaluations\n"
+                        "insufficient evidence\n\n"
+                        "## Risk and Review Notes\n"
+                        "Review carefully."
+                    ),
                     response=SimpleNamespace(
                         cost=lambda: (_ for _ in ()).throw(LookupError("missing price"))
                     ),
@@ -318,12 +462,20 @@ class ChangelogLlmTests(unittest.TestCase):
         with patch.dict(os.environ, {}, clear=True):
             with patch("forklift.changelog_llm.Agent", FakeAgent):
                 with self.assertRaises(ChangelogLlmError) as ctx:
-                    _ = asyncio.run(generate_changelog_narrative(self._sample_evidence(), env))
+                    _ = asyncio.run(generate_conflict_review(self._sample_evidence(), env))
 
         self.assertIn("Unable to estimate changelog model cost", str(ctx.exception))
 
 
 class ChangelogRendererTests(unittest.TestCase):
+    def _sample_sections(self) -> ChangelogReportSections:
+        return ChangelogReportSections(
+            summary_markdown="Narrative summary",
+            key_change_arcs_markdown="Key arc explanation",
+            conflict_pair_evaluations_markdown="Conflict evaluation body",
+            risk_and_review_notes_markdown="Risk notes body",
+        )
+
     def test_render_terminal_caps_width_at_110_columns(self) -> None:
         console = Mock()
         console.width = 180
@@ -384,10 +536,12 @@ class ChangelogRendererTests(unittest.TestCase):
             ],
         )
 
-        markdown = render_changelog_markdown(evidence, "## Summary\nNarrative")
+        markdown = render_changelog_markdown(evidence, self._sample_sections())
 
         self.assertIn("| Metric | All Files | Excluding Patterns | Delta |", markdown)
         self.assertIn("| Files changed | 204 | 57 | -147 |", markdown)
+        self.assertIn("## Summary\nNarrative summary", markdown)
+        self.assertIn("## Conflict Pair Evaluations\nConflict evaluation body", markdown)
         self.assertIn("### Exclusion Rules", markdown)
         self.assertIn("- `data/big-snapshot.json`", markdown)
         self.assertIn("- Matched files in baseline diff: 147", markdown)
@@ -403,7 +557,7 @@ class ChangelogRendererTests(unittest.TestCase):
             conflicts=[],
         )
 
-        markdown = render_changelog_markdown(evidence, "## Summary\nNarrative")
+        markdown = render_changelog_markdown(evidence, self._sample_sections())
 
         self.assertNotIn("## Conflict Side Comparisons", markdown)
         self.assertNotIn("Fork Side", markdown)
@@ -411,6 +565,43 @@ class ChangelogRendererTests(unittest.TestCase):
 
 
 class ChangelogAnalysisTests(unittest.TestCase):
+    def test_build_upstream_narrative_evidence_excludes_conflict_side_payloads(self) -> None:
+        evidence = EvidenceBundle(
+            base_sha="1234567890abcdef1234567890abcdef12345678",
+            main_branch="main",
+            upstream_ref="upstream/main",
+            conflicts=[ConflictHotspot(path="src/conflict.py", conflict_count=2)],
+            baseline_diff_summary=DiffSummary(files_changed=4, insertions=20, deletions=5),
+            filtered_diff_summary=DiffSummary(files_changed=2, insertions=7, deletions=3),
+            active_exclusion_rules=["generated/**"],
+            excluded_file_count=2,
+            diff_summary=DiffSummary(files_changed=2, insertions=7, deletions=3),
+            top_changed_files=[ChangedFileStat(path="src/app.py", added=7, removed=3)],
+            conflict_side_comparisons=[
+                ConflictSideComparison(
+                    path="src/conflict.py",
+                    conflict_count=2,
+                    fork_side=ConflictSideEvidence(
+                        commit_samples=[CommitSample(short_sha="abc1234", subject="fork")]
+                    ),
+                    upstream_side=ConflictSideEvidence(
+                        commit_samples=[CommitSample(short_sha="def5678", subject="upstream")]
+                    ),
+                )
+            ],
+            important_notes=["Keep review focused on upstream changes."],
+        )
+
+        projected = build_upstream_narrative_evidence(evidence)
+        serialized = asdict(projected)
+
+        self.assertEqual(projected.base_sha, evidence.base_sha)
+        self.assertEqual(projected.diff_summary.files_changed, 2)
+        self.assertEqual(projected.top_changed_files[0].path, "src/app.py")
+        self.assertEqual(projected.important_notes, evidence.important_notes)
+        self.assertNotIn("conflicts", serialized)
+        self.assertNotIn("conflict_side_comparisons", serialized)
+
     def test_parse_merge_tree_conflicts_no_conflicts(self) -> None:
         output = "f00ba47f00ba47f00ba47f00ba47f00ba47f00ba"
         self.assertEqual(parse_merge_tree_conflict_hotspots(output), [])
@@ -792,16 +983,16 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=self._sample_evidence(),
             ) as evidence_mock,
             patch(
-                "forklift.changelog.generate_changelog_narrative",
+                "forklift.changelog.build_upstream_narrative_evidence",
+                return_value=build_upstream_narrative_evidence(self._sample_evidence()),
+            ) as upstream_payload_mock,
+            patch(
+                "forklift.changelog.generate_upstream_narrative",
                 new=AsyncMock(
-                    return_value=ChangelogNarrativeResult(
-                        markdown=(
-                            "## Summary\n"
-                            "Main branch diverges from upstream.\n\n"
-                            "## Key Change Arcs\n"
-                            "- Refactors in src/.\n\n"
-                            "## Risk and Review Notes\n"
-                            "- Check parser edge cases."
+                    return_value=UpstreamNarrativeResult(
+                        sections=UpstreamNarrativeSections(
+                            summary_markdown="Main branch diverges from upstream.",
+                            key_change_arcs_markdown="- Refactors in src/.",
                         ),
                         usage=RunUsage(
                             input_tokens=300,
@@ -813,7 +1004,26 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         estimated_cost=Decimal("0.0001875"),
                     )
                 ),
-            ) as llm_mock,
+            ) as upstream_llm_mock,
+            patch(
+                "forklift.changelog.generate_conflict_review",
+                new=AsyncMock(
+                    return_value=ConflictReviewResult(
+                        sections=ConflictReviewSections(
+                            conflict_pair_evaluations_markdown="### `src/conflict.py`\n- Fork-side intent: Review carefully.",
+                            risk_and_review_notes_markdown="- Check parser edge cases.",
+                        ),
+                        usage=RunUsage(
+                            input_tokens=210,
+                            output_tokens=90,
+                            cache_read_tokens=9,
+                            details={"thoughts_tokens": 16},
+                            tool_calls=0,
+                        ),
+                        estimated_cost=Decimal("0.0002125"),
+                    )
+                ),
+            ) as conflict_llm_mock,
             patch(
                 "forklift.changelog.render_changelog_terminal",
                 side_effect=_capture_markdown,
@@ -826,20 +1036,25 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             await command.run()
 
         evidence_mock.assert_called_once()
-        llm_mock.assert_called_once()
+        upstream_payload_mock.assert_called_once()
+        upstream_llm_mock.assert_called_once()
+        conflict_llm_mock.assert_called_once()
         render_mock.assert_called_once()
         usage_mock.assert_called_once()
         output = cast(str, captured["markdown"])
         self._assert_markdown_sections(output)
+        self.assertIn("## Conflict Pair Evaluations", output)
+        self.assertIn("## Risk and Review Notes", output)
         self.assertEqual(captured["usage_outcome"], "changelog")
         usage_summary = cast(UsageSummary, captured["usage_summary"])
         assert usage_summary.totals is not None
-        self.assertEqual(usage_summary.totals.input_tokens, 300)
-        self.assertEqual(usage_summary.totals.output_tokens, 120)
-        self.assertEqual(usage_summary.totals.reasoning_tokens, 44)
-        self.assertEqual(usage_summary.totals.total_cost, Decimal("0.0001875"))
+        self.assertEqual(usage_summary.totals.input_tokens, 510)
+        self.assertEqual(usage_summary.totals.output_tokens, 210)
+        self.assertEqual(usage_summary.totals.reasoning_tokens, 60)
+        self.assertEqual(usage_summary.totals.cache_read_tokens, 24)
+        self.assertEqual(usage_summary.totals.total_cost, Decimal("0.0004000"))
 
-    async def test_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
+    async def test_upstream_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
         command = Changelog(main_branch="main")
 
         with (
@@ -849,7 +1064,55 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 return_value=self._sample_evidence(),
             ),
             patch(
-                "forklift.changelog.generate_changelog_narrative",
+                "forklift.changelog.build_upstream_narrative_evidence",
+                return_value=build_upstream_narrative_evidence(self._sample_evidence()),
+            ),
+            patch(
+                "forklift.changelog.generate_upstream_narrative",
+                new=AsyncMock(side_effect=ChangelogLlmError("model auth failed")),
+            ),
+            patch(
+                "forklift.changelog.generate_conflict_review",
+                new=AsyncMock(),
+            ),
+            patch("forklift.changelog.render_changelog_terminal") as render_mock,
+            patch("forklift.changelog.render_usage_summary") as usage_mock,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                await command.run()
+
+        self.assertNotEqual(ctx.exception.code, 0)
+        render_mock.assert_not_called()
+        usage_mock.assert_not_called()
+
+    async def test_conflict_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
+        command = Changelog(main_branch="main")
+
+        with (
+            self._patch_env(command),
+            patch(
+                "forklift.changelog.build_evidence_bundle",
+                return_value=self._sample_evidence(),
+            ),
+            patch(
+                "forklift.changelog.build_upstream_narrative_evidence",
+                return_value=build_upstream_narrative_evidence(self._sample_evidence()),
+            ),
+            patch(
+                "forklift.changelog.generate_upstream_narrative",
+                new=AsyncMock(
+                    return_value=UpstreamNarrativeResult(
+                        sections=UpstreamNarrativeSections(
+                            summary_markdown="Summary",
+                            key_change_arcs_markdown="Arc",
+                        ),
+                        usage=RunUsage(input_tokens=1, output_tokens=1),
+                        estimated_cost=Decimal("0.0001"),
+                    )
+                ),
+            ),
+            patch(
+                "forklift.changelog.generate_conflict_review",
                 new=AsyncMock(side_effect=ChangelogLlmError("model auth failed")),
             ),
             patch("forklift.changelog.render_changelog_terminal") as render_mock,

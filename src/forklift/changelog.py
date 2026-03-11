@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from decimal import Decimal
 from pathlib import Path
 import time
@@ -10,8 +11,17 @@ from pydantic_ai.usage import RunUsage
 import structlog
 from structlog.stdlib import BoundLogger
 
-from .changelog_analysis import ChangelogAnalysisError, build_evidence_bundle
-from .changelog_llm import ChangelogLlmError, generate_changelog_narrative
+from .changelog_analysis import (
+    ChangelogAnalysisError,
+    build_evidence_bundle,
+    build_upstream_narrative_evidence,
+)
+from .changelog_llm import (
+    ChangelogLlmError,
+    generate_conflict_review,
+    generate_upstream_narrative,
+)
+from .changelog_models import ChangelogReportSections
 from .changelog_renderer import render_changelog_markdown, render_changelog_terminal
 from .cli_runtime import apply_cli_overrides, resolved_main_branch
 from .opencode_env import (
@@ -61,6 +71,32 @@ def build_changelog_usage_summary(
         tool_breakdown=(),
     )
     return UsageSummary.from_totals(totals)
+
+
+def combine_run_usages(usages: list[RunUsage]) -> RunUsage:
+    """Merge per-agent usage records into one command-level usage total."""
+
+    combined_details: dict[str, int] = {}
+    for usage in usages:
+        for key, value in usage.details.items():
+            combined_details[key] = combined_details.get(key, 0) + value
+
+    return RunUsage(
+        input_tokens=sum(item.input_tokens for item in usages),
+        output_tokens=sum(item.output_tokens for item in usages),
+        cache_read_tokens=sum(item.cache_read_tokens for item in usages),
+        details=combined_details,
+        tool_calls=sum(item.tool_calls for item in usages),
+    )
+
+
+def sum_estimated_costs(costs: list[Decimal | None]) -> Decimal | None:
+    """Add available model cost estimates without inventing a value when none exist."""
+
+    present_costs = [cost for cost in costs if cost is not None]
+    if not present_costs:
+        return None
+    return sum(present_costs, start=Decimal("0"))
 
 
 def _consume_setup_front_matter(front_lines: list[str], start: int) -> int:
@@ -296,18 +332,41 @@ class Changelog(Command):
                 branch,
                 exclusion_patterns=exclusion_patterns,
             )
-            narrative_result = await generate_changelog_narrative(evidence, env)
+            upstream_evidence = build_upstream_narrative_evidence(evidence)
+            upstream_result, conflict_result = await asyncio.gather(
+                generate_upstream_narrative(upstream_evidence, env),
+                generate_conflict_review(evidence, env),
+            )
         except (ChangelogAnalysisError, ChangelogLlmError) as exc:
             logger.error("forklift changelog failed", error=str(exc))
             raise SystemExit(1) from exc
 
         wall_clock_ms = int((time.perf_counter() - started_at) * 1000)
+        combined_usage = combine_run_usages([
+            upstream_result.usage,
+            conflict_result.usage,
+        ])
         usage_summary = build_changelog_usage_summary(
-            narrative_result.usage,
+            combined_usage,
             wall_clock_ms,
-            estimated_cost=narrative_result.estimated_cost,
+            estimated_cost=sum_estimated_costs(
+                [
+                    upstream_result.estimated_cost,
+                    conflict_result.estimated_cost,
+                ]
+            ),
         )
-        markdown = render_changelog_markdown(evidence, narrative_result.markdown)
+        sections = ChangelogReportSections(
+            summary_markdown=upstream_result.sections.summary_markdown,
+            key_change_arcs_markdown=upstream_result.sections.key_change_arcs_markdown,
+            conflict_pair_evaluations_markdown=(
+                conflict_result.sections.conflict_pair_evaluations_markdown
+            ),
+            risk_and_review_notes_markdown=(
+                conflict_result.sections.risk_and_review_notes_markdown
+            ),
+        )
+        markdown = render_changelog_markdown(evidence, sections)
         render_changelog_terminal(markdown)
         render_usage_summary("changelog", usage_summary)
 

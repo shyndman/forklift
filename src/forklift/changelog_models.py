@@ -70,6 +70,48 @@ class ConflictSideComparison:
 
 
 @dataclass(frozen=True)
+class UpstreamNarrativeEvidence:
+    """Carry only upstream-oriented evidence for the top-half changelog narrative."""
+
+    base_sha: str
+    main_branch: str
+    upstream_ref: str
+    baseline_diff_summary: DiffSummary = field(default_factory=DiffSummary)
+    filtered_diff_summary: DiffSummary = field(default_factory=DiffSummary)
+    active_exclusion_rules: list[str] = field(default_factory=list)
+    excluded_file_count: int = 0
+    diff_summary: DiffSummary = field(default_factory=DiffSummary)
+    top_changed_files: list[ChangedFileStat] = field(default_factory=list)
+    important_notes: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class UpstreamNarrativeSections:
+    """Hold the top-half report section bodies produced from upstream-only evidence."""
+
+    summary_markdown: str
+    key_change_arcs_markdown: str
+
+
+@dataclass(frozen=True)
+class ConflictReviewSections:
+    """Hold the bottom-half report section bodies produced from full conflict evidence."""
+
+    conflict_pair_evaluations_markdown: str
+    risk_and_review_notes_markdown: str
+
+
+@dataclass(frozen=True)
+class ChangelogReportSections:
+    """Represent the full changelog narrative after host-side section ownership is enforced."""
+
+    summary_markdown: str
+    key_change_arcs_markdown: str
+    conflict_pair_evaluations_markdown: str
+    risk_and_review_notes_markdown: str
+
+
+@dataclass(frozen=True)
 class EvidenceBundle:
     """Bundle deterministic evidence and exclusion metadata used by changelog layers."""
 
