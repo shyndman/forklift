@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 from typing import cast, override
 
 from clypi import Command, arg
+from pydantic_ai.usage import RunUsage
 import structlog
 from structlog.stdlib import BoundLogger
 
@@ -17,9 +19,37 @@ from .opencode_env import (
     OpenCodeEnvError,
     load_opencode_env,
 )
+from .post_run_metrics import UsageSummary, UsageTotals, render_usage_summary
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 FORK_CONTEXT_FILENAME = "FORK.md"
+
+
+def _usage_detail(usage: RunUsage, *keys: str) -> int:
+    """Read provider-specific usage detail counters with a deterministic fallback."""
+
+    for key in keys:
+        value = usage.details.get(key)
+        if isinstance(value, int):
+            return value
+    return 0
+
+
+def build_changelog_usage_summary(usage: RunUsage, wall_clock_ms: int) -> UsageSummary:
+    """Convert pydantic-ai usage into the shared terminal post-run summary shape."""
+
+    totals = UsageTotals(
+        input_tokens=usage.input_tokens,
+        output_tokens=usage.output_tokens,
+        reasoning_tokens=_usage_detail(usage, "reasoning_tokens", "reasoning"),
+        cache_read_tokens=usage.cache_read_tokens,
+        total_tokens=usage.total_tokens,
+        total_cost=None,
+        wall_clock_ms=max(wall_clock_ms, 0),
+        tool_calls=usage.tool_calls,
+        tool_breakdown=(),
+    )
+    return UsageSummary.from_totals(totals)
 
 
 def _consume_setup_front_matter(front_lines: list[str], start: int) -> int:
@@ -246,6 +276,7 @@ class Changelog(Command):
         repo_path = self._resolve_repo_path()
         branch = resolved_main_branch(self.main_branch)
         env = self._prepare_opencode_env()
+        started_at = time.perf_counter()
 
         try:
             exclusion_patterns = load_changelog_exclude_patterns(repo_path)
@@ -254,13 +285,19 @@ class Changelog(Command):
                 branch,
                 exclusion_patterns=exclusion_patterns,
             )
-            narrative = await generate_changelog_narrative(evidence, env)
+            narrative_result = await generate_changelog_narrative(evidence, env)
         except (ChangelogAnalysisError, ChangelogLlmError) as exc:
             logger.error("forklift changelog failed", error=str(exc))
             raise SystemExit(1) from exc
 
-        markdown = render_changelog_markdown(evidence, narrative)
+        wall_clock_ms = int((time.perf_counter() - started_at) * 1000)
+        usage_summary = build_changelog_usage_summary(
+            narrative_result.usage,
+            wall_clock_ms,
+        )
+        markdown = render_changelog_markdown(evidence, narrative_result.markdown)
         render_changelog_terminal(markdown)
+        render_usage_summary("changelog", usage_summary)
 
     def _resolve_repo_path(self) -> Path:
         """Resolve repo path using current working directory when not explicitly provided."""

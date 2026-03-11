@@ -9,9 +9,16 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from typing import cast
 from unittest.mock import AsyncMock, Mock, patch
 
-from forklift.changelog import Changelog, load_changelog_exclude_patterns
+from pydantic_ai.usage import RunUsage
+
+from forklift.changelog import (
+    Changelog,
+    build_changelog_usage_summary,
+    load_changelog_exclude_patterns,
+)
 from forklift.changelog_analysis import (
     ChangelogAnalysisError,
     DEFAULT_SIDE_COMMIT_SAMPLE_CAP,
@@ -32,6 +39,7 @@ from forklift.changelog_analysis import (
 )
 from forklift.changelog_llm import (
     ChangelogLlmError,
+    ChangelogNarrativeResult,
     NARRATIVE_SYSTEM_PROMPT,
     generate_changelog_narrative,
 )
@@ -48,6 +56,7 @@ from forklift.changelog_models import (
 from forklift.cli import Forklift
 from forklift.opencode_env import OpenCodeEnv
 from forklift.changelog_renderer import render_changelog_markdown, render_changelog_terminal
+from forklift.post_run_metrics import UsageSummary
 
 
 def lines(*rows: str) -> str:
@@ -194,7 +203,15 @@ class ChangelogLlmTests(unittest.TestCase):
 
             async def run(self, prompt: str) -> SimpleNamespace:
                 captured["prompt"] = prompt
-                return SimpleNamespace(output="## Summary\nNormalized model name works")
+                return SimpleNamespace(
+                    output="## Summary\nNormalized model name works",
+                    usage=lambda: RunUsage(
+                        input_tokens=120,
+                        output_tokens=45,
+                        cache_read_tokens=7,
+                        tool_calls=0,
+                    ),
+                )
 
         with patch.dict(os.environ, {}, clear=True):
             with patch("forklift.changelog_llm.Agent", FakeAgent):
@@ -221,7 +238,34 @@ class ChangelogLlmTests(unittest.TestCase):
             )
             self.assertIn("Evidence JSON", captured["prompt"])
 
-        self.assertEqual(output, "## Summary\nNormalized model name works")
+        self.assertEqual(output.markdown, "## Summary\nNormalized model name works")
+        self.assertEqual(output.usage.input_tokens, 120)
+        self.assertEqual(output.usage.total_tokens, 165)
+
+    def test_build_changelog_usage_summary_maps_run_usage_into_shared_table_shape(
+        self,
+    ) -> None:
+        summary = build_changelog_usage_summary(
+            RunUsage(
+                input_tokens=200,
+                output_tokens=80,
+                cache_read_tokens=10,
+                tool_calls=2,
+                details={"reasoning_tokens": 33},
+            ),
+            wall_clock_ms=4_321,
+        )
+
+        assert summary.totals is not None
+        self.assertTrue(summary.available)
+        self.assertEqual(summary.totals.input_tokens, 200)
+        self.assertEqual(summary.totals.output_tokens, 80)
+        self.assertEqual(summary.totals.reasoning_tokens, 33)
+        self.assertEqual(summary.totals.cache_read_tokens, 10)
+        self.assertEqual(summary.totals.total_tokens, 280)
+        self.assertEqual(summary.totals.wall_clock_ms, 4_321)
+        self.assertEqual(summary.totals.tool_calls, 2)
+        self.assertIsNone(summary.totals.total_cost)
 
     def test_narrative_contract_requires_conflict_pair_evaluations_heading(self) -> None:
         self.assertIn("## Conflict Pair Evaluations", NARRATIVE_SYSTEM_PROMPT)
@@ -692,10 +736,15 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self,
     ) -> None:
         command = Changelog(main_branch="main")
-        captured: dict[str, str] = {}
+        captured: dict[str, object] = {}
 
         def _capture_markdown(markdown: str) -> str:
-            return captured.setdefault("markdown", markdown)
+            captured["markdown"] = markdown
+            return markdown
+
+        def _capture_usage_summary(outcome: str, summary: object) -> None:
+            captured["usage_outcome"] = outcome
+            captured["usage_summary"] = summary
 
         with (
             self._patch_env(command),
@@ -706,13 +755,21 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "forklift.changelog.generate_changelog_narrative",
                 new=AsyncMock(
-                    return_value=(
-                        "## Summary\n"
-                        "Main branch diverges from upstream.\n\n"
-                        "## Key Change Arcs\n"
-                        "- Refactors in src/.\n\n"
-                        "## Risk and Review Notes\n"
-                        "- Check parser edge cases."
+                    return_value=ChangelogNarrativeResult(
+                        markdown=(
+                            "## Summary\n"
+                            "Main branch diverges from upstream.\n\n"
+                            "## Key Change Arcs\n"
+                            "- Refactors in src/.\n\n"
+                            "## Risk and Review Notes\n"
+                            "- Check parser edge cases."
+                        ),
+                        usage=RunUsage(
+                            input_tokens=300,
+                            output_tokens=120,
+                            cache_read_tokens=15,
+                            tool_calls=0,
+                        ),
                     )
                 ),
             ) as llm_mock,
@@ -720,14 +777,24 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 "forklift.changelog.render_changelog_terminal",
                 side_effect=_capture_markdown,
             ) as render_mock,
+            patch(
+                "forklift.changelog.render_usage_summary",
+                side_effect=_capture_usage_summary,
+            ) as usage_mock,
         ):
             await command.run()
 
         evidence_mock.assert_called_once()
         llm_mock.assert_called_once()
         render_mock.assert_called_once()
-        output = captured["markdown"]
+        usage_mock.assert_called_once()
+        output = cast(str, captured["markdown"])
         self._assert_markdown_sections(output)
+        self.assertEqual(captured["usage_outcome"], "changelog")
+        usage_summary = cast(UsageSummary, captured["usage_summary"])
+        assert usage_summary.totals is not None
+        self.assertEqual(usage_summary.totals.input_tokens, 300)
+        self.assertEqual(usage_summary.totals.output_tokens, 120)
 
     async def test_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
         command = Changelog(main_branch="main")
@@ -743,12 +810,14 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 new=AsyncMock(side_effect=ChangelogLlmError("model auth failed")),
             ),
             patch("forklift.changelog.render_changelog_terminal") as render_mock,
+            patch("forklift.changelog.render_usage_summary") as usage_mock,
         ):
             with self.assertRaises(SystemExit) as ctx:
                 await command.run()
 
         self.assertNotEqual(ctx.exception.code, 0)
         render_mock.assert_not_called()
+        usage_mock.assert_not_called()
 
     def test_changelog_subcommand_does_not_invoke_orchestration_helpers(self) -> None:
         command = Forklift.parse(["changelog"])

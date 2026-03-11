@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 import json
 import os
 
@@ -13,6 +13,7 @@ from pydantic_ai.exceptions import (
     ModelHTTPError,
     UserError,
 )
+from pydantic_ai.usage import RunUsage
 
 from .changelog_models import EvidenceBundle
 from .opencode_env import OpenCodeEnv
@@ -20,6 +21,14 @@ from .opencode_env import OpenCodeEnv
 
 class ChangelogLlmError(RuntimeError):
     """Raised when changelog narrative generation fails."""
+
+
+@dataclass(frozen=True)
+class ChangelogNarrativeResult:
+    """Carries generated markdown plus model usage for post-run reporting."""
+
+    markdown: str
+    usage: RunUsage
 
 
 NARRATIVE_SYSTEM_PROMPT = (
@@ -125,8 +134,10 @@ def provider_env_from_opencode(env: OpenCodeEnv) -> Iterator[None]:
                 os.environ[env_name] = str(previous_value)
 
 
-async def generate_changelog_narrative(evidence: EvidenceBundle, env: OpenCodeEnv) -> str:
-    """Generate markdown narrative text from deterministic evidence via pydantic-ai."""
+async def generate_changelog_narrative(
+    evidence: EvidenceBundle, env: OpenCodeEnv
+) -> ChangelogNarrativeResult:
+    """Generate markdown narrative text plus usage totals via pydantic-ai."""
 
     model_name = resolve_agent_model(env)
     prompt = build_narrative_prompt(evidence)
@@ -152,4 +163,4 @@ async def generate_changelog_narrative(evidence: EvidenceBundle, env: OpenCodeEn
     output = result.output.strip()
     if not output:
         raise ChangelogLlmError("Changelog model returned empty narrative output.")
-    return output
+    return ChangelogNarrativeResult(markdown=output, usage=result.usage())

@@ -46,7 +46,7 @@ class UsageTotals:
     reasoning_tokens: int
     cache_read_tokens: int
     total_tokens: int
-    total_cost: float
+    total_cost: float | None
     wall_clock_ms: int
     tool_calls: int
     tool_breakdown: tuple[ToolCallTotal, ...]
@@ -304,7 +304,9 @@ def _format_tokens(value: int) -> str:
     return f"{value:,}"
 
 
-def _format_cost(value: float) -> str:
+def _format_cost(value: float | None) -> str:
+    if value is None:
+        return "n/a"
     return f"${value:.4f}"
 
 

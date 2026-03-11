@@ -81,6 +81,7 @@ Behavior and constraints:
   commit-by-commit rebases.
 - For each conflicted path, Forklift now renders a conceptual fork-vs-upstream comparison that explains what each side is changing, whether the overlap is conceptual or mostly mechanical, and what to think about during merge review.
 - Raw evidence such as commit samples, churn, hunk headers, and truncation metadata remains internal to the synthesis step and is not shown in the default changelog output.
+- After changelog output renders, Forklift shows the same post-run usage summary table style used by the main `forklift` command, populated from the changelog model run plus end-to-end wall clock time.
 
 What happens:
 

@@ -104,6 +104,7 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertEqual(summary.totals.reasoning_tokens, 25)
         self.assertEqual(summary.totals.cache_read_tokens, 6)
         self.assertEqual(summary.totals.total_tokens, 181)
+        assert summary.totals.total_cost is not None
         self.assertAlmostEqual(summary.totals.total_cost, 0.5)
         self.assertEqual(summary.totals.wall_clock_ms, 7_000)
         self.assertEqual(summary.totals.tool_calls, 3)
@@ -144,6 +145,7 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertEqual(summary.totals.reasoning_tokens, 0)
         self.assertEqual(summary.totals.cache_read_tokens, 0)
         self.assertEqual(summary.totals.total_tokens, 99)
+        assert summary.totals.total_cost is not None
         self.assertAlmostEqual(summary.totals.total_cost, 0.2)
         self.assertEqual(summary.totals.wall_clock_ms, 0)
         self.assertEqual(summary.totals.tool_calls, 0)
