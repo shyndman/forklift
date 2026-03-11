@@ -337,6 +337,21 @@ def collect_supporting_diff_stats(
 ) -> tuple[DiffSummary, list[ChangedFileStat]]:
     """Collect deterministic numstat/name-status outputs for the branch comparison range."""
 
+    # `git diff A...B` is intentionally asymmetric.
+    #
+    # For `git diff`, the triple-dot form means "diff the merge-base of A and B
+    # against B", not "show a symmetric comparison of both branches". That is:
+    #
+    #     git diff main...upstream/main
+    #
+    # behaves like:
+    #
+    #     git diff $(git merge-base main upstream/main) upstream/main
+    #
+    # This matters because the changelog wants an upstream-oriented view of what
+    # changed since the branches diverged. Many people reasonably assume `...`
+    # means "both sides" everywhere in Git because that *is* the meaning used by
+    # commands like `git log A...B`; `git diff` is different.
     comparison_range = f"{main_branch}...{upstream_ref}"
     try:
         numstat_output = run_git(repo_path, ["diff", "--numstat", comparison_range])
