@@ -1,4 +1,4 @@
-## 1. Model layer: add explicit side-comparison data structures
+## 1. Model layer: keep explicit internal side-comparison data structures
 
 - [x] 1.1 Open `src/forklift/changelog_models.py` and identify current `EvidenceBundle` fields.
 - [x] 1.2 Add a dataclass for sampled commit evidence (short sha + subject).
@@ -11,56 +11,54 @@
 
 ## 2. Analysis layer: collect deterministic side evidence per conflict path
 
-- [x] 2.1 Open `src/forklift/changelog_analysis.py` and add new uppercase constants for sampling caps near existing constants.
+- [x] 2.1 Open `src/forklift/changelog_analysis.py` and add new uppercase constants for internal sampling caps near existing constants.
 - [x] 2.2 Add helper: parse `git log --oneline` lines into structured commit sample objects.
 - [x] 2.3 Add helper: extract only `@@ ... @@` hunk header lines from unified diff output.
 - [x] 2.4 Add helper: compute side-local churn totals for one path.
 - [x] 2.5 For each conflict path, collect fork-side evidence from `base..main`.
 - [x] 2.6 For each conflict path, collect upstream-side evidence from `base..upstream/<main>`.
-- [x] 2.7 Apply per-path caps (commit samples and hunk headers) and store truncation metadata when caps are exceeded.
-- [x] 2.8 Preserve mechanical ordering (`conflict_count` desc, path asc) before building comparison entries.
-- [x] 2.9 If any global cap is introduced, include global truncation metadata in the bundle.
-- [x] 2.10 Return enriched `EvidenceBundle` from `build_evidence_bundle()` without changing read-only behavior.
+- [x] 2.7 Preserve mechanical ordering (`conflict_count` desc, path asc) before building comparison entries.
+- [x] 2.8 Return enriched `EvidenceBundle` from `build_evidence_bundle()` without changing read-only behavior.
 
-## 3. Narrative layer: enforce conflict pair evaluation contract
+## 3. Narrative layer: require conceptual summaries instead of evidence dumps
 
 - [x] 3.1 Open `src/forklift/changelog_llm.py` and update prompt contract to require `## Conflict Pair Evaluations`.
-- [x] 3.2 Require per-path subsections with: fork intent, upstream intent, conceptual relationship, merge discussion starters.
-- [x] 3.3 Add explicit instruction: use deterministic evidence only.
-- [x] 3.4 Add explicit instruction: say "insufficient evidence" when signals are too sparse.
-- [x] 3.5 Ensure narrative payload includes newly added side-comparison evidence fields and truncation metadata.
+- [x] 3.2 Require per-path subsections with: fork intent, upstream intent, conceptual relationship, why this is or is not a conceptual conflict, merge considerations.
+- [x] 3.3 Require `Upstream-side intent` to be a short paragraph when evidence supports it.
+- [x] 3.4 Add explicit instruction: explain repo-local jargon in plain English.
+- [x] 3.5 Add explicit instruction: say `insufficient evidence` when signals are too sparse.
+- [x] 3.6 Add explicit instruction: do not restate raw evidence structures in final markdown.
+- [x] 3.7 Ensure narrative payload still includes deterministic side-comparison evidence internally.
 
-## 4. Renderer layer: show deterministic side evidence and truncation notices
+## 4. Renderer layer: keep output focused on conceptual summaries
 
-- [x] 4.1 Open `src/forklift/changelog_renderer.py` and add a new section for conflict-side comparisons.
-- [x] 4.2 Render entries in mechanical order only.
-- [x] 4.3 For each path, render fork-side summary and upstream-side summary.
-- [x] 4.4 Render truncation notices using exact format `<shown>/<total> (cap <n>)` when applicable.
-- [x] 4.5 Preserve current no-conflict behavior (no side-evaluation section when no conflict paths exist).
+- [x] 4.1 Open `src/forklift/changelog_renderer.py` and keep the narrative as the operator-facing place for conflict summaries.
+- [x] 4.2 Preserve hotspot table, branch context, and supporting metrics.
+- [x] 4.3 Preserve current no-conflict behavior.
 
 ## 5. Command wiring: keep flow read-only and pass enriched data through
 
 - [x] 5.1 Open `src/forklift/changelog.py` and verify flow remains `build -> narrative -> render`.
-- [x] 5.2 Ensure enriched `EvidenceBundle` reaches both narrative generator and renderer.
+- [x] 5.2 Ensure enriched `EvidenceBundle` reaches the narrative generator.
 - [x] 5.3 Confirm no writes, branch mutations, or orchestration lifecycle calls are introduced.
 
-## 6. Tests: add explicit, behavior-first coverage
+## 6. Tests: lock in summary-only behavior
 
 - [x] 6.1 Add model tests in `tests/test_changelog.py` for new dataclass defaults and serialization shape.
 - [x] 6.2 Add analysis test: only merge-tree conflict paths receive side comparisons.
 - [x] 6.3 Add analysis test: ordering is `conflict_count` desc then path asc.
 - [x] 6.4 Add analysis test: hunk-header extraction keeps only `@@` lines.
 - [x] 6.5 Add analysis test: sparse-side evidence still produces an entry.
-- [x] 6.6 Add analysis test: truncation metadata appears when caps are exceeded.
-- [x] 6.7 Add renderer test: conflict-side section is present when conflicts exist.
-- [x] 6.8 Add renderer test: no side section when conflicts are absent.
-- [x] 6.9 Add LLM contract test: narrative requires `## Conflict Pair Evaluations` heading.
-- [x] 6.10 Add LLM contract test: insufficient evidence wording path is accepted/expected.
+- [x] 6.6 Add LLM contract test: narrative requires `## Conflict Pair Evaluations` heading.
+- [x] 6.7 Add LLM contract test: plain-English explanation is required for repo-local jargon.
+- [x] 6.8 Add LLM contract test: `Upstream-side intent` is required to be paragraph-length when evidence supports it.
+- [x] 6.9 Add renderer test: operator-facing output stays focused on narrative summaries.
+- [x] 6.10 Add renderer test: no-conflict behavior remains unchanged.
 
 ## 7. Docs and verification
 
-- [x] 7.1 Update changelog-facing docs (`README.md` or other relevant docs) with new section semantics.
-- [x] 7.2 Document truncation notices so users know how to interpret caps.
+- [x] 7.1 Update changelog-facing docs (`README.md` or other relevant docs) to describe conceptual conflict summaries.
+- [x] 7.2 Remove documentation that promises raw conflict evidence in default output.
 - [x] 7.3 Run focused tests: `uv run pytest tests/test_changelog.py`.
 - [x] 7.4 Run typing check: `uv run basedpyright`.
 - [x] 7.5 Confirm both commands pass before marking implementation complete.

@@ -7,33 +7,33 @@
 - **GIVEN** merge-tree returns conflict paths `A`, `B`, and `C`
 - **AND** exclusion rules remove `C`
 - **WHEN** changelog evidence is built
-- **THEN** conflict-side evaluations are produced for `A` and `B` only
+- **THEN** conflict-pair evaluations are produced for `A` and `B` only
 - **AND** no evaluation is produced for `C`
 
 #### Scenario: No conflicts yields no side evaluations
 - **GIVEN** merge-tree returns zero conflict paths
 - **WHEN** changelog is rendered
 - **THEN** the existing no-hotspot message is shown
-- **AND** no conflict-side evaluation subsections are emitted
+- **AND** no conflict-pair subsections are emitted
 
-### Requirement: Conflict-side evidence SHALL include bounded fork/upstream context with hunk headers
-For each merge-tree conflict path, deterministic evidence SHALL collect side-specific context from both ranges (`base..main` and `base..upstream/<main>`): representative commit subjects, side-local churn totals, and diff hunk headers (`@@ ... @@`).
+### Requirement: Conflict-pair summaries SHALL be grounded in deterministic side evidence
+For each merge-tree conflict path, deterministic analysis SHALL collect side-specific context from both ranges (`base..main` and `base..upstream/<main>`) so the narrative can explain the feature or behavior on each side.
 
-#### Scenario: Side evidence is present for a conflicted path
-- **GIVEN** conflict path `src/x.py` has commits on both sides
-- **WHEN** side evidence is collected
-- **THEN** fork-side commit samples are present
-- **AND** upstream-side commit samples are present
-- **AND** fork/upstream hunk-header samples include only `@@ ... @@` lines
+#### Scenario: Internal evidence supports a conceptual summary
+- **GIVEN** conflict path `src/x.py` has side-specific evidence on both branches
+- **WHEN** narrative is generated
+- **THEN** the path subsection explains what fork side is changing in plain English
+- **AND** it explains what upstream side is changing in plain English
+- **AND** it does not expose the raw evidence structure in default output
 
 #### Scenario: One side has sparse evidence
-- **GIVEN** conflict path `src/y.py` has commits on fork side but none on upstream side
-- **WHEN** evidence is collected
-- **THEN** evaluation still exists for `src/y.py`
-- **AND** upstream side is represented as sparse/empty evidence (not silently dropped)
+- **GIVEN** conflict path `src/y.py` has limited evidence on upstream side
+- **WHEN** narrative is generated
+- **THEN** the path subsection still exists
+- **AND** the upstream summary explicitly says there is insufficient evidence if exact behavior cannot be explained safely
 
-### Requirement: Conflict-side evaluations SHALL preserve mechanical ordering and truncation transparency
-Conflict-side sections SHALL be ordered by `conflict_count` descending and path ascending for ties, and SHALL explicitly show truncation counts whenever configured caps limit evidence.
+### Requirement: Conflict-pair evaluations SHALL preserve mechanical ordering
+Conflict-pair sections SHALL be ordered by `conflict_count` descending and path ascending for ties.
 
 #### Scenario: Mechanical ordering is deterministic
 - **GIVEN** three conflict paths with counts:
@@ -41,30 +41,25 @@ Conflict-side sections SHALL be ordered by `conflict_count` descending and path 
   - `a.py` = 5
   - `c.py` = 2
 - **WHEN** changelog is rendered
-- **THEN** conflict-side evaluation order is:
+- **THEN** conflict-pair evaluation order is:
   1. `a.py` (count 5, lexicographic tie-break)
   2. `b.py` (count 5)
   3. `c.py` (count 2)
 
-#### Scenario: Truncation notices are rendered when caps are hit
-- **GIVEN** a cap allows 3 commit samples but 8 are available
-- **WHEN** changelog is rendered
-- **THEN** it includes `3/8 (cap 3)` for that truncated evidence dimension
-- **AND** it includes a warning that additional evidence exists beyond configured limits
+### Requirement: Narrative output SHALL explain jargon and provide detailed upstream intent
+The narrative contract SHALL require `## Conflict Pair Evaluations` and one subsection per evaluated conflict path, with plain-English feature explanations instead of unexplained repo-local labels. When evidence supports it, `Upstream-side intent` SHALL be written as a short paragraph rather than a one-line sentence fragment.
 
-### Requirement: Narrative output SHALL include conflict pair evaluations grounded in deterministic evidence
-The narrative contract SHALL require `## Conflict Pair Evaluations` and one subsection per evaluated conflict path, with fork intent, upstream intent, conceptual relationship, and merge-discussion starters.
-
-#### Scenario: Narrative includes per-path conceptual comparison
-- **GIVEN** deterministic side evidence is available for path `src/session/store.py`
+#### Scenario: Narrative explains an internal feature name
+- **GIVEN** deterministic evidence includes an internal term such as a prompt or action name
 - **WHEN** narrative is generated
-- **THEN** the output contains `## Conflict Pair Evaluations`
-- **AND** a subsection for `src/session/store.py`
-- **AND** that subsection includes all four elements:
-  1. fork-side intent
-  2. upstream-side intent
-  3. conceptual relationship
-  4. merge discussion starters
+- **THEN** the summary explains what that term does in behavior-level language
+- **AND** it does not leave the internal label unexplained
+
+#### Scenario: Upstream intent receives paragraph-level explanation
+- **GIVEN** deterministic evidence contains enough detail to explain the upstream feature
+- **WHEN** narrative is generated
+- **THEN** the `Upstream-side intent` field is a short paragraph
+- **AND** it gives more than a one-line label for the upstream change
 
 #### Scenario: Insufficient evidence is called out explicitly
 - **GIVEN** deterministic evidence for a path is too sparse for reliable conceptual interpretation

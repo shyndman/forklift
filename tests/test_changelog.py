@@ -210,11 +210,13 @@ class ChangelogLlmTests(unittest.TestCase):
             self.assertIn("## Key Change Arcs", captured["system_prompt"])
             self.assertIn("## Conflict Pair Evaluations", captured["system_prompt"])
             self.assertIn("Fork-side intent", captured["system_prompt"])
+            self.assertIn("explain what it does in plain English", captured["system_prompt"])
+            self.assertIn("Write \"Upstream-side intent\" as a short paragraph", captured["system_prompt"])
             self.assertIn("insufficient evidence", captured["system_prompt"])
-            self.assertIn("Define the arc in plain language", captured["system_prompt"])
+            self.assertIn("Do not restate churn counts", captured["system_prompt"])
             self.assertIn("Use only this evidence.", captured["prompt"])
             self.assertIn(
-                "Conflict side comparisons and any truncation metadata are authoritative",
+                "synthesize them into feature-level summaries without repeating the raw evidence structure",
                 captured["prompt"],
             )
             self.assertIn("Evidence JSON", captured["prompt"])
@@ -226,6 +228,16 @@ class ChangelogLlmTests(unittest.TestCase):
 
     def test_narrative_contract_requires_insufficient_evidence_wording(self) -> None:
         self.assertIn("insufficient evidence", NARRATIVE_SYSTEM_PROMPT)
+
+    def test_narrative_contract_requires_plain_english_feature_explanations(self) -> None:
+        self.assertIn("plain English", NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("Do not leave unexplained labels", NARRATIVE_SYSTEM_PROMPT)
+
+    def test_narrative_contract_requires_paragraph_upstream_intent(self) -> None:
+        self.assertIn(
+            'Write "Upstream-side intent" as a short paragraph',
+            NARRATIVE_SYSTEM_PROMPT,
+        )
 
 
 class ChangelogRendererTests(unittest.TestCase):
@@ -296,10 +308,9 @@ class ChangelogRendererTests(unittest.TestCase):
         self.assertIn("### Exclusion Rules", markdown)
         self.assertIn("- `data/big-snapshot.json`", markdown)
         self.assertIn("- Matched files in baseline diff: 147", markdown)
-        self.assertIn("## Conflict Side Comparisons", markdown)
-        self.assertIn("### `src/conflict.py` (conflict count: 2)", markdown)
-        self.assertIn("- Commit samples truncation: 1/3 (cap 1)", markdown)
-        self.assertIn("- Warning: additional evidence exists beyond configured limits.", markdown)
+        self.assertNotIn("## Conflict Side Comparisons", markdown)
+        self.assertNotIn("Commit samples truncation", markdown)
+        self.assertNotIn("Warning: additional evidence exists beyond configured limits.", markdown)
 
     def test_render_markdown_omits_conflict_side_section_when_comparisons_absent(self) -> None:
         evidence = EvidenceBundle(
@@ -312,6 +323,8 @@ class ChangelogRendererTests(unittest.TestCase):
         markdown = render_changelog_markdown(evidence, "## Summary\nNarrative")
 
         self.assertNotIn("## Conflict Side Comparisons", markdown)
+        self.assertNotIn("Fork Side", markdown)
+        self.assertNotIn("Upstream Side", markdown)
 
 
 class ChangelogAnalysisTests(unittest.TestCase):

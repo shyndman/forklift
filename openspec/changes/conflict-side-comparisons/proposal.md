@@ -4,36 +4,32 @@ Today, `forklift changelog` tells us **where** conflicts are likely (`Path` + `C
 
 That gap blocks the conversation we actually need during rebase planning:
 
-- Fork side: what feature/change did we add?
-- Upstream side: what feature/change is coming in?
+- Fork side: what feature or behavior did we add?
+- Upstream side: what feature or behavior is coming in?
 - Are these ideas conceptually incompatible, or just mechanically overlapping in the same file?
 
-Verified current state:
+Verified current state before this change:
 
-- `EvidenceBundle` includes conflict hotspots and diff summaries, but no per-path fork-vs-upstream intent breakdown (`src/forklift/changelog_models.py`, `src/forklift/changelog_analysis.py`).
-- Renderer currently outputs `## Predicted Conflict Hotspots` with only `Path` and `Conflict Count` (`src/forklift/changelog_renderer.py`).
-- LLM narrative currently targets `## Summary`, `## Key Change Arcs`, and `## Risk and Review Notes` only (`src/forklift/changelog_llm.py`).
+- `EvidenceBundle` included conflict hotspots and diff summaries, but no per-path fork-vs-upstream intent breakdown (`src/forklift/changelog_models.py`, `src/forklift/changelog_analysis.py`).
+- Renderer output showed `## Predicted Conflict Hotspots` with only `Path` and `Conflict Count` (`src/forklift/changelog_renderer.py`).
+- LLM narrative targeted `## Summary`, `## Key Change Arcs`, and `## Risk and Review Notes` only (`src/forklift/changelog_llm.py`).
 
 ## What Changes
 
-We will add a new conflict-side comparison layer for every merge-tree conflict path.
+We add a conflict-pair evaluation layer for every merge-tree conflict path.
 
-1. Deterministic analysis will collect side-specific evidence per conflicted path:
-   1. fork-side (`base..main`) commit subjects
-   2. upstream-side (`base..upstream/<main>`) commit subjects
-   3. side-local churn totals
-   4. diff hunk headers (`@@ ... @@`) per side
-2. Narrative generation will evaluate each path as a pair:
-   1. fork intent
-   2. upstream intent
-   3. conceptual relationship type
-   4. merge discussion starters
-3. Output ordering stays mechanical-first:
-   1. `conflict_count` descending
-   2. path ascending for ties
-4. Truncation is always explicit when caps are hit:
-   1. show `<shown>/<total> (cap <n>)`
-   2. show warning that more evidence exists
+1. Deterministic analysis still collects side-specific evidence internally for each conflicted path.
+2. Narrative generation now turns that evidence into decision-grade summaries:
+   1. fork-side intent
+   2. upstream-side intent written as a short paragraph when evidence supports it
+   3. conceptual relationship
+   4. why this is or is not a conceptual conflict
+   5. merge considerations
+3. Default changelog output remains mechanical-first:
+   1. hotspot table first
+   2. conceptual conflict summaries in the narrative
+   3. supporting deterministic metrics after the narrative
+4. Repo-local jargon must be translated into plain-English behavior descriptions, or the narrative must explicitly say there is insufficient evidence.
 
 Verified command-flow constraint:
 
@@ -62,7 +58,8 @@ Verified command-flow constraint:
   - `tests/test_changelog.py`
 - Affected user behavior:
   - Conflict hotspots expand from path/count-only to conceptual pair evaluations.
-  - Changelog clearly announces when evidence limits may hide additional context.
+  - Default output emphasizes feature summaries and merge thinking, not raw evidence.
+  - Opaque internal names are explained in plain English when evidence supports it.
 - Dependencies/systems:
   - No new third-party dependency required for v1 (Git CLI + stdlib parsing + existing `pydantic-ai`).
   - Git command semantics used are documented and verified:
@@ -74,8 +71,8 @@ Verified command-flow constraint:
 
 This proposal is considered complete when implementation produces all of the following:
 
-1. For each merge-tree conflict path, changelog includes fork-side and upstream-side evidence summaries.
+1. For each merge-tree conflict path, changelog narrative includes fork-side and upstream-side feature summaries.
 2. Narrative includes a `## Conflict Pair Evaluations` section with one subsection per evaluated path.
-3. Evaluations are mechanically ordered by conflict severity.
-4. Any evidence cap hit is visible in output with exact counts.
+3. Each subsection includes conceptual relationship, explanation of the conflict type, and merge considerations.
+4. Default changelog output does not dump raw conflict evidence structures to the operator.
 5. Existing read-only behavior and existing no-conflict behavior remain intact.

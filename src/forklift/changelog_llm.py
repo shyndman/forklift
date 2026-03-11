@@ -38,8 +38,14 @@ NARRATIVE_SYSTEM_PROMPT = (
     "- Fork-side intent\n"
     "- Upstream-side intent\n"
     "- Conceptual relationship\n"
-    "- Merge discussion starters\n"
-    "If deterministic signals for a path are too sparse, explicitly write \"insufficient evidence\" and avoid unsupported claims.\n\n"
+    "- Why this is or is not a conceptual conflict\n"
+    "- Merge considerations\n"
+    "Describe each side as a feature or behavior, not as a raw evidence dump.\n"
+    "Write \"Upstream-side intent\" as a short paragraph, not a single sentence fragment, whenever evidence supports it.\n"
+    "If you mention repo-local jargon or a feature name, immediately explain what it does in plain English.\n"
+    "Do not leave unexplained labels such as internal action names, prompt names, or command names.\n"
+    "If deterministic signals for a path are too sparse to explain exact behavior, explicitly write \"insufficient evidence\" and avoid unsupported claims.\n"
+    "Do not restate churn counts, commit sample lists, hunk headers, or truncation metadata in the final markdown unless needed to explain uncertainty.\n\n"
     "Prefer general language over source-local jargon. "
     "If technical terms are necessary, define them before using them. "
     "Do not invent files, metrics, conflicts, or behavior not present in evidence."
@@ -65,7 +71,7 @@ def build_narrative_prompt(evidence: EvidenceBundle) -> str:
     return (
         "Generate an operator-facing changelog narrative from this deterministic evidence.\n"
         "Use only this evidence.\n\n"
-        "Conflict side comparisons and any truncation metadata are authoritative; do not infer beyond them.\n\n"
+        "Conflict side comparisons and any truncation metadata are authoritative inputs; synthesize them into feature-level summaries without repeating the raw evidence structure.\n\n"
         f"Evidence JSON:\n```json\n{formatted}\n```"
     )
 
