@@ -1,244 +1,140 @@
 # Forklift
 
-Forklift is a host-side orchestrator that keeps your fork of an upstream repository fresh. It discovers your `origin` and `upstream` remotes, snapshots the repo into `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>` (defaults to `~/.local/state/forklift/runs/<project>_<timestamp>`), launches an isolated "kitchen-sink" container for at most three and a half minutes (210 seconds), and either publishes a local review branch or leaves a `STUCK.md` explaining what blocked progress.
+Keep your fork fresh with AI-powered rebasing.
 
-## Requirements
+Forklift runs an AI agent in an isolated container to rebase your fork against upstream, then hands you a local branch to review. If it gets stuck, it writes a `STUCK.md` explaining what blocked progress.
 
-- A Git repository with `origin` (your fork) and `upstream` (source) remotes configured
-- [Docker](https://docs.docker.com/get-started/) available on the host
-- [uv](https://docs.astral.sh/uv/) for running the Python CLI (`pip install uv` if needed)
-- `git filter-repo` 2.47.0+ available on your `PATH` (install via `pip install git-filter-repo==2.47.0`, `brew install git-filter-repo`, or download the standalone script from <https://github.com/newren/git-filter-repo/releases>)
-- A Git identity configured in your operator repo (`git config user.name` / `git config user.email`); Forklift refuses to run until both values are set
-
-### Git identity & filter-repo
-
-Forklift rewrites sandbox commits before handing them back for local review. The harness seeds `git config --global user.name "Forklift Agent"` and `git config --global user.email forklift@github.com` inside the container so agent commits always succeed. After the run completes, the host CLI rewrites commits in the bounded range `upstream/<branch>..<branch>` to the operator identity it captured at startup via `git filter-repo`, then publishes the rewritten result to a local branch `upstream-merge/<timestamp>/<branch>`.
-
-Because of this behavior:
-
-- Make sure your operator repo already has both `user.name` and `user.email` configured. Run `git config user.name` / `git config user.email` in the repo you call `forklift` from; the CLI fails fast with guidance if either value is missing.
-- Install `git filter-repo` 2.47.0+ and ensure it responds to `git filter-repo --version`. Forklift validates availability before rewriting commits and prints remediation steps referencing the supported install paths above if missing.
-- Expect the CLI logs and DONE.md guidance to mention the bounded rewrite range, the local publication branch, and how to recover any stash the host created while rewriting history.
-
-## Building the container once
+## Quick Start
 
 ```bash
+# Build the container (once)
 docker build -t forklift/kitchen-sink:latest docker/kitchen-sink
+
+# Configure OpenCode credentials
+cp ~/.config/forklift/opencode.env.example ~/.config/forklift/opencode.env
+# Edit opencode.env with your API keys and settings
+
+# Run in your fork
+cd your-fork-repo
+uv run forklift --debug
 ```
 
-The image contains Ubuntu 24.04 plus Git, build-essential, Python 3, uv, Node (via `n`), Bun, Rust (via rustup), jq, ripgrep, fd, tree, the OpenCode CLI, and the harness stack located under `/opt/opencode` + `/opt/forklift`.
+## Prerequisites
 
-## Running Forklift
+- Git repo with `origin` (your fork) and `upstream` (source) remotes
+- [Docker](https://docs.docker.com/get-started/)
+- [uv](https://docs.astral.sh/uv/) (`pip install uv`)
+- [git-filter-repo](https://github.com/newren/git-filter-repo) 2.47.0+ (`pip install git-filter-repo==2.47.0` or `brew install git-filter-repo`)
+- Git identity configured (`git config user.name` / `git config user.email`)
+
+## Usage
+
+### Basic run
 
 ```bash
 uv run forklift --debug
-
-uv run forklift --version  # Print version and exit
+uv run forklift --version
 ```
 
-By default Forklift targets the `main` branch and rebases against upstream tip. Use
-`--main-branch=<name>` (for example, `uv run forklift --main-branch=dev --debug`) when
-your fork tracks a differently named primary branch.
+### Options
 
-Forklift also supports upstream target policy selection:
+| Flag | Description |
+|------|-------------|
+| `--main-branch=<name>` | Target branch if not `main` |
+| `--target-policy=tip` | Rebase to upstream branch tip (default) |
+| `--target-policy=latest-version` | Rebase to latest stable tag (`X.Y.Z` or `vX.Y.Z`) |
+| `--timeout-seconds=<n>` | Override agent timeout (default: 600) |
+| `--model`, `--variant`, `--agent` | Override OpenCode settings per-run |
 
-- `--target-policy=tip` (default): resolve target from `upstream/<main-branch>` tip.
-- `--target-policy=latest-version`: resolve target from the latest stable upstream tag
-  matching `X.Y.Z` or `vX.Y.Z`.
+### Changelog preflight
 
-Latest-version mode is fail-closed:
-
-- If no supported stable tags exist, Forklift exits non-zero with an actionable error.
-- If equivalent tags (`vX.Y.Z` and `X.Y.Z`) for the same version resolve to different
-  commits, Forklift exits non-zero with a fatal ambiguity error.
-
-The container receives the branch value via `FORKLIFT_MAIN_BRANCH` so
-`/opt/forklift/harness/run.sh` prints the right branch names. Rebuild
-`docker/kitchen-sink` after editing the harness so new instructions are present in the
-image.
-
-### `forklift changelog` (host-side preflight)
-
-Use the changelog subcommand when you want a read-only preflight report before any
-container orchestration or publication work starts.
+Preview what's changed upstream before running the full sync:
 
 ```bash
 uv run forklift changelog
 uv run forklift changelog --main-branch=dev
 ```
 
-Behavior and constraints:
+This runs entirely on the host with no container launch or history mutation. Requires Git 2.38+.
 
-- Runs entirely on the host repo: no run directory creation, no container launch, and no
-  local-history mutation.
-- Refreshes `origin` and `upstream` before analysis so results are based on current refs.
-- Requires host Git 2.38+ because changelog conflict prediction depends on modern
-  `git merge-tree --write-tree` output and exit semantics.
-- Renders Markdown in the terminal with deterministic metrics plus an LLM narrative.
-- Supports optional repo-level exclusions from `FORK.md` front matter (`changelog.exclude`) using gitignore-style matching with ordered rules, `!` negation, and last-match-wins behavior.
-- Deterministic metrics are shown as `all files` vs `excluding patterns` with explicit deltas.
-- Predicted conflict hotspots come from tip-merge analysis and may recur during
-  commit-by-commit rebases.
-- The top half of the report (`Summary` and `Key Change Arcs`) is generated from an upstream-only payload, so it stays focused on what changed upstream rather than re-describing fork intent.
-- The bottom half of the report (`Conflict Pair Evaluations` and `Risk and Review Notes`) still uses full fork-vs-upstream evidence so merge review retains the conflict context it needs.
-- Raw evidence such as commit samples, churn, hunk headers, and truncation metadata remains internal to the synthesis step and is not shown in the default changelog output.
-- After changelog output renders, Forklift shows the same post-run usage summary table style used by the main `forklift` command, populated from the combined changelog model runs plus end-to-end wall clock time and estimated model cost.
+## Configuration
 
-What happens:
-
-1. `forklift` resolves the current repo, verifies `origin`/`upstream`, and fetches both remotes (including tags).
-2. It resolves an upstream target commit from the selected policy and performs a pre-run no-op check (`git merge-base --is-ancestor <target-sha> <main-branch>`). If the target is already integrated, Forklift exits successfully without creating a run directory or starting a container.
-3. It creates `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...`) with:
-   - `workspace/` – self-contained clone of your repo with remotes removed (we avoid `git clone --shared` to ensure the sandbox never depends on external object stores). Forklift seeds `refs/remotes/upstream/<branch>` (matching whatever you passed to `--main-branch`, with helper branch `upstream-<branch>` such as `upstream-main`) with the selected target SHA so commands like `git rebase upstream/<branch>` still work even though `git remote -v` will be empty inside the sandbox.
-   - `harness-state/` – writable directory the container uses for logs and instructions
-   - `metadata.json` – records source repo, timestamp, main branch, target policy, target SHA, selected tag (when present), and upstream/origin branch-tip SHAs
-4. `FORK.md` (if present in your repo) is copied into the workspace before remotes are stripped so the agent sees your context.
-5. The kitchen-sink container launches with `/workspace` and `/harness-state` bind-mounted read-write as UID/GID 1000. The entrypoint starts the OpenCode server on `127.0.0.1:$OPENCODE_SERVER_PORT`, waits for the HTTP health check to succeed, and then hands off to `/opt/forklift/harness/run.sh`. If `FORK.md` starts with strict front matter (`---` on line 1 and matching closing `---`), the harness validates optional `setup` and `changelog.exclude` metadata. `setup` runs in `/workspace` via `bash -lc` with a 180-second timeout. Setup output is written to `/harness-state/setup.log`; malformed front matter, setup failures/timeouts, or tracked-file mutations fail closed before agent launch. The harness then prints default instructions into `/harness-state/instructions.txt`, appends the front-matter-stripped FORK body (or notes the absence), logs the OpenCode client command, and streams the client transcript into `/harness-state/opencode-client.log`.
-6. The agent runtime timeout uses one effective value for both host watchdog and forwarded `OPENCODE_TIMEOUT`: `--timeout-seconds` (per-run CLI override) → `OPENCODE_TIMEOUT` in `~/.config/forklift/opencode.env` → built-in default (`600` seconds). If the run finishes cleanly, the host verifies `git merge-base --is-ancestor upstream/<branch> <branch>`, rewrites only `upstream/<branch>..<branch>` to your identity, and publishes the rewritten tip to a local branch named `upstream-merge/<YYYYMMDDTHHMMSS>/<branch>` for review. Forklift does not push to GitHub automatically in this step. If it cannot finish, it writes `STUCK.md` inside the run directory; the host surfaces that status via exit code 4 and leaves the file for you to inspect.
-
-## Configuring OpenCode
-
-Forklift reads OpenCode credentials and defaults from `~/.config/forklift/opencode.env`. The file is a simple `KEY=VALUE` format with `#` comments and blank lines allowed. Required keys:
-
-- `OPENCODE_VARIANT`
-- `OPENCODE_AGENT`
-- `OPENCODE_SERVER_PASSWORD`
-
-Optional keys:
-
-- `OPENCODE_ORG`
-- `OPENCODE_MODEL` (omit to let OpenCode select its default)
-- `OPENCODE_TIMEOUT` (seconds)
-- `OPENCODE_SERVER_PORT` (defaults to `4096`)
-- `OPENAI_API_KEY`
-- `GOOGLE_GENERATIVE_AI_API_KEY`
-- `ANTHROPIC_API_KEY`
-- `OPENROUTER_API_KEY`
-
-Example template:
+Create `~/.config/forklift/opencode.env` (mode `0600`):
 
 ```
 OPENCODE_API_KEY=sk-...
-OPENCODE_MODEL=claude-35-sonnet
 OPENCODE_VARIANT=production
 OPENCODE_AGENT=default-agent
 OPENCODE_SERVER_PASSWORD=server-passphrase
+
+# Optional
 OPENCODE_ORG=acme
-OPENCODE_TIMEOUT=210
+OPENCODE_MODEL=claude-35-sonnet
+OPENCODE_TIMEOUT=600
 OPENCODE_SERVER_PORT=4096
+
+# Provider keys (at least one required)
+ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...
+GOOGLE_GENERATIVE_AI_API_KEY=...
+OPENROUTER_API_KEY=...
 ```
-
-The file should be owned by you with `0600` permissions. At runtime the CLI logs which file path was used (masking secrets) to aid troubleshooting. At least one provider API key (`OPENCODE_API_KEY`, `OPENAI_API_KEY`, `GOOGLE_GENERATIVE_AI_API_KEY`, `ANTHROPIC_API_KEY`, or `OPENROUTER_API_KEY`) must be present; populate whichever ones your workflow requires.
-
-The CLI also exposes typed overrides:
-
-```
-uv run forklift --model claude-35-sonnet --variant production --agent nightly --timeout-seconds 300
-```
-
-Each override must avoid shell metacharacters, but forward slashes are allowed for provider-scoped model names (e.g. `google/gemini-3-flash-preview`); invalid values abort the run before any secrets are forwarded. `--timeout-seconds` must be a positive integer and sets both the host-side container watchdog and the forwarded `OPENCODE_TIMEOUT` value for that run so host/container deadlines stay aligned. Overrides only adjust the client inputs—the Docker entrypoint is fixed to `/opt/opencode/entrypoint.sh`.
-
-Timeout precedence:
-- Effective run timeout (host watchdog + forwarded `OPENCODE_TIMEOUT`): `--timeout-seconds` (per-run CLI override) → `OPENCODE_TIMEOUT` in `~/.config/forklift/opencode.env` → built-in default (`600` seconds)
 
 ### Environment overrides
 
-- `FORKLIFT_DOCKER_IMAGE` – alternate container image (defaults to `forklift/kitchen-sink:latest`)
-- `FORKLIFT_DOCKER_ARGS` – extra `docker run` flags appended before the image (for GPU devices, proxies, etc.)
-- `DOCKER_BIN` – override the Docker CLI binary name/path if needed
+| Variable | Description |
+|----------|-------------|
+| `FORKLIFT_DOCKER_IMAGE` | Alternate container image |
+| `FORKLIFT_DOCKER_ARGS` | Extra `docker run` flags (GPU, proxies, etc.) |
+| `DOCKER_BIN` | Override Docker CLI path |
 
-Because the entrypoint is fixed, `FORKLIFT_DOCKER_COMMAND` is no longer honored.
+## FORK.md
 
-## Outputs to inspect
+Add a `FORK.md` to your repo root to give the agent context about your fork. See the [template](FORK.md) for format and examples.
 
-- Successful run: commits under `workspace/` plus a local review branch `upstream-merge/<timestamp>/<branch>` referenced in host logs
-- Blocked run: `workspace/STUCK.md` describing what the agent needs
-- Always:
-  - `/harness-state/instructions.txt` with rendered guidance
-  - `/harness-state/fork-context.md` snapshotting front-matter-stripped FORK context (or noting that none was provided)
-  - `/harness-state/setup.log` with setup command and bootstrap output (when `setup` is declared)
-  - `/harness-state/opencode-server.log` with the server bootstrap and shutdown transcript
-  - `/harness-state/opencode-client.log` with the OpenCode client stdout/stderr
-  - `opencode-logs/` mirroring `~/.local/share/opencode/log` for deeper OpenCode debugging traces
+## Outputs
 
-Forklift evaluates run retention at startup and automatically deletes run directories older than 7 days under `$XDG_STATE_HOME/forklift/runs/` (or `~/.local/state/forklift/runs/` if `XDG_STATE_HOME` is unset). Recent runs remain available for audit and troubleshooting.
+Run artifacts are stored in `~/.local/state/forklift/runs/<project>_<timestamp>/`:
 
-## Logs & correlators
+| Path | Description |
+|------|-------------|
+| `workspace/` | Cloned repo where the agent worked |
+| `workspace/STUCK.md` | Written if the agent couldn't complete |
+| `harness-state/opencode-client.log` | Agent transcript |
+| `harness-state/opencode-server.log` | Server bootstrap log |
+| `harness-state/setup.log` | FORK.md setup command output |
+| `opencode-logs/` | Full OpenCode debug traces |
 
-Forklift now configures [structlog](https://www.structlog.org/) + [Rich](https://rich.readthedocs.io/) as the sole logging stack so the CLI emits colorful, contextual logs by default. Each run receives a four-character correlator (for example `run=Q1p_`) which appears on every log line, is stored in `metadata.json` under `run_id`, and is forwarded to the sandbox as the `FORKLIFT_RUN_ID` environment variable. The harness records that same identifier at the top of `/harness-state/opencode-client.log`, making it easy to grep across host and container artifacts.
+On success, Forklift publishes a review branch: `upstream-merge/<timestamp>/<branch>`.
 
-Once the container launches the CLI prints a single pointer to `/harness-state/opencode-client.log` inside the active run directory rather than streaming the transcript. When the run finishes Forklift logs one final reminder pointing to the same file (or warns if it was never created). Open that path to inspect agent output in real time.
+Run directories older than 7 days are automatically pruned.
 
-## FORK.md guidance
+## How it works
 
-Add a `FORK.md` at the repo root to explain what makes your fork special.
+```mermaid
+flowchart LR
+    A[Your repo] --> B[Snapshot clone]
+    B --> C[Docker sandbox]
+    C --> D{Success?}
+    D -->|Yes| E[Review branch]
+    D -->|No| F[STUCK.md]
 
-Optional strict front matter (line 1 must be `---`) can define harness-only bootstrap metadata:
-
-```md
----
-setup: |
-  uv sync
-changelog:
-  exclude:
-    - data/big-snapshot.json
-    - generated/**/*.json
-    - !generated/keep.json
----
+    style A fill:#e1f5fe
+    style C fill:#fff3e0
+    style E fill:#e8f5e9
+    style F fill:#ffebee
 ```
 
-Rules for `setup`:
-
-- Optional; omit front matter entirely if not needed.
-- Parsed only when `---` starts at line 1 and a closing `---` delimiter exists.
-- Executed in `/workspace` via `bash -lc` with a fixed 180-second timeout.
-- Must leave tracked git files clean (`git status --porcelain --untracked-files=no` must be empty).
-- Failures are fail-closed (agent is not launched); inspect `/harness-state/setup.log`.
-- Front matter is stripped from agent-visible context (`instructions.txt`, `fork-context.md`, payload).
-
-Rules for `changelog.exclude`:
-
-- Optional; omit when no changelog filtering is needed.
-- Must be an ordered list of non-empty string patterns.
-- Uses gitignore-style matching against repo-relative paths.
-- Supports `!` negation; last matching rule wins.
-- Rename/copy diff entries match using destination-path semantics.
-
-Recommended body sections:
-
-```
-# Fork Context
-
-## Mission / Themes
-- Why this fork exists
-- Non-negotiable behaviors or files
-
-## Test & Verification Guidance
-- Commands to run (npm test, uv run pytest, etc.)
-- Long-running suites that can be skipped
-
-## Risky Areas
-- Directories or files that should stay untouched
-- Any vendor or generated assets to preserve
-
-## Contacts
-- Who to mention in STUCK.md for help
-```
-
-Forklift copies this file into every workspace. The harness forwards the front-matter-stripped body as agent context, so keep the body short, high-signal, and updated.
-
-## Smoke test
-
-After editing the Docker image or OpenCode integration, rebuild the image and run a smoke test to confirm both logs populate:
-
-```bash
-docker build -t forklift/kitchen-sink:latest docker/kitchen-sink
-uv run forklift --debug --model claude-35-sonnet --variant production --agent default
-```
-
-Inspect `~/.local/state/forklift/runs/<latest>/harness-state/opencode-{server,client}.log` to verify the server bootstraps, the instructions render, and the client transcript is captured end-to-end. Check `~/.local/state/forklift/runs/<latest>/opencode-logs/` if you need the full OpenCode CLI logs from inside the sandbox.
+1. Fetches `origin` and `upstream`, checks if sync is needed
+2. Creates isolated workspace clone (remotes stripped)
+3. Launches container with AI agent
+4. Agent rebases onto upstream target
+5. Success: rewrites commits to your identity, publishes `upstream-merge/...` branch
+6. Failure: writes `STUCK.md` for inspection
 
 ## Development
 
-- Run type checking: `uv run basedpyright`
-- Build container changes: `docker build -t forklift/kitchen-sink:latest docker/kitchen-sink`
+```bash
+uv run basedpyright                                    # Type checking
+docker build -t forklift/kitchen-sink:latest docker/kitchen-sink  # Rebuild container
+```
