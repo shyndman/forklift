@@ -11,7 +11,7 @@ from typing import cast
 
 from rich.console import Console
 
-from forklift.cli import Forklift
+from forklift.cli import Forklift, HARNESS_STATUS_FILE_NAME
 from forklift.cli_authorship import OperatorIdentity
 from forklift.cli_runtime import (
     HOST_GID_ENV,
@@ -137,12 +137,18 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         monitor_logger_after_footer: bool = False,
         timeout_seconds: int | None = None,
         env_timeout_seconds: int | None = None,
+        harness_status_content: str | None = None,
     ) -> tuple[str, int | None, list[tuple[str, bool]], dict[str, object]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             repo = root / "repo"
             repo.mkdir(parents=True, exist_ok=True)
             run_paths = self._run_paths(root)
+            if harness_status_content is not None:
+                _ = (run_paths.harness_state / HARNESS_STATUS_FILE_NAME).write_text(
+                    harness_status_content,
+                    encoding="utf-8",
+                )
             footer_output = StringIO()
             logger_events: list[tuple[str, bool]] = []
             footer_started = False
@@ -339,7 +345,8 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 stdout="",
                 stderr="",
                 container_name="forklift-test",
-            )
+            ),
+            harness_status_content="status=completed\nphase=agent\nmessage=Agent completed successfully\n",
         )
         self.assertIsNone(success_code)
         self.assertIn("Run complete: success", success_output)
@@ -365,6 +372,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 stderr="",
                 container_name="forklift-test",
             ),
+            harness_status_content="status=completed\nphase=agent\nmessage=Agent completed successfully\n",
             timeout_seconds=37,
         )
 
@@ -381,6 +389,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 stderr="",
                 container_name="forklift-test",
             ),
+            harness_status_content="status=completed\nphase=agent\nmessage=Agent completed successfully\n",
             env_timeout_seconds=425,
         )
 
@@ -397,6 +406,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 stderr="",
                 container_name="forklift-test",
             ),
+            harness_status_content="status=completed\nphase=agent\nmessage=Agent completed successfully\n",
         )
 
         self.assertIsNone(exit_code)
@@ -416,6 +426,37 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(exit_code, 2)
         self.assertIn("Run complete: timed out", output)
+
+    async def test_missing_harness_completion_marker_fails_closed(self) -> None:
+        output, exit_code, _, _ = await self._run_cli(
+            container_result=ContainerRunResult(
+                exit_code=0,
+                timed_out=False,
+                stdout="",
+                stderr="",
+                container_name="forklift-test",
+            ),
+            post_run_side_effect=AssertionError("post-run verification should not run"),
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Run complete: failure", output)
+
+    async def test_failed_harness_marker_blocks_post_run_verification(self) -> None:
+        output, exit_code, _, _ = await self._run_cli(
+            container_result=ContainerRunResult(
+                exit_code=0,
+                timed_out=False,
+                stdout="",
+                stderr="",
+                container_name="forklift-test",
+            ),
+            harness_status_content="status=failed\nphase=setup\nmessage=Setup command failed before agent launch\n",
+            post_run_side_effect=AssertionError("post-run verification should not run"),
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertIn("Run complete: failure", output)
 
     async def test_logger_calls_stop_after_footer_begins(self) -> None:
         output, exit_code, logger_events, _ = await self._run_cli(

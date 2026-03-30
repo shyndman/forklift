@@ -39,6 +39,7 @@ INSTRUCTIONS_FILE=\"$HARNESS_STATE_DIR/instructions.txt\"
 FORK_CONTEXT_FILE=\"$HARNESS_STATE_DIR/fork-context.md\"
 SETUP_LOG=\"$HARNESS_STATE_DIR/setup.log\"
 CLIENT_LOG=\"$HARNESS_STATE_DIR/opencode-client.log\"
+HARNESS_STATUS_FILE=\"$HARNESS_STATE_DIR/harness-status.txt\"
 : >\"$CLIENT_LOG\"
 : >\"$SETUP_LOG\"
 {commands}
@@ -232,6 +233,20 @@ fi
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
         self.assertIn("Setup command failed with exit code", setup_log)
+
+    def test_fail_harness_records_status_details(self) -> None:
+        result = self._run_harness_shell(
+            """
+HARNESS_PHASE=setup
+fail_harness "setup exploded"
+"""
+        )
+
+        self.assertEqual(result.returncode, 1)
+        status = (self.harness_state / "harness-status.txt").read_text(encoding="utf-8")
+        self.assertIn("status=failed", status)
+        self.assertIn("phase=setup", status)
+        self.assertIn("message=setup exploded", status)
 
     def test_setup_timeout_fails_closed(self) -> None:
         self._init_workspace_repo()

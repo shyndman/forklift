@@ -85,7 +85,4 @@ run_harness() {
   runuser -u forklift -- env "${env_args[@]}" /opt/forklift/harness/run.sh
 }
 
-if ! run_harness; then
-  exit_code=$?
-  exit $exit_code
-fi
+run_harness

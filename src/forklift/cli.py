@@ -70,7 +70,9 @@ AGENT_EMAIL = AUTHORSHIP_AGENT_EMAIL
 STASH_MESSAGE = AUTHORSHIP_STASH_MESSAGE
 FILTER_REPO_INSTALL_HELP = AUTHORSHIP_FILTER_REPO_INSTALL_HELP
 STUCK_EXIT_CODE = POST_RUN_STUCK_EXIT_CODE
+HARNESS_STATUS_FILE_NAME = "harness-status.txt"
 SETUP_LOG_TAIL_LINES = 120
+CLIENT_LOG_TAIL_LINES = 120
 CLIENTLOG_HINT_TITLE = "Client log tail command"
 CLIENTLOG_HINT_TEMPLATE = "forklift clientlog {run_dir_name} --follow"
 
@@ -225,6 +227,7 @@ class Forklift(Command):
                 outcome = "failure"
                 exit_code = container_result.exit_code
             else:
+                self._require_successful_harness_completion(run_paths.harness_state)
                 logger.info("Container run completed successfully.")
                 self._post_container_results(repo_path, run_paths, main_branch)
         except SystemExit as exc:
@@ -427,32 +430,99 @@ class Forklift(Command):
     def _log_setup_failure_details(self, harness_state: Path) -> None:
         """Emit setup.log tail so setup-command failures are visible in host logs."""
 
-        setup_log_path = harness_state / "setup.log"
-        if not setup_log_path.exists():
+        self._log_harness_log_tail(
+            harness_state / "setup.log",
+            label="Setup log tail",
+            tail_lines=SETUP_LOG_TAIL_LINES,
+        )
+
+    def _log_client_failure_details(self, harness_state: Path) -> None:
+        """Emit the agent client log tail so harness failures are visible in host logs."""
+
+        self._log_harness_log_tail(
+            harness_state / "opencode-client.log",
+            label="Agent log tail",
+            tail_lines=CLIENT_LOG_TAIL_LINES,
+        )
+
+    def _log_harness_log_tail(self, log_path: Path, *, label: str, tail_lines: int) -> None:
+        """Emit a bounded tail from a harness artifact when runs fail."""
+
+        if not log_path.exists():
             return
 
         try:
-            setup_log = setup_log_path.read_text(encoding="utf-8")
+            log_text = log_path.read_text(encoding="utf-8")
         except OSError as exc:
             logger.warning(
-                "Unable to read setup log after failed run",
-                path=setup_log_path,
+                "Unable to read harness log after failed run",
+                path=log_path,
                 error=str(exc),
             )
             return
 
-        if not setup_log.strip():
+        if not log_text.strip():
             return
 
-        lines = setup_log.splitlines()
-        setup_log_tail = "\n".join(lines[-SETUP_LOG_TAIL_LINES:])
+        lines = log_text.splitlines()
+        log_tail = "\n".join(lines[-tail_lines:])
         logger.error(
-            "Setup log tail",
-            path=setup_log_path,
+            label,
+            path=log_path,
             total_lines=len(lines),
-            tail_lines=min(len(lines), SETUP_LOG_TAIL_LINES),
-            output=setup_log_tail,
+            tail_lines=min(len(lines), tail_lines),
+            output=log_tail,
         )
+
+    def _require_successful_harness_completion(self, harness_state: Path) -> None:
+        """Fail closed unless the harness explicitly reports successful completion."""
+
+        status_path = harness_state / HARNESS_STATUS_FILE_NAME
+        status = self._read_harness_status(status_path)
+        if status.get("status") == "completed":
+            return
+
+        logger.error(
+            "Harness did not report successful completion",
+            path=status_path,
+            status=status.get("status") or "missing",
+            phase=status.get("phase"),
+            message=status.get("message"),
+        )
+        self._log_setup_failure_details(harness_state)
+        self._log_client_failure_details(harness_state)
+        raise SystemExit(1)
+
+    def _read_harness_status(self, status_path: Path) -> dict[str, str]:
+        """Parse the harness completion marker written inside harness-state."""
+
+        if not status_path.exists():
+            return {}
+
+        try:
+            raw_status = status_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            logger.warning(
+                "Unable to read harness status after run",
+                path=status_path,
+                error=str(exc),
+            )
+            return {}
+
+        parsed: dict[str, str] = {}
+        for line in raw_status.splitlines():
+            if not line.strip():
+                continue
+            key, separator, value = line.partition("=")
+            if not separator:
+                logger.warning(
+                    "Ignoring malformed harness status line",
+                    path=status_path,
+                    line=line,
+                )
+                continue
+            parsed[key] = value
+        return parsed
 
     def _workspace_has_changes(self, workspace: Path) -> bool:
         return workspace_has_changes(workspace)

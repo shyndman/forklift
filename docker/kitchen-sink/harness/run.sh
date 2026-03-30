@@ -9,6 +9,7 @@ INSTRUCTIONS_FILE=${INSTRUCTIONS_FILE:-$HARNESS_STATE_DIR/instructions.txt}
 FORK_CONTEXT_FILE=${FORK_CONTEXT_FILE:-$HARNESS_STATE_DIR/fork-context.md}
 SETUP_LOG=${SETUP_LOG:-$HARNESS_STATE_DIR/setup.log}
 CLIENT_LOG=${OPENCODE_CLIENT_LOG:-$HARNESS_STATE_DIR/opencode-client.log}
+HARNESS_STATUS_FILE=${HARNESS_STATUS_FILE:-$HARNESS_STATE_DIR/harness-status.txt}
 OPENCODE_BIN=/opt/opencode/bin/opencode
 OPENCODE_MODEL=${OPENCODE_MODEL:-}
 OPENCODE_VARIANT=${OPENCODE_VARIANT:-}
@@ -23,6 +24,7 @@ HELPER_BRANCH="upstream-${MAIN_BRANCH//\//-}"
 FORK_CONTEXT_PRESENT=0
 FORK_CONTEXT_BODY=""
 FORK_SETUP_COMMAND=""
+HARNESS_PHASE=bootstrap
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
@@ -35,6 +37,7 @@ main() {
   mkdir -p "$HARNESS_STATE_DIR"
   : >"$CLIENT_LOG"
   : >"$SETUP_LOG"
+  write_harness_status "running" "$HARNESS_PHASE" "Harness starting"
 
   if [[ -z "$OPENCODE_VARIANT" ]]; then
     fail_harness "OPENCODE_VARIANT is required"
@@ -66,16 +69,22 @@ main() {
   log_client "  git user.name=$(git config --global user.name)"
   log_client "  git user.email=$(git config --global user.email)"
 
+  HARNESS_PHASE=context
   if ! parse_fork_context; then
     fail_harness "Invalid FORK.md front matter; fix format and retry"
   fi
+  HARNESS_PHASE=setup
   if ! run_setup_command; then
     fail_harness "Setup command failed before agent launch; inspect $SETUP_LOG"
   fi
 
   write_instructions
   build_agent_payload
-  launch_agent
+  HARNESS_PHASE=agent
+  if ! launch_agent; then
+    fail_harness "Agent run failed; inspect $CLIENT_LOG" "$HARNESS_PHASE"
+  fi
+  write_harness_status "completed" "$HARNESS_PHASE" "Agent completed successfully"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
