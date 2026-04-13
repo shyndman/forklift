@@ -43,7 +43,7 @@ uv run forklift --version
 | `--main-branch=<name>` | Target branch if not `main` |
 | `--target-policy=tip` | Rebase to upstream branch tip (default) |
 | `--target-policy=latest-version` | Rebase to latest stable tag (`X.Y.Z` or `vX.Y.Z`) |
-| `--timeout-seconds=<n>` | Override agent timeout (default: 600) |
+| `--timeout-seconds=<n>` | Override agent timeout (default: 1500) |
 | `--model`, `--variant`, `--agent` | Override OpenCode settings per-run |
 
 ### Changelog preflight
@@ -70,7 +70,7 @@ OPENCODE_SERVER_PASSWORD=server-passphrase
 # Optional
 OPENCODE_ORG=acme
 OPENCODE_MODEL=claude-35-sonnet
-OPENCODE_TIMEOUT=600
+OPENCODE_TIMEOUT=1500
 OPENCODE_SERVER_PORT=4096
 
 # Provider keys (at least one required)

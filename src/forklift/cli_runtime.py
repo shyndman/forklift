@@ -14,7 +14,7 @@ logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 TARGET_POLICY_OPTIONS = frozenset({"tip", "latest-version"})
 HOST_UID_ENV = "FORKLIFT_HOST_UID"
 HOST_GID_ENV = "FORKLIFT_HOST_GID"
-DEFAULT_RUN_TIMEOUT_SECONDS = 600
+DEFAULT_RUN_TIMEOUT_SECONDS = 1500
 
 
 def build_container_env(

@@ -13,12 +13,12 @@ from uuid import uuid4
 import structlog
 from structlog.stdlib import BoundLogger
 
+from .cli_runtime import DEFAULT_RUN_TIMEOUT_SECONDS
 from .run_state import RunStateError, update_run_state, utc_now_iso8601
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
 DEFAULT_IMAGE = os.environ.get("FORKLIFT_DOCKER_IMAGE", "forklift/kitchen-sink:latest")
-DEFAULT_TIMEOUT_SECONDS = 600
 DOCKER_BIN = os.environ.get("DOCKER_BIN", "docker")
 DEFAULT_EXTRA_RUN_ARGS = shlex.split(os.environ.get("FORKLIFT_DOCKER_ARGS", ""))
 SENSITIVE_ENV_KEYS = {"OPENCODE_API_KEY", "OPENCODE_SERVER_PASSWORD"}
@@ -39,7 +39,7 @@ class ContainerRunner:
     def __init__(
         self,
         image: str = DEFAULT_IMAGE,
-        timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+        timeout_seconds: int = DEFAULT_RUN_TIMEOUT_SECONDS,
         extra_run_args: Sequence[str] | None = None,
     ) -> None:
         self.image: str = image
