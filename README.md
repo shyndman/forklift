@@ -92,6 +92,17 @@ OPENROUTER_API_KEY=...
 
 Add a `FORK.md` to your repo root to give the agent context about your fork. See the [template](FORK.md) for format and examples.
 
+### Front matter gates
+
+`FORK.md` front matter is optional, but when present it is strict and machine-validated.
+
+- `setup` runs once in `/workspace` before agent launch with a 180-second timeout.
+- `rebase.continue_check` runs from `/workspace` before every mediated `git rebase --continue`.
+- Continue checks must exit zero and leave tracked, staged, and untracked workspace state unchanged.
+- Forklift snapshots the active continue check into `/harness-state/rebase-continue-check.sh` before the agent starts, so editing the workspace copy of `FORK.md` during the run does not change enforcement.
+- Explicit `git rebase --skip` decisions are recorded and appended to the final terminal completion summary under `Skipped Commits`.
+- `git rebase --abort` is rejected until `STUCK.md` exists and contains non-whitespace content.
+
 ## Outputs
 
 Run artifacts are stored in `~/.local/state/forklift/runs/<project>_<timestamp>/`:
@@ -100,10 +111,14 @@ Run artifacts are stored in `~/.local/state/forklift/runs/<project>_<timestamp>/
 |------|-------------|
 | `workspace/` | Cloned repo where the agent worked |
 | `workspace/STUCK.md` | Written if the agent couldn't complete |
+| `harness-state/rebase-continue-check.sh` | Frozen copy of `FORK.md` `rebase.continue_check` for the active run |
+| `harness-state/rebase-skipped-commits.json` | Host-owned metadata for explicit agent `git rebase --skip` decisions |
 | `harness-state/opencode-client.log` | Agent transcript |
 | `harness-state/opencode-server.log` | Server bootstrap log |
-| `harness-state/setup.log` | FORK.md setup command output |
+| `harness-state/setup.log` | Mirrored setup diagnostics and command output |
 | `opencode-logs/` | Full OpenCode debug traces |
+
+Setup failures and rebase continue-check failures are surfaced in the main `Container stdout` / `Container stderr` log entries after the container exits. Successful mediated paused-rebase transitions now emit proof-of-life log lines there too, including intercepted `git rebase --continue`, continue-check start/pass, real continue invocation, explicit `--skip` recording, auto-skip of mechanically empty commits, and allowed `--abort`. `opencode-client.log` remains the deep transcript artifact.
 
 On success, Forklift publishes a review branch: `upstream-merge/<timestamp>/<branch>`.
 
@@ -128,9 +143,9 @@ flowchart LR
 1. Fetches `origin` and `upstream`, checks if sync is needed
 2. Creates isolated workspace clone (remotes stripped)
 3. Launches container with AI agent
-4. Agent rebases onto upstream target
+4. Agent rebases onto upstream target, while Forklift mediates `git rebase --continue|--skip|--abort`
 5. Success: rewrites commits to your identity, publishes `upstream-merge/...` branch
-6. Failure: writes `STUCK.md` for inspection
+6. Failure: writes `STUCK.md` for inspection, and the terminal completion summary always appends `Skipped Commits`
 
 ## Development
 

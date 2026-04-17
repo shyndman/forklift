@@ -99,11 +99,16 @@ def sum_estimated_costs(costs: list[Decimal | None]) -> Decimal | None:
     return sum(present_costs, start=Decimal("0"))
 
 
-def _consume_setup_front_matter(front_lines: list[str], start: int) -> int:
-    """Advance parser index across setup metadata while validating accepted forms."""
+def _consume_shell_string_front_matter(
+    front_lines: list[str],
+    start: int,
+    *,
+    key: str,
+) -> int:
+    """Advance parser index across shell-string metadata while validating forms."""
 
     line = front_lines[start]
-    value = line[len("setup:") :].strip()
+    value = line[len(f"{key}:") :].strip()
     if value in ("|", "|-"):
         idx = start + 1
         saw_command_line = False
@@ -119,15 +124,87 @@ def _consume_setup_front_matter(front_lines: list[str], start: int) -> int:
             break
         if not saw_command_line:
             raise ChangelogAnalysisError(
-                "FORK.md front matter is malformed: setup block string must include at least one command line."
+                f"FORK.md front matter is malformed: {key} block string must include at least one command line."
             )
         return idx
 
     if value == "":
         raise ChangelogAnalysisError(
-            "FORK.md front matter is malformed: setup must be a non-empty string or block string."
+            f"FORK.md front matter is malformed: {key} must be a non-empty string or block string."
         )
     return start + 1
+
+
+def _consume_setup_front_matter(front_lines: list[str], start: int) -> int:
+    """Advance parser index across setup metadata while validating accepted forms."""
+
+    return _consume_shell_string_front_matter(front_lines, start, key="setup")
+
+
+def _consume_rebase_front_matter(front_lines: list[str], start: int) -> int:
+    """Advance parser index across rebase metadata while validating accepted forms."""
+
+    line = front_lines[start]
+    if line[len("rebase:") :].strip() != "":
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: rebase must be an object with nested keys."
+        )
+
+    idx = start + 1
+    nested_lines: list[str] = []
+    while idx < len(front_lines):
+        nested = front_lines[idx]
+        if nested.startswith("  ") or nested.strip() == "":
+            nested_lines.append(nested)
+            idx += 1
+            continue
+        break
+
+    if not nested_lines:
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: rebase must define nested metadata with rebase.continue_check."
+        )
+
+    local_idx = 0
+    continue_check_seen = False
+    while local_idx < len(nested_lines):
+        nested_line = nested_lines[local_idx]
+        stripped = nested_line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            local_idx += 1
+            continue
+
+        if not nested_line.startswith("  "):
+            raise ChangelogAnalysisError(
+                "FORK.md front matter is malformed: rebase metadata must be indented by two spaces."
+            )
+
+        key_line = nested_line[2:]
+        if not key_line.startswith("continue_check:"):
+            raise ChangelogAnalysisError(
+                f"FORK.md front matter is malformed: unsupported rebase key line '{key_line}'. Only 'continue_check' is allowed."
+            )
+        if continue_check_seen:
+            raise ChangelogAnalysisError(
+                "FORK.md front matter is malformed: duplicate rebase.continue_check key."
+            )
+
+        continue_check_seen = True
+        shell_lines = [f"continue_check:{key_line[len('continue_check:') :]}"]
+        for candidate in nested_lines[local_idx + 1 :]:
+            if candidate.startswith("  "):
+                shell_lines.append(candidate[2:])
+            else:
+                shell_lines.append(candidate)
+        consumed = _consume_shell_string_front_matter(shell_lines, 0, key="continue_check")
+        local_idx += consumed
+
+    if not continue_check_seen:
+        raise ChangelogAnalysisError(
+            "FORK.md front matter is malformed: rebase must include a 'continue_check' key."
+        )
+
+    return idx
 
 
 def _consume_changelog_front_matter(
@@ -258,6 +335,7 @@ def load_changelog_exclude_patterns(repo_path: Path) -> list[str]:
     parsed_excludes: list[str] | None = None
     setup_seen = False
     changelog_seen = False
+    rebase_seen = False
 
     idx = 0
     while idx < len(front_lines):
@@ -285,12 +363,21 @@ def load_changelog_exclude_patterns(repo_path: Path) -> list[str]:
             parsed_excludes, idx = _consume_changelog_front_matter(front_lines, idx)
             continue
 
+        if line.startswith("rebase:"):
+            if rebase_seen:
+                raise ChangelogAnalysisError(
+                    "FORK.md front matter is malformed: duplicate 'rebase' key."
+                )
+            rebase_seen = True
+            idx = _consume_rebase_front_matter(front_lines, idx)
+            continue
+
         if line.startswith("  "):
             raise ChangelogAnalysisError(
                 f"FORK.md front matter is malformed: unexpected indentation for line '{line}'."
             )
         raise ChangelogAnalysisError(
-            f"FORK.md front matter is malformed: unsupported key line '{line}'. Only 'setup' and 'changelog' are allowed."
+            f"FORK.md front matter is malformed: unsupported key line '{line}'. Only 'setup', 'changelog', and 'rebase' are allowed."
         )
 
     return parsed_excludes or []

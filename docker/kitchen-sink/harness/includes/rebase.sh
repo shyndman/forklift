@@ -1,0 +1,285 @@
+#!/usr/bin/env bash
+# Harness-owned rebase mediation helpers.
+
+REBASE_CONTINUE_CHECK_EXIT_CODE=0
+REBASE_CONTINUE_CHECK_STDOUT=""
+REBASE_CONTINUE_CHECK_STDERR=""
+
+resolve_real_git_bin() {
+  local resolved
+  resolved=$(command -v git || true)
+  if [[ -z "$resolved" ]]; then
+    return 1
+  fi
+  REAL_GIT_BIN="$resolved"
+  export REAL_GIT_BIN
+  return 0
+}
+
+prepend_git_wrapper_path() {
+  local harness_root wrapper_dir
+  harness_root=${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}
+  wrapper_dir="$harness_root/includes/bin"
+  PATH="$wrapper_dir:$PATH"
+  export PATH
+}
+
+initialize_rebase_skipped_commits_file() {
+  printf '[]\n' >"$REBASE_SKIPPED_COMMITS_FILE"
+}
+
+write_rebase_continue_check_file() {
+  if [[ -z "$FORK_REBASE_CONTINUE_CHECK" ]]; then
+    rm -f "$REBASE_CONTINUE_CHECK_FILE"
+    return 0
+  fi
+
+  {
+    printf '#!/usr/bin/env bash\n'
+    printf 'set -euo pipefail\n'
+    printf '%s\n' "$FORK_REBASE_CONTINUE_CHECK"
+  } >"$REBASE_CONTINUE_CHECK_FILE"
+  chmod 0555 "$REBASE_CONTINUE_CHECK_FILE"
+}
+
+rebase_in_progress() {
+  [[ -d "$WORKSPACE_DIR/.git/rebase-merge" || -d "$WORKSPACE_DIR/.git/rebase-apply" ]]
+}
+
+capture_status_snapshot() {
+  "$REAL_GIT_BIN" -C "$WORKSPACE_DIR" status --porcelain=v1 --untracked-files=all
+}
+
+run_real_git() {
+  "$REAL_GIT_BIN" "$@"
+}
+
+run_continue_check() {
+  local stdout_file stderr_file exit_code
+  stdout_file=$(mktemp)
+  stderr_file=$(mktemp)
+
+  set +e
+  (
+    cd "$WORKSPACE_DIR"
+    bash "$REBASE_CONTINUE_CHECK_FILE"
+  ) >"$stdout_file" 2>"$stderr_file"
+  exit_code=$?
+  set -e
+
+  REBASE_CONTINUE_CHECK_EXIT_CODE=$exit_code
+  REBASE_CONTINUE_CHECK_STDOUT=$(cat "$stdout_file")
+  REBASE_CONTINUE_CHECK_STDERR=$(cat "$stderr_file")
+  rm -f "$stdout_file" "$stderr_file"
+  return $exit_code
+}
+
+continue_check_command_text() {
+  if [[ -n "${FORK_REBASE_CONTINUE_CHECK:-}" ]]; then
+    printf '%s' "$FORK_REBASE_CONTINUE_CHECK"
+    return 0
+  fi
+
+  if [[ ! -f "$REBASE_CONTINUE_CHECK_FILE" ]]; then
+    return 0
+  fi
+
+  tail -n +3 "$REBASE_CONTINUE_CHECK_FILE"
+}
+
+emit_rebase_continue_failure() {
+  local first_line exit_code status_snapshot command_text failure_message
+  first_line="$1"
+  exit_code="$2"
+  status_snapshot="$3"
+  command_text=$(continue_check_command_text)
+  failure_message=$(
+    cat <<EOF
+$first_line
+
+Command:
+$command_text
+
+Exit code:
+$exit_code
+
+Workspace state after check:
+$status_snapshot
+
+stdout:
+$REBASE_CONTINUE_CHECK_STDOUT
+
+stderr:
+$REBASE_CONTINUE_CHECK_STDERR
+
+Resolve state, then retry rebase continue.
+EOF
+  )
+
+  emit_phase_message "rebase" "stderr" "Blocking git rebase --continue"
+  printf '%s\n' "$failure_message" >&2
+  log_client_block "rebase" "$failure_message"
+}
+
+append_agent_skip_record() {
+  local sha subject
+  sha="$1"
+  subject="$2"
+  python3 - "$REBASE_SKIPPED_COMMITS_FILE" "$sha" "$subject" <<'PY'
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+sha = sys.argv[2]
+subject = sys.argv[3]
+records = json.loads(path.read_text(encoding="utf-8"))
+records.append({"sha": sha, "subject": subject})
+path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
+PY
+}
+
+handle_rebase_continue() {
+  local before_status after_status continue_exit_code skip_exit_code
+
+  emit_phase_message "rebase" "stdout" "Intercepted git rebase --continue"
+
+  if [[ ! -f "$REBASE_CONTINUE_CHECK_FILE" || ! -s "$REBASE_CONTINUE_CHECK_FILE" ]]; then
+    emit_phase_message "rebase" "stdout" "Invoking real git rebase --continue"
+    run_real_git -C "$WORKSPACE_DIR" "$@"
+    return $?
+  fi
+
+  before_status=$(capture_status_snapshot)
+  emit_phase_message "rebase" "stdout" "Running frozen rebase continue check"
+  run_continue_check || true
+  after_status=$(capture_status_snapshot)
+
+  if [[ $REBASE_CONTINUE_CHECK_EXIT_CODE -ne 0 ]]; then
+    emit_rebase_continue_failure "Rebase continue check failed." "$REBASE_CONTINUE_CHECK_EXIT_CODE" "$after_status"
+    return 1
+  fi
+
+  if [[ "$after_status" != "$before_status" ]]; then
+    emit_rebase_continue_failure "Rebase continue check changed workspace state." "0" "$after_status"
+    return 1
+  fi
+
+  emit_phase_message "rebase" "stdout" "Rebase continue check passed with stable workspace state"
+  emit_phase_message "rebase" "stdout" "Invoking real git rebase --continue"
+  set +e
+  run_real_git -C "$WORKSPACE_DIR" "$@"
+  continue_exit_code=$?
+  set -e
+
+  if [[ $continue_exit_code -ne 0 ]] && rebase_in_progress; then
+    after_status=$(capture_status_snapshot)
+    if [[ -z "$after_status" ]]; then
+      emit_phase_message "rebase" "stdout" "Auto-skipping mechanically empty commit after failed continue"
+      set +e
+      run_real_git -C "$WORKSPACE_DIR" rebase --skip >/dev/null 2>&1
+      skip_exit_code=$?
+      set -e
+      return $skip_exit_code
+    fi
+  fi
+
+  return $continue_exit_code
+}
+
+handle_rebase_skip() {
+  local rebase_sha rebase_subject skip_exit_code
+  emit_phase_message "rebase" "stdout" "Intercepted git rebase --skip"
+  rebase_sha=$(run_real_git -C "$WORKSPACE_DIR" rev-parse REBASE_HEAD 2>/dev/null || true)
+  rebase_subject=$(run_real_git -C "$WORKSPACE_DIR" show -s --format=%s REBASE_HEAD 2>/dev/null || true)
+  if [[ -z "$rebase_sha" || -z "$rebase_subject" ]]; then
+    emit_phase_message "rebase" "stderr" "Unable to determine REBASE_HEAD for git rebase --skip"
+    return 1
+  fi
+
+  append_agent_skip_record "$rebase_sha" "$rebase_subject"
+  emit_phase_message "rebase" "stdout" "Recorded explicit skip for $rebase_sha $rebase_subject"
+  set +e
+  run_real_git -C "$WORKSPACE_DIR" "$@"
+  skip_exit_code=$?
+  set -e
+  return $skip_exit_code
+}
+
+stuck_md_has_content() {
+  local stuck_file
+  stuck_file="$WORKSPACE_DIR/STUCK.md"
+  [[ -f "$stuck_file" ]] && grep -q '[^[:space:]]' "$stuck_file"
+}
+
+handle_rebase_abort() {
+  local abort_exit_code
+  emit_phase_message "rebase" "stdout" "Intercepted git rebase --abort"
+  if ! stuck_md_has_content; then
+    emit_phase_message "rebase" "stderr" "Cannot abort rebase until STUCK.md explains what blocked progress."
+    return 1
+  fi
+
+  emit_phase_message "rebase" "stdout" "Allowing git rebase --abort because STUCK.md is present"
+  set +e
+  run_real_git -C "$WORKSPACE_DIR" "$@"
+  abort_exit_code=$?
+  set -e
+  return $abort_exit_code
+}
+
+classify_paused_rebase_command() {
+  local arg
+  PAUSED_REBASE_ACTION=""
+  PAUSED_REBASE_HAS_REBASE=0
+  PAUSED_REBASE_NORMALIZED=()
+
+  for arg in "$@"; do
+    case "$arg" in
+      --continue|--skip|--abort)
+        PAUSED_REBASE_NORMALIZED+=("$arg")
+        ;;
+      -*)
+        ;;
+      *)
+        PAUSED_REBASE_NORMALIZED+=("$arg")
+        ;;
+    esac
+  done
+
+  for arg in "${PAUSED_REBASE_NORMALIZED[@]}"; do
+    if [[ "$arg" == "rebase" ]]; then
+      PAUSED_REBASE_HAS_REBASE=1
+      break
+    fi
+  done
+
+  if [[ ${#PAUSED_REBASE_NORMALIZED[@]} -eq 2 && "${PAUSED_REBASE_NORMALIZED[0]}" == "rebase" ]]; then
+    case "${PAUSED_REBASE_NORMALIZED[1]}" in
+      --continue)
+        PAUSED_REBASE_ACTION="continue"
+        return 0
+        ;;
+      --skip)
+        PAUSED_REBASE_ACTION="skip"
+        return 0
+        ;;
+      --abort)
+        PAUSED_REBASE_ACTION="abort"
+        return 0
+        ;;
+    esac
+  fi
+
+  if [[ $PAUSED_REBASE_HAS_REBASE -eq 1 ]]; then
+    PAUSED_REBASE_ACTION="unsupported"
+  fi
+}
+
+fail_unsupported_paused_rebase_command() {
+  emit_phase_message "rebase" "stderr" "Unsupported paused rebase command shape"
+  printf 'git: unsupported paused rebase command; use git rebase --continue, --skip, or --abort\n' >&2
+  return 1
+}

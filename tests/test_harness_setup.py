@@ -40,6 +40,10 @@ FORK_CONTEXT_FILE=\"$HARNESS_STATE_DIR/fork-context.md\"
 SETUP_LOG=\"$HARNESS_STATE_DIR/setup.log\"
 CLIENT_LOG=\"$HARNESS_STATE_DIR/opencode-client.log\"
 HARNESS_STATUS_FILE=\"$HARNESS_STATE_DIR/harness-status.txt\"
+REBASE_CONTINUE_CHECK_FILE=\"$HARNESS_STATE_DIR/rebase-continue-check.sh\"
+REBASE_SKIPPED_COMMITS_FILE=\"$HARNESS_STATE_DIR/rebase-skipped-commits.json\"
+export WORKSPACE_DIR HARNESS_STATE_DIR INSTRUCTIONS_FILE FORK_CONTEXT_FILE SETUP_LOG CLIENT_LOG HARNESS_STATUS_FILE
+export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE
 : >\"$CLIENT_LOG\"
 : >\"$SETUP_LOG\"
 {commands}
@@ -72,6 +76,54 @@ HARNESS_STATUS_FILE=\"$HARNESS_STATE_DIR/harness-status.txt\"
             check=True,
         )
 
+    def _init_conflicting_rebase(self) -> None:
+        _ = subprocess.run(["git", "init", "-b", "main"], cwd=self.workspace, check=True)
+        _ = subprocess.run(
+            ["git", "config", "user.name", "Harness Test"],
+            cwd=self.workspace,
+            check=True,
+        )
+        _ = subprocess.run(
+            ["git", "config", "user.email", "harness-test@example.com"],
+            cwd=self.workspace,
+            check=True,
+        )
+
+        tracked = self.workspace / "tracked.txt"
+        _ = tracked.write_text("base\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "tracked.txt"], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "commit", "-m", "base"], cwd=self.workspace, check=True)
+        base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+
+        _ = tracked.write_text("fork\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "tracked.txt"], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "commit", "-m", "fork change"], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "branch", "upstream/main", base_sha], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "checkout", "upstream/main"], cwd=self.workspace, check=True)
+        _ = tracked.write_text("upstream\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "tracked.txt"], cwd=self.workspace, check=True)
+        _ = subprocess.run(
+            ["git", "commit", "-m", "upstream change"],
+            cwd=self.workspace,
+            check=True,
+        )
+        _ = subprocess.run(["git", "checkout", "main"], cwd=self.workspace, check=True)
+        result = subprocess.run(
+            ["git", "rebase", "upstream/main"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
+
     def test_parse_fork_context_without_front_matter_treats_whole_file_as_body(self) -> None:
         fork_file = self.workspace / "FORK.md"
         _ = fork_file.write_text("## Mission\nKeep behavior stable.\n", encoding="utf-8")
@@ -92,7 +144,7 @@ printf '%s' "$FORK_CONTEXT_BODY" >"$HARNESS_STATE_DIR/fork-body.txt"
             expected_body,
         )
 
-    def test_setup_and_changelog_metadata_are_both_supported(self) -> None:
+    def test_setup_changelog_and_rebase_metadata_are_supported(self) -> None:
         self._init_workspace_repo()
         _ = (self.workspace / "FORK.md").write_text(
             "\n".join(
@@ -104,6 +156,9 @@ printf '%s' "$FORK_CONTEXT_BODY" >"$HARNESS_STATE_DIR/fork-body.txt"
                     "  exclude:",
                     "    - data/big-snapshot.json",
                     "    - !data/keep.json",
+                    "rebase:",
+                    "  continue_check: |",
+                    "    echo continue-ok",
                     "---",
                     "## Mission",
                     "Preserve custom behavior.",
@@ -118,6 +173,7 @@ printf '%s' "$FORK_CONTEXT_BODY" >"$HARNESS_STATE_DIR/fork-body.txt"
 parse_fork_context
 run_setup_command
 printf '%s' "$FORK_CHANGELOG_EXCLUDE_PATTERNS" >"$HARNESS_STATE_DIR/changelog-excludes.txt"
+printf '%s' "$FORK_REBASE_CONTINUE_CHECK" >"$HARNESS_STATE_DIR/rebase-continue-check.txt"
 """
         )
 
@@ -125,7 +181,11 @@ printf '%s' "$FORK_CHANGELOG_EXCLUDE_PATTERNS" >"$HARNESS_STATE_DIR/changelog-ex
         excludes = (self.harness_state / "changelog-excludes.txt").read_text(
             encoding="utf-8"
         )
+        continue_check = (self.harness_state / "rebase-continue-check.txt").read_text(
+            encoding="utf-8"
+        )
         self.assertEqual(excludes, "data/big-snapshot.json\n!data/keep.json")
+        self.assertEqual(continue_check, "echo continue-ok")
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
         self.assertIn("bootstrap-ok", setup_log)
 
@@ -176,6 +236,85 @@ fi
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("changelog.exclude entries must be non-empty strings", result.stderr)
+
+    def test_parse_fork_context_supports_inline_rebase_continue_check(self) -> None:
+        _ = (self.workspace / "FORK.md").write_text(
+            "---\nrebase:\n  continue_check: echo inline-ok\n---\n## Mission\nKeep going\n",
+            encoding="utf-8",
+        )
+
+        result = self._run_harness_shell(
+            """
+parse_fork_context
+printf '%s' "$FORK_REBASE_CONTINUE_CHECK" >"$HARNESS_STATE_DIR/rebase-inline.txt"
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(
+            (self.harness_state / "rebase-inline.txt").read_text(encoding="utf-8"),
+            "echo inline-ok",
+        )
+
+    def test_parse_fork_context_fails_closed_on_invalid_rebase_shape(self) -> None:
+        _ = (self.workspace / "FORK.md").write_text(
+            "---\nrebase: []\n---\n## Mission\nNope\n",
+            encoding="utf-8",
+        )
+
+        result = self._run_harness_shell(
+            """
+if parse_fork_context; then
+  echo "expected parse failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("rebase must be an object", result.stderr)
+
+    def test_parse_fork_context_fails_closed_on_unknown_rebase_key(self) -> None:
+        _ = (self.workspace / "FORK.md").write_text(
+            "---\nrebase:\n  nope: echo bad\n---\n## Mission\nNope\n",
+            encoding="utf-8",
+        )
+
+        result = self._run_harness_shell(
+            """
+if parse_fork_context; then
+  echo "expected parse failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("Only 'continue_check' is allowed", result.stderr)
+
+    def test_rebase_continue_check_snapshot_stays_frozen_after_fork_md_changes(self) -> None:
+        frozen_output = self.harness_state / "frozen-output.txt"
+        _ = (self.workspace / "FORK.md").write_text(
+            f"---\nrebase:\n  continue_check: printf frozen > {frozen_output}\n---\n",
+            encoding="utf-8",
+        )
+
+        result = self._run_harness_shell(
+            """
+parse_fork_context
+write_rebase_continue_check_file
+cat >"$WORKSPACE_DIR/FORK.md" <<'EOF'
+---
+rebase:
+  continue_check: printf changed > ignored.txt
+---
+EOF
+bash "$REBASE_CONTINUE_CHECK_FILE"
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(frozen_output.read_text(encoding="utf-8"), "frozen")
 
     def test_setup_success_writes_setup_log(self) -> None:
         self._init_workspace_repo()
@@ -233,6 +372,8 @@ fi
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
         self.assertIn("Setup command failed with exit code", setup_log)
+        self.assertIn("Setup command failed with exit code 1", result.stderr)
+        self.assertIn("Setup Diagnostics", result.stdout)
 
     def test_fail_harness_records_status_details(self) -> None:
         result = self._run_harness_shell(
@@ -291,6 +432,7 @@ fi
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
         self.assertIn("Tracked Changes After Setup", setup_log)
         self.assertIn("tracked.txt", setup_log)
+        self.assertIn("Tracked Changes After Setup", result.stderr)
 
     def test_front_matter_is_stripped_from_agent_visible_artifacts(self) -> None:
         self._init_workspace_repo()
@@ -323,6 +465,369 @@ printf '%s' "$AGENT_PAYLOAD" >"$HARNESS_STATE_DIR/agent-payload.txt"
         self.assertNotIn("---", instructions)
         self.assertNotIn("---", fork_context)
         self.assertNotIn("---", payload)
+
+    def test_git_wrapper_passes_through_normal_git_commands(self) -> None:
+        self._init_workspace_repo()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+prepend_git_wrapper_path
+cd "$WORKSPACE_DIR"
+git status --short >/dev/null
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_classify_paused_rebase_command_detects_continue_shape(self) -> None:
+        result = self._run_harness_shell(
+            """
+classify_paused_rebase_command rebase --continue --quiet
+printf '%s' "$PAUSED_REBASE_ACTION" >"$HARNESS_STATE_DIR/rebase-action.txt"
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(
+            (self.harness_state / "rebase-action.txt").read_text(encoding="utf-8"),
+            "continue",
+        )
+
+    def test_git_wrapper_fails_closed_on_unsupported_paused_rebase_shape(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+prepend_git_wrapper_path
+cd "$WORKSPACE_DIR"
+if git -c color.ui=always rebase --continue; then
+  echo "expected wrapper failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("unsupported paused rebase command", result.stderr)
+
+    def test_handle_rebase_continue_succeeds_after_passing_check(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+initialize_rebase_skipped_commits_file
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+true
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+printf 'merged\n' >"$WORKSPACE_DIR/tracked.txt"
+git -C "$WORKSPACE_DIR" add tracked.txt
+handle_rebase_continue rebase --continue
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --continue", result.stdout)
+        self.assertIn("[rebase] Running frozen rebase continue check", result.stdout)
+        self.assertIn(
+            "[rebase] Rebase continue check passed with stable workspace state",
+            result.stdout,
+        )
+        self.assertIn("[rebase] Invoking real git rebase --continue", result.stdout)
+        self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
+
+    def test_handle_rebase_continue_blocks_on_non_zero_check(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo check-failed
+exit 7
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+printf 'merged\n' >"$WORKSPACE_DIR/tracked.txt"
+git -C "$WORKSPACE_DIR" add tracked.txt
+if handle_rebase_continue rebase --continue; then
+  echo "expected continue failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --continue", result.stdout)
+        self.assertIn("[rebase] Running frozen rebase continue check", result.stdout)
+        self.assertIn("Rebase continue check failed.", result.stderr)
+        self.assertIn("check-failed", result.stderr)
+        self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
+
+    def test_handle_rebase_continue_blocks_on_tracked_mutation(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'mutated\n' > tracked.txt
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+printf 'merged\n' >"$WORKSPACE_DIR/tracked.txt"
+git -C "$WORKSPACE_DIR" add tracked.txt
+if handle_rebase_continue rebase --continue; then
+  echo "expected tracked-mutation failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("Rebase continue check changed workspace state.", result.stderr)
+        self.assertIn("tracked.txt", result.stderr)
+
+    def test_handle_rebase_continue_blocks_on_untracked_mutation(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+touch new-file.txt
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+printf 'merged\n' >"$WORKSPACE_DIR/tracked.txt"
+git -C "$WORKSPACE_DIR" add tracked.txt
+if handle_rebase_continue rebase --continue; then
+  echo "expected untracked-mutation failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("Rebase continue check changed workspace state.", result.stderr)
+        self.assertIn("?? new-file.txt", result.stderr)
+
+    def test_handle_rebase_continue_can_retry_after_fixing_check(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+printf 'merged\n' >"$WORKSPACE_DIR/tracked.txt"
+git -C "$WORKSPACE_DIR" add tracked.txt
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+exit 9
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+if handle_rebase_continue rebase --continue; then
+  echo "expected initial continue failure" >&2
+  exit 1
+fi
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+true
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+handle_rebase_continue rebase --continue
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
+
+    def test_handle_rebase_continue_leaves_no_skip_record_when_git_drops_redundant_commit(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+initialize_rebase_skipped_commits_file
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+true
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+printf 'upstream\n' >"$WORKSPACE_DIR/tracked.txt"
+git -C "$WORKSPACE_DIR" add tracked.txt
+handle_rebase_continue rebase --continue
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --continue", result.stdout)
+        self.assertIn("[rebase] Running frozen rebase continue check", result.stdout)
+        self.assertIn(
+            "[rebase] Rebase continue check passed with stable workspace state",
+            result.stdout,
+        )
+        self.assertIn("[rebase] Invoking real git rebase --continue", result.stdout)
+        self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
+        self.assertEqual(
+            (self.harness_state / "rebase-skipped-commits.json").read_text(encoding="utf-8").strip(),
+            "[]",
+        )
+
+    def test_handle_rebase_continue_auto_skips_empty_commit_after_failed_continue(self) -> None:
+        fake_git = self.harness_state / "fake-git.sh"
+        skip_marker = self.harness_state / "skip-called.txt"
+        rebase_merge = self.workspace / ".git" / "rebase-merge"
+        rebase_merge.mkdir(parents=True, exist_ok=True)
+        _ = fake_git.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    'if [[ "$1" == "-C" ]]; then',
+                    '  shift 2',
+                    "fi",
+                    'if [[ "$1" == "status" ]]; then',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "rebase" && "$2" == "--continue" ]]; then',
+                    "  exit 1",
+                    "fi",
+                    'if [[ "$1" == "rebase" && "$2" == "--skip" ]]; then',
+                    f'  printf skip-called >"{skip_marker}"',
+                    f'  rm -rf "{rebase_merge}"',
+                    "  exit 0",
+                    "fi",
+                    'printf "unexpected fake git args: %s\\n" "$*" >&2',
+                    "exit 99",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+
+        result = self._run_harness_shell(
+            f"""
+REAL_GIT_BIN="{fake_git}"
+export REAL_GIT_BIN
+initialize_rebase_skipped_commits_file
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+true
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+handle_rebase_continue rebase --continue
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --continue", result.stdout)
+        self.assertIn("[rebase] Running frozen rebase continue check", result.stdout)
+        self.assertIn(
+            "[rebase] Rebase continue check passed with stable workspace state",
+            result.stdout,
+        )
+        self.assertIn("[rebase] Invoking real git rebase --continue", result.stdout)
+        self.assertIn(
+            "[rebase] Auto-skipping mechanically empty commit after failed continue",
+            result.stdout,
+        )
+        self.assertEqual(skip_marker.read_text(encoding="utf-8"), "skip-called")
+        self.assertFalse(rebase_merge.exists())
+        self.assertEqual(
+            (self.harness_state / "rebase-skipped-commits.json").read_text(encoding="utf-8").strip(),
+            "[]",
+        )
+
+    def test_handle_rebase_skip_records_rebase_head_identity(self) -> None:
+        self._init_conflicting_rebase()
+        expected_sha = subprocess.run(
+            ["git", "rev-parse", "REBASE_HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        expected_subject = subprocess.run(
+            ["git", "show", "-s", "--format=%s", "REBASE_HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+initialize_rebase_skipped_commits_file
+handle_rebase_skip rebase --skip
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --skip", result.stdout)
+        self.assertIn(
+            f"[rebase] Recorded explicit skip for {expected_sha} {expected_subject}",
+            result.stdout,
+        )
+        self.assertEqual(
+            (self.harness_state / "rebase-skipped-commits.json").read_text(encoding="utf-8"),
+            f"[\n  {{\n    \"sha\": \"{expected_sha}\",\n    \"subject\": \"{expected_subject}\"\n  }}\n]\n",
+        )
+
+    def test_handle_rebase_abort_rejects_missing_or_blank_stuck(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+if handle_rebase_abort rebase --abort; then
+  echo "expected abort rejection" >&2
+  exit 1
+fi
+printf '   \n' >"$WORKSPACE_DIR/STUCK.md"
+if handle_rebase_abort rebase --abort; then
+  echo "expected blank abort rejection" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.count("[rebase] Intercepted git rebase --abort"), 2)
+        self.assertIn("Cannot abort rebase until STUCK.md explains what blocked progress.", result.stderr)
+        self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
+
+    def test_handle_rebase_abort_allows_non_empty_stuck(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+printf 'Need help\n' >"$WORKSPACE_DIR/STUCK.md"
+handle_rebase_abort rebase --abort
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --abort", result.stdout)
+        self.assertIn(
+            "[rebase] Allowing git rebase --abort because STUCK.md is present",
+            result.stdout,
+        )
+        self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
 
 
 if __name__ == "__main__":

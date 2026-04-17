@@ -293,35 +293,68 @@ class RenderCompletionReportTests(unittest.TestCase):
     def test_prefers_stuck_report_over_done(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
+            harness_state = workspace / "harness-state"
+            harness_state.mkdir()
             _ = (workspace / "DONE.md").write_text("# Done\n\nDone body", encoding="utf-8")
             _ = (workspace / "STUCK.md").write_text("# Stuck\n\n**Investigate**", encoding="utf-8")
+            _ = (harness_state / "rebase-skipped-commits.json").write_text("[]\n", encoding="utf-8")
 
             rendered = StringIO()
-            selected = render_completion_report(workspace, console=self._console(rendered))
+            selected = render_completion_report(
+                workspace,
+                harness_state=harness_state,
+                console=self._console(rendered),
+            )
 
         assert selected is not None
         self.assertEqual(selected.name, "STUCK.md")
         output = rendered.getvalue()
         self.assertIn("Stuck", output)
         self.assertIn("Investigate", output)
+        self.assertIn("Skipped Commits", output)
+        self.assertIn("None", output)
         self.assertNotIn("Done body", output)
 
     def test_falls_back_to_done_and_skips_when_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
+            harness_state = workspace / "harness-state"
+            harness_state.mkdir()
             _ = (workspace / "DONE.md").write_text("# Done\n\nDone body", encoding="utf-8")
+            _ = (harness_state / "rebase-skipped-commits.json").write_text(
+                json.dumps(
+                    [
+                        {"sha": "abc1234", "subject": "Remove obsolete compatibility shim"},
+                        {"sha": "def5678", "subject": "Regenerate fixtures"},
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
             rendered = StringIO()
-            selected = render_completion_report(workspace, console=self._console(rendered))
+            selected = render_completion_report(
+                workspace,
+                harness_state=harness_state,
+                console=self._console(rendered),
+            )
 
         assert selected is not None
         self.assertEqual(selected.name, "DONE.md")
-        self.assertIn("Done body", rendered.getvalue())
+        output = rendered.getvalue()
+        self.assertIn("Done body", output)
+        self.assertIn("abc1234 Remove obsolete compatibility shim", output)
+        self.assertIn("def5678 Regenerate fixtures", output)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
+            harness_state = workspace / "harness-state"
+            harness_state.mkdir()
             rendered = StringIO()
-            selected = render_completion_report(workspace, console=self._console(rendered))
+            selected = render_completion_report(
+                workspace,
+                harness_state=harness_state,
+                console=self._console(rendered),
+            )
 
         self.assertIsNone(selected)
         self.assertEqual(rendered.getvalue(), "")
@@ -329,7 +362,10 @@ class RenderCompletionReportTests(unittest.TestCase):
     def test_report_renders_after_metrics_with_markdown_output(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             workspace = Path(temp_dir)
+            harness_state = workspace / "harness-state"
+            harness_state.mkdir()
             _ = (workspace / "DONE.md").write_text("# Final report\n\n**All done**", encoding="utf-8")
+            _ = (harness_state / "rebase-skipped-commits.json").write_text("[]\n", encoding="utf-8")
 
             rendered = StringIO()
             console = self._console(rendered)
@@ -347,11 +383,12 @@ class RenderCompletionReportTests(unittest.TestCase):
                 )
             )
             render_usage_summary("success", summary, console=console)
-            _ = render_completion_report(workspace, console=console)
+            _ = render_completion_report(workspace, harness_state=harness_state, console=console)
 
         output = rendered.getvalue()
         self.assertLess(output.index("Grand total"), output.index("Final report"))
         self.assertIn("All done", output)
+        self.assertIn("Skipped Commits", output)
         self.assertNotIn("**All done**", output)
         self.assertNotIn("INFO", output)
         self.assertNotIn("WARNING", output)

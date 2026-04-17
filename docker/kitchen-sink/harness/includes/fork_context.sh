@@ -52,12 +52,13 @@ TXT
 
 # Parse optional FORK front matter into setup metadata while keeping agent-visible context body-only.
 parse_fork_context() {
-  local fork_file setup_tmp body_tmp changelog_excludes_tmp
+  local fork_file setup_tmp body_tmp changelog_excludes_tmp rebase_continue_check_tmp
   fork_file="$WORKSPACE_DIR/FORK.md"
   FORK_CONTEXT_PRESENT=0
   FORK_CONTEXT_BODY=""
   FORK_SETUP_COMMAND=""
   FORK_CHANGELOG_EXCLUDE_PATTERNS=""
+  FORK_REBASE_CONTINUE_CHECK=""
 
   if [[ ! -f "$fork_file" ]]; then
     return 0
@@ -67,8 +68,9 @@ parse_fork_context() {
   setup_tmp=$(mktemp)
   body_tmp=$(mktemp)
   changelog_excludes_tmp=$(mktemp)
+  rebase_continue_check_tmp=$(mktemp)
 
-  if ! python3 - "$fork_file" "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp" <<'PY'; then
+  if ! python3 - "$fork_file" "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp" "$rebase_continue_check_tmp" <<'PY'; then
 from pathlib import Path
 import sys
 
@@ -76,17 +78,25 @@ fork_path = Path(sys.argv[1])
 setup_out = Path(sys.argv[2])
 body_out = Path(sys.argv[3])
 changelog_excludes_out = Path(sys.argv[4])
+rebase_continue_check_out = Path(sys.argv[5])
 
 content = fork_path.read_text(encoding="utf-8")
 setup = ""
 body = content
 changelog_excludes: list[str] = []
+rebase_continue_check = ""
 
 
-def parse_setup_value(front_lines: list[str], start: int, line: str) -> tuple[str, int]:
-    """Parse `setup` metadata while preserving existing inline and block forms."""
+def parse_shell_string_value(
+    front_lines: list[str],
+    start: int,
+    line: str,
+    *,
+    key: str,
+) -> tuple[str, int]:
+    """Parse shell-string metadata while preserving inline and block forms."""
 
-    value = line[len("setup:") :].strip()
+    value = line[len(f"{key}:") :].strip()
     if value in ("|", "|-"):
         idx = start + 1
         block: list[str] = []
@@ -103,15 +113,82 @@ def parse_setup_value(front_lines: list[str], start: int, line: str) -> tuple[st
             break
         if not block:
             raise SystemExit(
-                "FORK.md front matter is malformed: setup block string must include at least one command line."
+                f"FORK.md front matter is malformed: {key} block string must include at least one command line."
             )
         return "\n".join(block).rstrip("\n"), idx
 
     if value == "":
         raise SystemExit(
-            "FORK.md front matter is malformed: setup must be a non-empty string or block string."
+            f"FORK.md front matter is malformed: {key} must be a non-empty string or block string."
         )
     return value, start + 1
+
+
+def parse_rebase_metadata(
+    front_lines: list[str],
+    start: int,
+) -> tuple[str, int]:
+    """Parse `rebase.continue_check` metadata with strict unknown-key handling."""
+
+    idx = start + 1
+    nested_lines: list[str] = []
+    while idx < len(front_lines):
+        nested = front_lines[idx]
+        if nested.startswith("  ") or nested.strip() == "":
+            nested_lines.append(nested)
+            idx += 1
+            continue
+        break
+
+    if not nested_lines:
+        raise SystemExit(
+            "FORK.md front matter is malformed: rebase must define nested metadata with rebase.continue_check."
+        )
+
+    local_idx = 0
+    parsed_continue_check: str | None = None
+    while local_idx < len(nested_lines):
+        nested_line = nested_lines[local_idx]
+        stripped = nested_line.strip()
+        if stripped == "" or stripped.startswith("#"):
+            local_idx += 1
+            continue
+        if not nested_line.startswith("  "):
+            raise SystemExit(
+                "FORK.md front matter is malformed: rebase metadata must be indented by two spaces."
+            )
+
+        key_line = nested_line[2:]
+        if not key_line.startswith("continue_check:"):
+            raise SystemExit(
+                f"FORK.md front matter is malformed: unsupported rebase key line '{key_line}'. Only 'continue_check' is allowed."
+            )
+        if parsed_continue_check is not None:
+            raise SystemExit(
+                "FORK.md front matter is malformed: duplicate rebase.continue_check key."
+            )
+
+        shell_lines = [key_line]
+        for candidate in nested_lines[local_idx + 1 :]:
+            if candidate.startswith("  "):
+                shell_lines.append(candidate[2:])
+            else:
+                shell_lines.append(candidate)
+
+        parsed_continue_check, consumed_idx = parse_shell_string_value(
+            shell_lines,
+            0,
+            key_line,
+            key="continue_check",
+        )
+        local_idx += consumed_idx
+
+    if parsed_continue_check is None:
+        raise SystemExit(
+            "FORK.md front matter is malformed: rebase must include a 'continue_check' key."
+        )
+
+    return parsed_continue_check, idx
 
 
 def parse_changelog_metadata(
@@ -216,6 +293,7 @@ if lines and lines[0] == "---":
     idx = 0
     parsed_setup = None
     parsed_changelog_excludes: list[str] | None = None
+    parsed_rebase_continue_check: str | None = None
     while idx < len(front_lines):
         line = front_lines[idx]
         stripped = line.strip()
@@ -226,7 +304,12 @@ if lines and lines[0] == "---":
         if line.startswith("setup:"):
             if parsed_setup is not None:
                 raise SystemExit("FORK.md front matter is malformed: duplicate 'setup' key.")
-            parsed_setup, idx = parse_setup_value(front_lines, idx, line)
+            parsed_setup, idx = parse_shell_string_value(
+                front_lines,
+                idx,
+                line,
+                key="setup",
+            )
             continue
 
         if line.startswith("changelog:"):
@@ -241,29 +324,44 @@ if lines and lines[0] == "---":
             parsed_changelog_excludes, idx = parse_changelog_metadata(front_lines, idx)
             continue
 
+        if line.startswith("rebase:"):
+            if line[len("rebase:") :].strip() != "":
+                raise SystemExit(
+                    "FORK.md front matter is malformed: rebase must be an object with nested keys."
+                )
+            if parsed_rebase_continue_check is not None:
+                raise SystemExit(
+                    "FORK.md front matter is malformed: duplicate 'rebase' key."
+                )
+            parsed_rebase_continue_check, idx = parse_rebase_metadata(front_lines, idx)
+            continue
+
         if line.startswith("  "):
             raise SystemExit(
                 f"FORK.md front matter is malformed: unexpected indentation for line '{line}'."
             )
         raise SystemExit(
-            f"FORK.md front matter is malformed: unsupported key line '{line}'. Only 'setup' and 'changelog' are allowed."
+            f"FORK.md front matter is malformed: unsupported key line '{line}'. Only 'setup', 'changelog', and 'rebase' are allowed."
         )
 
     setup = parsed_setup or ""
     changelog_excludes = parsed_changelog_excludes or []
+    rebase_continue_check = parsed_rebase_continue_check or ""
 
 setup_out.write_text(setup, encoding="utf-8")
 body_out.write_text(body, encoding="utf-8")
 changelog_excludes_out.write_text("\n".join(changelog_excludes), encoding="utf-8")
+rebase_continue_check_out.write_text(rebase_continue_check, encoding="utf-8")
 PY
-    rm -f "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp"
+    rm -f "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp" "$rebase_continue_check_tmp"
     return 1
   fi
 
   FORK_SETUP_COMMAND=$(cat "$setup_tmp")
   FORK_CONTEXT_BODY=$(cat "$body_tmp")
   FORK_CHANGELOG_EXCLUDE_PATTERNS=$(cat "$changelog_excludes_tmp")
-  rm -f "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp"
+  FORK_REBASE_CONTINUE_CHECK=$(cat "$rebase_continue_check_tmp")
+  rm -f "$setup_tmp" "$body_tmp" "$changelog_excludes_tmp" "$rebase_continue_check_tmp"
   return 0
 }
 

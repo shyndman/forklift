@@ -71,7 +71,6 @@ STASH_MESSAGE = AUTHORSHIP_STASH_MESSAGE
 FILTER_REPO_INSTALL_HELP = AUTHORSHIP_FILTER_REPO_INSTALL_HELP
 STUCK_EXIT_CODE = POST_RUN_STUCK_EXIT_CODE
 HARNESS_STATUS_FILE_NAME = "harness-status.txt"
-SETUP_LOG_TAIL_LINES = 120
 CLIENT_LOG_TAIL_LINES = 120
 CLIENTLOG_HINT_TITLE = "Client log tail command"
 CLIENTLOG_HINT_TEMPLATE = "forklift clientlog {run_dir_name} --follow"
@@ -218,7 +217,6 @@ class Forklift(Command):
                 outcome = "timed out"
                 exit_code = 2
             elif container_result.exit_code != 0:
-                self._log_setup_failure_details(run_paths.harness_state)
                 logger.error(
                     "Container %s exited with code %s",
                     container_result.container_name,
@@ -238,7 +236,12 @@ class Forklift(Command):
                 outcome = "failure"
                 exit_code = self._resolved_exit_code(exc.code)
 
-        self._render_terminal_summary(outcome, agent_log_path, run_paths.workspace)
+        self._render_terminal_summary(
+            outcome,
+            agent_log_path,
+            run_paths.workspace,
+            run_paths.harness_state,
+        )
         if exit_code != 0:
             raise SystemExit(exit_code)
 
@@ -410,13 +413,14 @@ class Forklift(Command):
         outcome: str,
         agent_log_path: Path,
         workspace: Path,
+        harness_state: Path,
     ) -> None:
         """Emit the terminal-end usage summary and completion report exactly once."""
 
         summary = parse_usage_summary(agent_log_path)
         console = Console()
         render_usage_summary(outcome, summary, console=console)
-        _ = render_completion_report(workspace, console=console)
+        _ = render_completion_report(workspace, harness_state=harness_state, console=console)
 
     def _resolved_exit_code(self, code: object) -> int:
         """Normalize SystemExit payloads so re-raises preserve explicit integer codes."""
@@ -426,15 +430,6 @@ class Forklift(Command):
         if isinstance(code, int):
             return code
         return 1
-
-    def _log_setup_failure_details(self, harness_state: Path) -> None:
-        """Emit setup.log tail so setup-command failures are visible in host logs."""
-
-        self._log_harness_log_tail(
-            harness_state / "setup.log",
-            label="Setup log tail",
-            tail_lines=SETUP_LOG_TAIL_LINES,
-        )
 
     def _log_client_failure_details(self, harness_state: Path) -> None:
         """Emit the agent client log tail so harness failures are visible in host logs."""
@@ -489,7 +484,6 @@ class Forklift(Command):
             phase=status.get("phase"),
             message=status.get("message"),
         )
-        self._log_setup_failure_details(harness_state)
         self._log_client_failure_details(harness_state)
         raise SystemExit(1)
 

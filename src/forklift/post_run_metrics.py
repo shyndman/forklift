@@ -108,6 +108,7 @@ def render_usage_summary(
 def render_completion_report(
     workspace: Path,
     *,
+    harness_state: Path,
     console: Console | None = None,
 ) -> Path | None:
     """Render terminal completion report markdown using STUCK-over-DONE precedence."""
@@ -120,6 +121,11 @@ def render_completion_report(
         report_body = report_path.read_text(encoding="utf-8")
     except OSError:
         return None
+
+    report_body = _append_skipped_commits_section(
+        report_body,
+        _load_skipped_commits(harness_state),
+    )
 
     active_console = console or Console()
     active_console.print()
@@ -335,3 +341,42 @@ def _select_report_path(workspace: Path) -> Path | None:
         return done_path
 
     return None
+
+
+def _load_skipped_commits(harness_state: Path) -> tuple[tuple[str, str], ...]:
+    skip_path = harness_state / "rebase-skipped-commits.json"
+
+    try:
+        raw_payload = cast(object, json.loads(skip_path.read_text(encoding="utf-8")))
+    except (OSError, json.JSONDecodeError):
+        return ()
+
+    if not isinstance(raw_payload, list):
+        return ()
+    payload = cast(list[object], raw_payload)
+
+    skipped: list[tuple[str, str]] = []
+    for entry in payload:
+        if not isinstance(entry, dict):
+            continue
+        record = cast(dict[str, object], entry)
+        sha = record.get("sha")
+        subject = record.get("subject")
+        if isinstance(sha, str) and sha and isinstance(subject, str) and subject:
+            skipped.append((sha, subject))
+
+    return tuple(skipped)
+
+
+def _append_skipped_commits_section(
+    report_body: str,
+    skipped_commits: tuple[tuple[str, str], ...],
+) -> str:
+    lines = ["## Skipped Commits", ""]
+    if not skipped_commits:
+        lines.append("None")
+    else:
+        lines.extend(f"- `{sha}` {subject}" for sha, subject in skipped_commits)
+
+    skipped_section = "\n".join(lines)
+    return f"{report_body.rstrip()}\n\n{skipped_section}\n"

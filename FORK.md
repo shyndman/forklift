@@ -9,6 +9,10 @@ Optional strict front matter (line 1 must be `---`) supports harness bootstrap:
 ---
 setup: |
   uv sync
+rebase:
+  continue_check: |
+    uv run ruff format --check .
+    uv run ruff check .
 changelog:
   exclude:
     - data/big-snapshot.json
@@ -20,7 +24,12 @@ changelog:
 - `setup` is optional; omit front matter if you don't need bootstrap.
 - `setup` runs in `/workspace` before agent launch with a fixed 180-second timeout.
 - Setup must not modify tracked git files; tracked changes cause fail-closed exit.
-- Setup output is logged to `/harness-state/setup.log`.
+- Setup failures are surfaced in the top-level run log and mirrored to `/harness-state/setup.log`.
+- `rebase.continue_check` is optional; when present it must be a single shell string or block string.
+- Forklift snapshots `rebase.continue_check` into `/harness-state/rebase-continue-check.sh` before the agent starts.
+- The continue check runs from `/workspace` before each mediated `git rebase --continue` and passes only when it exits zero without changing tracked, staged, or untracked workspace state.
+- Explicit `git rebase --skip` decisions are recorded and shown in the final completion summary. Mechanically empty auto-skips are silent and unrecorded.
+- `git rebase --abort` is rejected until `STUCK.md` exists with non-whitespace content.
 - `changelog.exclude` is optional; when present it must be an ordered list of non-empty patterns.
 - `changelog.exclude` uses gitignore-style matching, supports `!` negation, and resolves by last matching rule.
 - Changelog exclusion matching uses destination paths for rename/copy diff rows.
@@ -49,6 +58,8 @@ changelog:
 ```
 ---
 setup: bun install
+rebase:
+  continue_check: bun test
 changelog:
   exclude:
     - data/vendor-snapshot.json

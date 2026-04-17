@@ -88,6 +88,8 @@ class ChangelogForkMetadataTests(unittest.TestCase):
                 lines(
                     "---",
                     "setup: echo ok",
+                    "rebase:",
+                    "  continue_check: echo continue-ok",
                     "changelog:",
                     "  exclude:",
                     "    - data/big.json",
@@ -103,6 +105,28 @@ class ChangelogForkMetadataTests(unittest.TestCase):
             excludes = load_changelog_exclude_patterns(repo)
 
         self.assertEqual(excludes, ["data/big.json", "!data/keep.json"])
+
+    def test_load_exclusions_rejects_unknown_rebase_key(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            _ = (repo / "FORK.md").write_text(
+                lines(
+                    "---",
+                    "rebase:",
+                    "  nope: echo bad",
+                    "changelog:",
+                    "  exclude:",
+                    "    - data/big.json",
+                    "---",
+                    "## Mission",
+                    "Keep behavior stable.",
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaises(ChangelogAnalysisError):
+                _ = load_changelog_exclude_patterns(repo)
 
     def test_load_exclusions_rejects_invalid_changelog_shape(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -410,6 +434,11 @@ class ChangelogLlmTests(unittest.TestCase):
         self.assertIn("## Key Change Arcs", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
         self.assertNotIn("## Conflict Pair Evaluations", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
         self.assertIn("Do not infer or describe what the fork changed", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("operator-facing detail", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("commands, flags, config keys, files, or UI surfaces", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("call out defaults", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("prefer paragraph prose over terse bullets", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn("Do not drift into reviewer guidance", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
 
     def test_conflict_prompt_contract_requires_intent_labels_and_evidence_wording(
         self,

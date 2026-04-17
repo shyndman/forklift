@@ -10,6 +10,8 @@ FORK_CONTEXT_FILE=${FORK_CONTEXT_FILE:-$HARNESS_STATE_DIR/fork-context.md}
 SETUP_LOG=${SETUP_LOG:-$HARNESS_STATE_DIR/setup.log}
 CLIENT_LOG=${OPENCODE_CLIENT_LOG:-$HARNESS_STATE_DIR/opencode-client.log}
 HARNESS_STATUS_FILE=${HARNESS_STATUS_FILE:-$HARNESS_STATE_DIR/harness-status.txt}
+REBASE_CONTINUE_CHECK_FILE=${REBASE_CONTINUE_CHECK_FILE:-$HARNESS_STATE_DIR/rebase-continue-check.sh}
+REBASE_SKIPPED_COMMITS_FILE=${REBASE_SKIPPED_COMMITS_FILE:-$HARNESS_STATE_DIR/rebase-skipped-commits.json}
 OPENCODE_BIN=/opt/opencode/bin/opencode
 OPENCODE_MODEL=${OPENCODE_MODEL:-}
 OPENCODE_VARIANT=${OPENCODE_VARIANT:-}
@@ -21,15 +23,20 @@ MAIN_BRANCH=${FORKLIFT_MAIN_BRANCH:-main}
 UPSTREAM_REF="upstream/${MAIN_BRANCH}"
 HELPER_BRANCH="upstream-${MAIN_BRANCH//\//-}"
 
+export WORKSPACE_DIR HARNESS_STATE_DIR INSTRUCTIONS_FILE FORK_CONTEXT_FILE SETUP_LOG CLIENT_LOG HARNESS_STATUS_FILE
+export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE
+
 FORK_CONTEXT_PRESENT=0
 FORK_CONTEXT_BODY=""
 FORK_SETUP_COMMAND=""
+FORK_REBASE_CONTINUE_CHECK=""
 HARNESS_PHASE=bootstrap
 
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 source "$SCRIPT_DIR/includes/common.sh"
 source "$SCRIPT_DIR/includes/fork_context.sh"
+source "$SCRIPT_DIR/includes/rebase.sh"
 source "$SCRIPT_DIR/includes/setup.sh"
 source "$SCRIPT_DIR/includes/agent.sh"
 
@@ -73,9 +80,17 @@ main() {
   if ! parse_fork_context; then
     fail_harness "Invalid FORK.md front matter; fix format and retry"
   fi
+  initialize_rebase_skipped_commits_file
+  write_rebase_continue_check_file
+  export FORK_REBASE_CONTINUE_CHECK
+  if ! resolve_real_git_bin; then
+    fail_harness "Unable to resolve real git binary before enabling rebase mediation"
+  fi
+  prepend_git_wrapper_path
+
   HARNESS_PHASE=setup
   if ! run_setup_command; then
-    fail_harness "Setup command failed before agent launch; inspect $SETUP_LOG"
+    fail_harness "Setup command failed before agent launch"
   fi
 
   write_instructions

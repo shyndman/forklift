@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+# shellcheck source=../common.sh
+source "$SCRIPT_DIR/../common.sh"
+# shellcheck source=../rebase.sh
+source "$SCRIPT_DIR/../rebase.sh"
+
+if rebase_in_progress; then
+  classify_paused_rebase_command "$@"
+  case "$PAUSED_REBASE_ACTION" in
+    continue)
+      handle_rebase_continue "$@"
+      exit $?
+      ;;
+    skip)
+      handle_rebase_skip "$@"
+      exit $?
+      ;;
+    abort)
+      handle_rebase_abort "$@"
+      exit $?
+      ;;
+    unsupported)
+      fail_unsupported_paused_rebase_command
+      exit $?
+      ;;
+  esac
+fi
+
+exec "$REAL_GIT_BIN" "$@"
