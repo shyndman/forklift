@@ -68,6 +68,7 @@ def build_changelog_usage_summary(
         total_cost=estimated_cost,
         wall_clock_ms=max(wall_clock_ms, 0),
         tool_calls=usage.tool_calls,
+        conflicting_commits=0,
         tool_breakdown=(),
     )
     return UsageSummary.from_totals(totals)

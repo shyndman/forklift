@@ -417,7 +417,7 @@ class Forklift(Command):
     ) -> None:
         """Emit the terminal-end usage summary and completion report exactly once."""
 
-        summary = parse_usage_summary(agent_log_path)
+        summary = parse_usage_summary(agent_log_path, harness_state=harness_state)
         console = Console()
         render_usage_summary(outcome, summary, console=console)
         _ = render_completion_report(workspace, harness_state=harness_state, console=console)

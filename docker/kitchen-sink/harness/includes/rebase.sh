@@ -28,6 +28,10 @@ initialize_rebase_skipped_commits_file() {
   printf '[]\n' >"$REBASE_SKIPPED_COMMITS_FILE"
 }
 
+initialize_rebase_conflicting_commits_file() {
+  printf '[]\n' >"$REBASE_CONFLICTING_COMMITS_FILE"
+}
+
 write_rebase_continue_check_file() {
   if [[ -z "$FORK_REBASE_CONTINUE_CHECK" ]]; then
     rm -f "$REBASE_CONTINUE_CHECK_FILE"
@@ -121,11 +125,13 @@ EOF
   log_client_block "rebase" "$failure_message"
 }
 
-append_agent_skip_record() {
-  local sha subject
-  sha="$1"
-  subject="$2"
-  python3 - "$REBASE_SKIPPED_COMMITS_FILE" "$sha" "$subject" <<'PY'
+append_agent_record() {
+  local records_file sha subject dedupe_by_sha
+  records_file="$1"
+  sha="$2"
+  subject="$3"
+  dedupe_by_sha="${4:-0}"
+  python3 - "$records_file" "$sha" "$subject" "$dedupe_by_sha" <<'PY'
 from __future__ import annotations
 
 import json
@@ -135,16 +141,61 @@ import sys
 path = Path(sys.argv[1])
 sha = sys.argv[2]
 subject = sys.argv[3]
-records = json.loads(path.read_text(encoding="utf-8"))
+dedupe_by_sha = sys.argv[4] == "1"
+
+try:
+    raw_records = json.loads(path.read_text(encoding="utf-8"))
+except (FileNotFoundError, json.JSONDecodeError):
+    raw_records = []
+
+records: list[dict[str, str]] = []
+if isinstance(raw_records, list):
+    for entry in raw_records:
+        if not isinstance(entry, dict):
+            continue
+        record_sha = entry.get("sha")
+        record_subject = entry.get("subject")
+        if isinstance(record_sha, str) and record_sha and isinstance(record_subject, str) and record_subject:
+            records.append({"sha": record_sha, "subject": record_subject})
+
+if dedupe_by_sha and any(record["sha"] == sha for record in records):
+    print("duplicate")
+    raise SystemExit(0)
+
 records.append({"sha": sha, "subject": subject})
+path.parent.mkdir(parents=True, exist_ok=True)
 path.write_text(json.dumps(records, indent=2) + "\n", encoding="utf-8")
+print("added")
 PY
+}
+
+append_agent_skip_record() {
+  append_agent_record "$REBASE_SKIPPED_COMMITS_FILE" "$1" "$2" 0
+}
+
+append_agent_conflict_record() {
+  append_agent_record "$REBASE_CONFLICTING_COMMITS_FILE" "$1" "$2" 1
+}
+
+record_current_conflicting_commit() {
+  local rebase_sha rebase_subject record_status
+  rebase_sha=$(run_real_git -C "$WORKSPACE_DIR" rev-parse REBASE_HEAD 2>/dev/null || true)
+  rebase_subject=$(run_real_git -C "$WORKSPACE_DIR" show -s --format=%s REBASE_HEAD 2>/dev/null || true)
+  if [[ -z "$rebase_sha" || -z "$rebase_subject" ]]; then
+    return 0
+  fi
+
+  record_status=$(append_agent_conflict_record "$rebase_sha" "$rebase_subject")
+  if [[ "$record_status" == "added" ]]; then
+    emit_phase_message "rebase" "stdout" "Recorded conflicting commit for $rebase_sha $rebase_subject"
+  fi
 }
 
 handle_rebase_continue() {
   local before_status after_status continue_exit_code skip_exit_code
 
   emit_phase_message "rebase" "stdout" "Intercepted git rebase --continue"
+  record_current_conflicting_commit
 
   if [[ ! -f "$REBASE_CONTINUE_CHECK_FILE" || ! -s "$REBASE_CONTINUE_CHECK_FILE" ]]; then
     emit_phase_message "rebase" "stdout" "Invoking real git rebase --continue"

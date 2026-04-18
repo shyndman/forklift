@@ -50,6 +50,7 @@ class UsageTotals:
     total_cost: Decimal | float | None
     wall_clock_ms: int
     tool_calls: int
+    conflicting_commits: int
     tool_breakdown: tuple[ToolCallTotal, ...]
 
 
@@ -74,12 +75,12 @@ class UsageSummary:
         return cls(available=False, totals=None, reason_unavailable=reason)
 
 
-def parse_usage_summary(log_path: Path) -> UsageSummary:
+def parse_usage_summary(log_path: Path, *, harness_state: Path) -> UsageSummary:
     """Parse `opencode-client.log` and return usage totals for footer rendering."""
 
     try:
         with log_path.open("r", encoding="utf-8") as log_file:
-            return _parse_usage_lines(log_file)
+            return _parse_usage_lines(log_file, harness_state=harness_state)
     except OSError as exc:
         return UsageSummary.unavailable(f"unable to read usage log: {exc}")
 
@@ -133,7 +134,7 @@ def render_completion_report(
     return report_path
 
 
-def _parse_usage_lines(lines: Iterable[str]) -> UsageSummary:
+def _parse_usage_lines(lines: Iterable[str], *, harness_state: Path) -> UsageSummary:
     total_cost = 0.0
     final_snapshot: dict[str, object] | None = None
     saw_usage_payload = False
@@ -207,6 +208,7 @@ def _parse_usage_lines(lines: Iterable[str]) -> UsageSummary:
         total_cost=total_cost,
         wall_clock_ms=wall_clock_ms,
         tool_calls=total_tool_calls,
+        conflicting_commits=_load_conflicting_commit_count(harness_state),
         tool_breakdown=tool_breakdown,
     )
     return UsageSummary.from_totals(totals)
@@ -298,6 +300,10 @@ def _build_usage_table(totals: UsageTotals) -> Table:
     table.add_row("Total tokens", Text(_format_tokens(totals.total_tokens), style=USAGE_TOKEN_VALUE_STYLE))
     table.add_row("Wall clock", Text(_format_duration(totals.wall_clock_ms), style=USAGE_TOKEN_VALUE_STYLE))
     table.add_row("Tool calls", Text(_format_tokens(totals.tool_calls), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row(
+        "Conflicting commits",
+        Text(_format_tokens(totals.conflicting_commits), style=USAGE_TOKEN_VALUE_STYLE),
+    )
     for tool_total in totals.tool_breakdown:
         table.add_row(
             f"    ↳ {tool_total.tool}",
@@ -344,10 +350,16 @@ def _select_report_path(workspace: Path) -> Path | None:
 
 
 def _load_skipped_commits(harness_state: Path) -> tuple[tuple[str, str], ...]:
-    skip_path = harness_state / "rebase-skipped-commits.json"
+    return _load_rebase_commits(harness_state, "rebase-skipped-commits.json")
+
+def _load_conflicting_commit_count(harness_state: Path) -> int:
+    return len(_load_rebase_commits(harness_state, "rebase-conflicting-commits.json"))
+
+def _load_rebase_commits(harness_state: Path, file_name: str) -> tuple[tuple[str, str], ...]:
+    commit_path = harness_state / file_name
 
     try:
-        raw_payload = cast(object, json.loads(skip_path.read_text(encoding="utf-8")))
+        raw_payload = cast(object, json.loads(commit_path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError):
         return ()
 
@@ -355,7 +367,7 @@ def _load_skipped_commits(harness_state: Path) -> tuple[tuple[str, str], ...]:
         return ()
     payload = cast(list[object], raw_payload)
 
-    skipped: list[tuple[str, str]] = []
+    commits: list[tuple[str, str]] = []
     for entry in payload:
         if not isinstance(entry, dict):
             continue
@@ -363,9 +375,9 @@ def _load_skipped_commits(harness_state: Path) -> tuple[tuple[str, str], ...]:
         sha = record.get("sha")
         subject = record.get("subject")
         if isinstance(sha, str) and sha and isinstance(subject, str) and subject:
-            skipped.append((sha, subject))
+            commits.append((sha, subject))
 
-    return tuple(skipped)
+    return tuple(commits)
 
 
 def _append_skipped_commits_section(

@@ -25,6 +25,13 @@ class ParseUsageSummaryTests(unittest.TestCase):
         _ = log_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         return log_path
 
+    def _write_conflicting_commits(self, root: Path, payload: str) -> Path:
+        harness_state = root / "harness-state"
+        harness_state.mkdir(exist_ok=True)
+        conflict_path = harness_state / "rebase-conflicting-commits.json"
+        _ = conflict_path.write_text(payload, encoding="utf-8")
+        return harness_state
+
     def test_parses_cost_totals_and_final_snapshot(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -95,8 +102,12 @@ class ParseUsageSummaryTests(unittest.TestCase):
                     ),
                 ],
             )
+            harness_state = self._write_conflicting_commits(
+                root,
+                json.dumps([{"sha": "abc1234", "subject": "Resolve drift"}]) + "\n",
+            )
 
-            summary = parse_usage_summary(log_path)
+            summary = parse_usage_summary(log_path, harness_state=harness_state)
 
         self.assertTrue(summary.available)
         assert summary.totals is not None
@@ -109,6 +120,7 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertEqual(summary.totals.total_cost, 0.5)
         self.assertEqual(summary.totals.wall_clock_ms, 7_000)
         self.assertEqual(summary.totals.tool_calls, 3)
+        self.assertEqual(summary.totals.conflicting_commits, 1)
         self.assertEqual(
             summary.totals.tool_breakdown,
             (
@@ -136,8 +148,9 @@ class ParseUsageSummaryTests(unittest.TestCase):
                     )
                 ],
             )
+            harness_state = self._write_conflicting_commits(root, "[]\n")
 
-            summary = parse_usage_summary(log_path)
+            summary = parse_usage_summary(log_path, harness_state=harness_state)
 
         self.assertTrue(summary.available)
         assert summary.totals is not None
@@ -150,6 +163,7 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertEqual(summary.totals.total_cost, 0.2)
         self.assertEqual(summary.totals.wall_clock_ms, 0)
         self.assertEqual(summary.totals.tool_calls, 0)
+        self.assertEqual(summary.totals.conflicting_commits, 0)
         self.assertEqual(summary.totals.tool_breakdown, ())
 
     def test_returns_unavailable_when_no_valid_usage_payloads(self) -> None:
@@ -163,11 +177,47 @@ class ParseUsageSummaryTests(unittest.TestCase):
                     json.dumps({"type": "step_finish", "part": {"cost": "0.5"}}),
                 ],
             )
+            harness_state = self._write_conflicting_commits(root, "[]\n")
 
-            summary = parse_usage_summary(log_path)
+            summary = parse_usage_summary(log_path, harness_state=harness_state)
 
         self.assertFalse(summary.available)
         self.assertEqual(summary.reason_unavailable, "no usage events found")
+
+    def test_falls_back_to_zero_conflicting_commits_when_artifact_missing_or_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            log_path = self._write_log(
+                root,
+                [
+                    json.dumps(
+                        {
+                            "type": "step_finish",
+                            "part": {
+                                "cost": 0.2,
+                                "tokens": {
+                                    "total": 99,
+                                },
+                            },
+                        }
+                    )
+                ],
+            )
+            missing_harness_state = root / "missing-harness-state"
+
+            summary = parse_usage_summary(log_path, harness_state=missing_harness_state)
+
+            self.assertTrue(summary.available)
+            assert summary.totals is not None
+            self.assertEqual(summary.totals.conflicting_commits, 0)
+
+            harness_state = self._write_conflicting_commits(root, "{bad-json\n")
+
+            malformed_summary = parse_usage_summary(log_path, harness_state=harness_state)
+
+        self.assertTrue(malformed_summary.available)
+        assert malformed_summary.totals is not None
+        self.assertEqual(malformed_summary.totals.conflicting_commits, 0)
 
 
 class RenderUsageSummaryTests(unittest.TestCase):
@@ -188,6 +238,7 @@ class RenderUsageSummaryTests(unittest.TestCase):
                     total_cost=0.12,
                     wall_clock_ms=12_345,
                     tool_calls=3,
+                    conflicting_commits=2,
                     tool_breakdown=(
                         ToolCallTotal(tool="read", calls=2),
                         ToolCallTotal(tool="write", calls=1),
@@ -211,6 +262,7 @@ class RenderUsageSummaryTests(unittest.TestCase):
             "Total tokens",
             "Wall clock",
             "Tool calls",
+            "Conflicting commits",
             "↳ read",
             "↳ write",
             "Total cost",
@@ -233,6 +285,7 @@ class RenderUsageSummaryTests(unittest.TestCase):
                 total_cost=0.6562,
                 wall_clock_ms=67_890,
                 tool_calls=14,
+                conflicting_commits=3,
                 tool_breakdown=(ToolCallTotal(tool="bash", calls=14),),
             )
         )
@@ -247,6 +300,7 @@ class RenderUsageSummaryTests(unittest.TestCase):
         self.assertIn("$0.6562", output)
         self.assertIn("01:07.890", output)
         self.assertIn("14", output)
+        self.assertIn("3", output)
         self.assertIn("↳ bash", output)
         self.assertIn("Metric", output)
         self.assertIn("Value", output)
@@ -265,6 +319,7 @@ class RenderUsageSummaryTests(unittest.TestCase):
                     total_cost=Decimal("0.0001875"),
                     wall_clock_ms=321,
                     tool_calls=0,
+                    conflicting_commits=0,
                     tool_breakdown=(),
                 )
             ),
@@ -379,6 +434,7 @@ class RenderCompletionReportTests(unittest.TestCase):
                     total_cost=0.1000,
                     wall_clock_ms=0,
                     tool_calls=0,
+                    conflicting_commits=0,
                     tool_breakdown=(),
                 )
             )
