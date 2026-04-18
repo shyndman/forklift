@@ -132,7 +132,7 @@ class ForkliftPostRunTests(unittest.TestCase):
             ]
             self.assertEqual(len(push_calls), 1)
             push_args = cast(list[str], push_calls[0].args[1])
-            self.assertEqual(push_args[1], str(repo_path))
+            self.assertEqual(push_args[1], repo_path.resolve().as_uri())
             self.assertEqual(
                 push_args[2],
                 f"main:{publication_branch}",
@@ -211,13 +211,109 @@ class ForkliftPostRunTests(unittest.TestCase):
             push_index = command_sequence.index(
                 (
                     run_paths.workspace,
-                    ["push", str(repo_path), f"main:{publication_branch}", "--force"],
+                    ["push", repo_path.resolve().as_uri(), f"main:{publication_branch}", "--force"],
                 )
             )
             checkout_index = command_sequence.index(
                 (repo_path, ["checkout", publication_branch])
             )
             self.assertLess(push_index, checkout_index)
+
+    def test_rewrite_hydrates_lfs_objects_before_publication_push(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            run_paths = self._make_run_paths(root)
+            repo_path = root / "local-repo"
+            repo_path.mkdir()
+            (run_paths.workspace / ".git" / "lfs").mkdir(parents=True)
+            forklift = ForkliftTestHarness()
+
+            metadata: dict[str, object] = {
+                "operator_name": "Scott Hyndman",
+                "operator_email": "scotty.hyndman@gmail.com",
+                "created_at": "20260302_012207",
+            }
+            publication_branch = "upstream-merge/20260302T012207/main"
+            upstream_sha = "6666666666666666666666666666666666666666"
+            head_sha = "7777777777777777777777777777777777777777"
+
+            def fake_run_git(repo: Path, args: list[str]) -> str:
+                if args == ["checkout", publication_branch]:
+                    self.assertEqual(repo, repo_path)
+                    return "Switched to publication branch"
+                self.assertEqual(repo, run_paths.workspace)
+                if args == ["rev-parse", "upstream/main"]:
+                    return upstream_sha
+                if args == ["rev-parse", "HEAD"]:
+                    return head_sha
+                if args == ["rev-parse", "--verify", "upstream-main"]:
+                    return upstream_sha
+                if args == ["filter-repo", "--version"]:
+                    return "a40bce548d2c"
+                if args[0] == "filter-repo":
+                    return ""
+                if args[:3] == ["lfs", "fetch", "--all"]:
+                    return "fetched"
+                if args[0] == "log":
+                    return ""
+                if args[0] in {"push", "remote"}:
+                    return "published"
+                raise AssertionError(f"Unexpected git command: {args}")
+
+            with (
+                patch("forklift.cli.current_branch", return_value="main"),
+                patch("forklift.cli.ensure_upstream_merged"),
+                patch("forklift.cli.run_git", side_effect=fake_run_git) as run_git_mock,
+                patch.object(Forklift, "_workspace_has_changes", return_value=False),
+            ):
+                result = forklift.rewrite_and_publish_local(
+                    repo_path,
+                    run_paths,
+                    metadata,
+                    "main",
+                    "upstream/main",
+                )
+
+            self.assertIsNotNone(result)
+            assert result is not None
+            self.assertTrue(result.published)
+
+            command_sequence = [
+                (cast(Path, call.args[0]), cast(list[str], call.args[1]))
+                for call in run_git_mock.call_args_list
+            ]
+            remote_add_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    [
+                        "remote",
+                        "add",
+                        "forklift-publication-source",
+                        repo_path.resolve().as_uri(),
+                    ],
+                )
+            )
+            lfs_fetch_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    ["lfs", "fetch", "--all", "forklift-publication-source"],
+                )
+            )
+            remote_remove_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    ["remote", "remove", "forklift-publication-source"],
+                )
+            )
+            push_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    ["push", repo_path.resolve().as_uri(), f"main:{publication_branch}", "--force"],
+                )
+            )
+            self.assertLess(remote_add_index, lfs_fetch_index)
+            self.assertLess(lfs_fetch_index, remote_remove_index)
+            self.assertLess(remote_remove_index, push_index)
 
     def test_rewrite_skips_when_head_matches_upstream_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

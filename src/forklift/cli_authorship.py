@@ -16,6 +16,7 @@ logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 AGENT_NAME = "Forklift Agent"
 AGENT_EMAIL = "forklift@github.com"
 STASH_MESSAGE = "forklift-authorship-rewrite"
+PUBLICATION_LFS_REMOTE = "forklift-publication-source"
 FILTER_REPO_INSTALL_HELP = (
     "Install git filter-repo 2.47.0+: pip install git-filter-repo==2.47.0, "
     "brew install git-filter-repo, or download the standalone script from "
@@ -114,11 +115,17 @@ def publish_to_local(
 ) -> None:
     """Publish rewritten workspace commits to a local handoff branch."""
 
+    publication_remote = repo_path.resolve().as_uri()
+    hydrate_lfs_objects_for_publication(
+        workspace,
+        publication_remote,
+        run_git_cmd=run_git_cmd,
+    )
     push_output = run_git_cmd(
         workspace,
         [
             "push",
-            str(repo_path),
+            publication_remote,
             f"{source_branch}:{publication_branch}",
             "--force",
         ],
@@ -130,6 +137,37 @@ def publish_to_local(
         publication_branch,
         run_git_cmd=run_git_cmd,
     )
+
+
+def hydrate_lfs_objects_for_publication(
+    workspace: Path,
+    publication_remote: str,
+    *,
+    run_git_cmd: Callable[[Path, list[str]], str] = run_git,
+) -> None:
+    """Fetch all historical LFS objects needed to publish rewritten branch history."""
+
+    if not (workspace / ".git" / "lfs").exists():
+        return
+
+    logger.info(
+        "Hydrating Git LFS objects before local publication",
+        remote=publication_remote,
+    )
+    _ = run_git_cmd(
+        workspace,
+        ["remote", "add", PUBLICATION_LFS_REMOTE, publication_remote],
+    )
+    try:
+        fetch_output = run_git_cmd(
+            workspace,
+            ["lfs", "fetch", "--all", PUBLICATION_LFS_REMOTE],
+        )
+    finally:
+        _ = run_git_cmd(workspace, ["remote", "remove", PUBLICATION_LFS_REMOTE])
+
+    if fetch_output:
+        logger.info("Git LFS hydration output", output=fetch_output)
 
 
 def checkout_publication_branch_best_effort(
