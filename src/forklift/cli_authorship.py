@@ -3,12 +3,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import shutil
 from typing import Callable, cast
 
 import structlog
 from structlog.stdlib import BoundLogger
 
-from .git import GitError, current_branch, ensure_upstream_merged, run_git
+from .git import GitError, GitRemote, current_branch, discover_remotes, ensure_upstream_merged, run_git
 from .run_manager import RunPaths
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
@@ -16,7 +17,8 @@ logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 AGENT_NAME = "Forklift Agent"
 AGENT_EMAIL = "forklift@github.com"
 STASH_MESSAGE = "forklift-authorship-rewrite"
-PUBLICATION_LFS_REMOTE = "forklift-publication-source"
+PUBLICATION_LFS_REMOTE_PREFIX = "forklift-publication"
+PUBLICATION_VALIDATION_REPO = "publication-validation.git"
 FILTER_REPO_INSTALL_HELP = (
     "Install git filter-repo 2.47.0+: pip install git-filter-repo==2.47.0, "
     "brew install git-filter-repo, or download the standalone script from "
@@ -108,19 +110,33 @@ def build_publication_branch(metadata: dict[str, object], target_branch: str) ->
 def publish_to_local(
     workspace: Path,
     repo_path: Path,
+    run_dir: Path,
     source_branch: str,
     publication_branch: str,
+    upstream_anchor: str,
     *,
     run_git_cmd: Callable[[Path, list[str]], str] = run_git,
+    discover_remotes_fn: Callable[[Path], dict[str, GitRemote]] = discover_remotes,
 ) -> None:
     """Publish rewritten workspace commits to a local handoff branch."""
 
     publication_remote = repo_path.resolve().as_uri()
-    hydrate_lfs_objects_for_publication(
-        workspace,
-        publication_remote,
-        run_git_cmd=run_git_cmd,
-    )
+    if (workspace / ".git" / "lfs").exists():
+        hydrate_lfs_objects_for_publication(
+            workspace,
+            repo_path,
+            source_branch,
+            upstream_anchor,
+            run_git_cmd=run_git_cmd,
+            discover_remotes_fn=discover_remotes_fn,
+        )
+        validate_lfs_publication_push(
+            workspace,
+            run_dir,
+            source_branch,
+            publication_branch,
+            run_git_cmd=run_git_cmd,
+        )
     push_output = run_git_cmd(
         workspace,
         [
@@ -141,33 +157,82 @@ def publish_to_local(
 
 def hydrate_lfs_objects_for_publication(
     workspace: Path,
-    publication_remote: str,
+    repo_path: Path,
+    source_branch: str,
+    upstream_anchor: str,
+    *,
+    run_git_cmd: Callable[[Path, list[str]], str] = run_git,
+    discover_remotes_fn: Callable[[Path], dict[str, GitRemote]] = discover_remotes,
+) -> None:
+    """Fetch publication-needed LFS history from the source repo's configured remotes."""
+
+    remotes = discover_remotes_fn(repo_path)
+    fetch_targets: list[tuple[str, str, list[str]]] = []
+
+    origin_remote = remotes.get("origin")
+    if origin_remote is not None:
+        fetch_targets.append(
+            (
+                f"{PUBLICATION_LFS_REMOTE_PREFIX}-origin",
+                origin_remote.fetch_url,
+                [source_branch],
+            )
+        )
+
+    upstream_remote = remotes.get("upstream")
+    if upstream_remote is not None:
+        fetch_targets.append(
+            (
+                f"{PUBLICATION_LFS_REMOTE_PREFIX}-upstream",
+                upstream_remote.fetch_url,
+                [upstream_anchor],
+            )
+        )
+
+    for remote_name, remote_url, refs in fetch_targets:
+        logger.info(
+            "Hydrating Git LFS objects before local publication",
+            remote=remote_url,
+            refs=refs,
+        )
+        _ = run_git_cmd(workspace, ["remote", "add", remote_name, remote_url])
+        try:
+            fetch_output = run_git_cmd(
+                workspace,
+                ["lfs", "fetch", "--all", remote_name, *refs],
+            )
+        finally:
+            _ = run_git_cmd(workspace, ["remote", "remove", remote_name])
+
+        if fetch_output:
+            logger.info("Git LFS hydration output", output=fetch_output)
+
+
+def validate_lfs_publication_push(
+    workspace: Path,
+    run_dir: Path,
+    source_branch: str,
+    publication_branch: str,
     *,
     run_git_cmd: Callable[[Path, list[str]], str] = run_git,
 ) -> None:
-    """Fetch all historical LFS objects needed to publish rewritten branch history."""
+    """Verify local publication can upload required LFS objects before touching the real repo."""
 
-    if not (workspace / ".git" / "lfs").exists():
-        return
+    validation_remote_path = run_dir / PUBLICATION_VALIDATION_REPO
+    shutil.rmtree(validation_remote_path, ignore_errors=True)
+    validation_remote = validation_remote_path.resolve().as_uri()
 
-    logger.info(
-        "Hydrating Git LFS objects before local publication",
-        remote=publication_remote,
-    )
-    _ = run_git_cmd(
-        workspace,
-        ["remote", "add", PUBLICATION_LFS_REMOTE, publication_remote],
-    )
     try:
-        fetch_output = run_git_cmd(
+        _ = run_git_cmd(workspace, ["init", "--bare", str(validation_remote_path)])
+        validation_output = run_git_cmd(
             workspace,
-            ["lfs", "fetch", "--all", PUBLICATION_LFS_REMOTE],
+            ["push", validation_remote, f"{source_branch}:{publication_branch}", "--force"],
         )
     finally:
-        _ = run_git_cmd(workspace, ["remote", "remove", PUBLICATION_LFS_REMOTE])
+        shutil.rmtree(validation_remote_path, ignore_errors=True)
 
-    if fetch_output:
-        logger.info("Git LFS hydration output", output=fetch_output)
+    if validation_output:
+        logger.info("Local publication validation output", output=validation_output)
 
 
 def checkout_publication_branch_best_effort(
@@ -285,6 +350,7 @@ def rewrite_and_publish_local(
     current_branch_fn: Callable[[Path], str] = current_branch,
     ensure_upstream_merged_fn: Callable[[Path, str, str], None] = ensure_upstream_merged,
     workspace_has_changes_fn: Callable[[Path], bool] = workspace_has_changes,
+    discover_remotes_fn: Callable[[Path], dict[str, GitRemote]] = discover_remotes,
 ) -> RewriteResult | None:
     """Rewrite agent authorship in bounded range and publish to local handoff branch."""
 
@@ -380,9 +446,12 @@ def rewrite_and_publish_local(
         publish_to_local(
             workspace,
             repo_path,
+            run_paths.run_dir,
             target_branch,
             publication_branch,
+            upstream_anchor,
             run_git_cmd=run_git_cmd,
+            discover_remotes_fn=discover_remotes_fn,
         )
 
         if stash_created:

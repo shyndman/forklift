@@ -52,6 +52,7 @@ from .git import (
     GitRemote,
     ResolvedUpstreamTarget,
     current_branch,
+    discover_remotes,
     ensure_required_remotes,
     ensure_upstream_merged,
     fetch_remotes,
@@ -545,6 +546,7 @@ class Forklift(Command):
             current_branch_fn=current_branch,
             ensure_upstream_merged_fn=ensure_upstream_merged,
             workspace_has_changes_fn=self._workspace_has_changes,
+            discover_remotes_fn=discover_remotes,
         )
 
     def _assert_no_agent_commits(self, workspace: Path, rewrite_range: str) -> None:

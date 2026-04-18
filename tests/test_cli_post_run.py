@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from io import StringIO
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -224,7 +225,27 @@ class ForkliftPostRunTests(unittest.TestCase):
             root = Path(temp_dir)
             run_paths = self._make_run_paths(root)
             repo_path = root / "local-repo"
-            repo_path.mkdir()
+            _ = subprocess.run(
+                ["git", "init", str(repo_path)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            _ = subprocess.run(
+                ["git", "-C", str(repo_path), "remote", "add", "origin", "https://example.com/origin.git"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
+            _ = subprocess.run(
+                ["git", "-C", str(repo_path), "remote", "add", "upstream", "https://example.com/upstream.git"],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+            )
             (run_paths.workspace / ".git" / "lfs").mkdir(parents=True)
             forklift = ForkliftTestHarness()
 
@@ -254,6 +275,8 @@ class ForkliftPostRunTests(unittest.TestCase):
                     return ""
                 if args[:3] == ["lfs", "fetch", "--all"]:
                     return "fetched"
+                if args[:2] == ["init", "--bare"]:
+                    return "initialized"
                 if args[0] == "log":
                     return ""
                 if args[0] in {"push", "remote"}:
@@ -282,27 +305,63 @@ class ForkliftPostRunTests(unittest.TestCase):
                 (cast(Path, call.args[0]), cast(list[str], call.args[1]))
                 for call in run_git_mock.call_args_list
             ]
-            remote_add_index = command_sequence.index(
+            origin_remote_add_index = command_sequence.index(
                 (
                     run_paths.workspace,
                     [
                         "remote",
                         "add",
-                        "forklift-publication-source",
-                        repo_path.resolve().as_uri(),
+                        "forklift-publication-origin",
+                        "https://example.com/origin.git",
                     ],
                 )
             )
-            lfs_fetch_index = command_sequence.index(
+            origin_lfs_fetch_index = command_sequence.index(
                 (
                     run_paths.workspace,
-                    ["lfs", "fetch", "--all", "forklift-publication-source"],
+                    ["lfs", "fetch", "--all", "forklift-publication-origin", "main"],
                 )
             )
-            remote_remove_index = command_sequence.index(
+            origin_remote_remove_index = command_sequence.index(
                 (
                     run_paths.workspace,
-                    ["remote", "remove", "forklift-publication-source"],
+                    ["remote", "remove", "forklift-publication-origin"],
+                )
+            )
+            upstream_remote_add_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    [
+                        "remote",
+                        "add",
+                        "forklift-publication-upstream",
+                        "https://example.com/upstream.git",
+                    ],
+                )
+            )
+            upstream_lfs_fetch_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    ["lfs", "fetch", "--all", "forklift-publication-upstream", upstream_sha],
+                )
+            )
+            upstream_remote_remove_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    ["remote", "remove", "forklift-publication-upstream"],
+                )
+            )
+            validation_remote_path = run_paths.run_dir / "publication-validation.git"
+            validation_remote_init_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    ["init", "--bare", str(validation_remote_path)],
+                )
+            )
+            validation_push_index = command_sequence.index(
+                (
+                    run_paths.workspace,
+                    ["push", validation_remote_path.resolve().as_uri(), f"main:{publication_branch}", "--force"],
                 )
             )
             push_index = command_sequence.index(
@@ -311,9 +370,14 @@ class ForkliftPostRunTests(unittest.TestCase):
                     ["push", repo_path.resolve().as_uri(), f"main:{publication_branch}", "--force"],
                 )
             )
-            self.assertLess(remote_add_index, lfs_fetch_index)
-            self.assertLess(lfs_fetch_index, remote_remove_index)
-            self.assertLess(remote_remove_index, push_index)
+            self.assertLess(origin_remote_add_index, origin_lfs_fetch_index)
+            self.assertLess(origin_lfs_fetch_index, origin_remote_remove_index)
+            self.assertLess(origin_remote_remove_index, upstream_remote_add_index)
+            self.assertLess(upstream_remote_add_index, upstream_lfs_fetch_index)
+            self.assertLess(upstream_lfs_fetch_index, upstream_remote_remove_index)
+            self.assertLess(upstream_remote_remove_index, validation_remote_init_index)
+            self.assertLess(validation_remote_init_index, validation_push_index)
+            self.assertLess(validation_push_index, push_index)
 
     def test_rewrite_skips_when_head_matches_upstream_anchor(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
