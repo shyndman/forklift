@@ -76,6 +76,16 @@ log_tempdir_diagnostics() {
   done
 }
 
+configure_git_lfs_filters() {
+  if ! command -v git-lfs >/dev/null 2>&1; then
+    return 0
+  fi
+
+  log_client "Configuring Git LFS filters"
+  git lfs install --skip-repo >/dev/null
+  log_client "  git-lfs=$(git lfs version)"
+}
+
 # Execute optional bootstrap in workspace and gate agent launch on deterministic, clean outcomes.
 run_setup_command() {
   local setup_exit_code dirty_status

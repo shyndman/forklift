@@ -75,6 +75,7 @@ main() {
   git config --global user.email forklift@github.com
   log_client "  git user.name=$(git config --global user.name)"
   log_client "  git user.email=$(git config --global user.email)"
+  configure_git_lfs_filters
 
   HARNESS_PHASE=context
   if ! parse_fork_context; then

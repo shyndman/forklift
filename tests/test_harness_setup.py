@@ -334,6 +334,41 @@ run_setup_command
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
         self.assertIn("bootstrap-ok", setup_log)
 
+    def test_configure_git_lfs_filters_installs_global_filters_when_available(self) -> None:
+        bin_dir = self.root / "bin"
+        bin_dir.mkdir()
+        commands_log = self.harness_state / "git-lfs-commands.txt"
+        git_script = bin_dir / "git"
+        _ = git_script.write_text(
+            "#!/usr/bin/env bash\n"
+            "set -euo pipefail\n"
+            f"printf '%s\\n' \"$*\" >>{commands_log}\n"
+            "if [[ \"${1:-}\" == \"lfs\" && \"${2:-}\" == \"version\" ]]; then\n"
+            "  printf 'git-lfs/9.9.9\\n'\n"
+            "fi\n",
+            encoding="utf-8",
+        )
+        git_script.chmod(0o755)
+        git_lfs_script = bin_dir / "git-lfs"
+        _ = git_lfs_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+        git_lfs_script.chmod(0o755)
+
+        result = self._run_harness_shell(
+            f'''
+PATH="{bin_dir}:$PATH"
+configure_git_lfs_filters
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(
+            commands_log.read_text(encoding="utf-8").splitlines(),
+            ["lfs install --skip-repo", "lfs version"],
+        )
+        client_log = (self.harness_state / "opencode-client.log").read_text(encoding="utf-8")
+        self.assertIn("Configuring Git LFS filters", client_log)
+        self.assertIn("git-lfs=git-lfs/9.9.9", client_log)
+
     def test_parse_fork_context_fails_closed_on_malformed_front_matter(self) -> None:
         _ = (self.workspace / "FORK.md").write_text(
             "---\nsetup: echo hi\n## Mission\nNo closing delimiter\n",

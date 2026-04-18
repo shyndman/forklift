@@ -18,6 +18,7 @@ RUN --mount=type=cache,target=/var/lib/apt/lists,id=forklift-apt-lists,sharing=l
     apt-get update && \
     apt-get install -y --no-install-recommends \
     git \
+    git-lfs \
     build-essential \
     cmake \
     pkg-config \
@@ -61,6 +62,8 @@ RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi && \
     chown -R forklift:forklift /home/forklift/.local
 
 USER forklift
+
+RUN git lfs install --skip-repo
 
 # Install Node.js via n (LTS)
 RUN --mount=type=cache,target=/home/forklift/.npm,id=forklift-npm-cache,uid=1000,gid=1000 \
