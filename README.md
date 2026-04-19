@@ -57,6 +57,18 @@ uv run forklift changelog --main-branch=dev
 
 This runs entirely on the host with no container launch or history mutation. Requires Git 2.38+.
 
+### Fork-owned files
+
+List files that are absent from upstream and are generally safer places to make fork-specific changes:
+
+```bash
+uv run forklift files
+uv run forklift files --main-branch=dev
+uv run forklift files --hash
+```
+
+This command uses local refs only, ignores uncommitted files, and prints plain text output for easy piping or agent consumption.
+
 ## Configuration
 
 Create `~/.config/forklift/opencode.env` (mode `0600`):

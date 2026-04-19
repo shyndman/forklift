@@ -50,6 +50,14 @@ class MergeTreeResult:
     output: str
 
 
+@dataclass(frozen=True)
+class CurrentPathChange:
+    """Describe one git diff row using the current path name after rename/copy normalization."""
+
+    path: str
+    status: str
+
+
 def resolve_analysis_refs(repo_path: Path, main_branch: str) -> tuple[str, str]:
     """Resolve and validate branch refs used by deterministic changelog analysis."""
 
@@ -270,10 +278,10 @@ def parse_numstat_output(numstat_output: str) -> dict[str, tuple[int, int]]:
     return parsed
 
 
-def parse_name_status_output(name_status_output: str) -> dict[str, str]:
-    """Parse git diff --name-status rows into per-file status codes."""
+def parse_name_status_entries_output(name_status_output: str) -> list[CurrentPathChange]:
+    """Parse git diff --name-status rows into ordered current-path change entries."""
 
-    parsed: dict[str, str] = {}
+    parsed: list[CurrentPathChange] = []
     for raw_line in name_status_output.splitlines():
         line = raw_line.strip()
         if not line:
@@ -293,8 +301,17 @@ def parse_name_status_output(name_status_output: str) -> dict[str, str]:
         path = canonicalize_changed_path(path)
         if not path:
             continue
-        parsed[path] = status
+        parsed.append(CurrentPathChange(path=path, status=status))
     return parsed
+
+
+def parse_name_status_output(name_status_output: str) -> dict[str, str]:
+    """Parse git diff --name-status rows into per-file status codes."""
+
+    return {
+        item.path: item.status
+        for item in parse_name_status_entries_output(name_status_output)
+    }
 
 
 def build_changed_file_stats(
