@@ -30,6 +30,13 @@ from forklift.post_run_metrics import UsageSummary, render_usage_summary as real
 from forklift.run_manager import RunPaths
 
 
+HARNESS_COMPLETED_DURING_REBASE = (
+    "status=completed\n"
+    "phase=rebase\n"
+    "message=Initial rebase completed cleanly; agent launch skipped\n"
+)
+
+
 class CliRuntimeHelperTests(unittest.TestCase):
     def test_resolve_chown_target_defaults_gid_when_omitted(self) -> None:
         with patch("forklift.cli_runtime.default_host_ids", return_value=(123, 456)):
@@ -352,7 +359,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 stderr="",
                 container_name="forklift-test",
             ),
-            harness_status_content="status=completed\nphase=agent\nmessage=Agent completed successfully\n",
+            harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
         )
         self.assertIsNone(success_code)
         self.assertIn("Run complete: success", success_output)
@@ -378,7 +385,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 stderr="",
                 container_name="forklift-test",
             ),
-            harness_status_content="status=completed\nphase=agent\nmessage=Agent completed successfully\n",
+            harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
             timeout_seconds=37,
         )
 
@@ -395,7 +402,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 stderr="",
                 container_name="forklift-test",
             ),
-            harness_status_content="status=completed\nphase=agent\nmessage=Agent completed successfully\n",
+            harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
             env_timeout_seconds=425,
         )
 
@@ -412,7 +419,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 stderr="",
                 container_name="forklift-test",
             ),
-            harness_status_content="status=completed\nphase=agent\nmessage=Agent completed successfully\n",
+            harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
         )
 
         self.assertIsNone(exit_code)

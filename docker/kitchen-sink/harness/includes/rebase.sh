@@ -4,6 +4,7 @@
 REBASE_CONTINUE_CHECK_EXIT_CODE=0
 REBASE_CONTINUE_CHECK_STDOUT=""
 REBASE_CONTINUE_CHECK_STDERR=""
+INITIAL_REBASE_RESULT=""
 
 resolve_real_git_bin() {
   local resolved
@@ -56,6 +57,39 @@ capture_status_snapshot() {
 
 run_real_git() {
   "$REAL_GIT_BIN" "$@"
+}
+
+start_initial_rebase() {
+  local rebase_exit_code
+
+  INITIAL_REBASE_RESULT=""
+  emit_phase_message "rebase" "stdout" "Starting initial rebase onto $UPSTREAM_REF"
+  set +e
+  run_real_git -C "$WORKSPACE_DIR" rebase "$UPSTREAM_REF"
+  rebase_exit_code=$?
+  set -e
+
+  if [[ $rebase_exit_code -eq 0 ]]; then
+    if rebase_in_progress; then
+      INITIAL_REBASE_RESULT="failed"
+      emit_phase_message "rebase" "stderr" "Initial rebase reported success but left rebase state behind"
+      return 1
+    fi
+
+    INITIAL_REBASE_RESULT="completed"
+    emit_phase_message "rebase" "stdout" "Initial rebase completed cleanly"
+    return 0
+  fi
+
+  if rebase_in_progress; then
+    INITIAL_REBASE_RESULT="paused"
+    emit_phase_message "rebase" "stdout" "Initial rebase paused on conflicts"
+    return 0
+  fi
+
+  INITIAL_REBASE_RESULT="failed"
+  emit_phase_message "rebase" "stderr" "Initial rebase failed before entering a paused rebase state"
+  return 1
 }
 
 run_continue_check() {

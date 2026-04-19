@@ -20,22 +20,22 @@ upstream $upstream_ref branch and the fork's $branch_name branch.
 |- Working directory: $WORKSPACE_DIR (a git repository)
 |- Git remotes were stripped before the run; \`git remote -v\` will show nothing.
   Do not add new remotes. Forklift seeded \`refs/remotes/$upstream_ref\`
-  (helper branch \`$helper_branch\`) so \`git rebase $upstream_ref\` works without
-  extra setup.
+  (helper branch \`$helper_branch\`) before starting the rebase for you.
 |- $upstream_ref is at $upstream_sha ($upstream_date)
 |- local $branch_name is at $main_sha — use this as a reset point if the rebase goes
   badly wrong: \`git checkout $branch_name && git reset --hard $main_sha\`
 |- Use git to inspect history, branches, and conflicts
-|- Do not attempt to run tests or build the code; focus on the git operations and commit the final result.
+|- Forklift already started \`git rebase $upstream_ref\`. You are only here because it paused.
+|- Do not attempt to run tests or build the code; focus on finishing the paused rebase.
 
 == Task ==
-1. Run \`git rebase $upstream_ref\` on the local \`$branch_name\` branch only.
+1. Inspect the current paused rebase on the local \`$branch_name\` branch only.
    No other branches need attention.
 2. Resolve any conflicts. Your goal is to preserve the functionality of both $upstream_ref and $branch_name. If this seems impossible, write a STUCK.md as described below.
    Refer to the FORK.md if supplied to understand intentional fork customizations worth
    preserving.
-3. You MUST continue the rebase until it is complete. _Verify this!_
-4. Commit the result with a clear message describing the merge and any fixes.
+3. Continue the rebase with \`git rebase --continue\` until it is complete. If a commit becomes mechanically empty, use \`git rebase --skip\` only when that is the truthful outcome.
+4. Verify the rebase is finished and no rebase is still in progress. Do not create any extra final commit after the rebase completes.
 
 == If you get stuck ==
 Write STUCK.md at the root of $WORKSPACE_DIR describing what you tried, what
@@ -46,7 +46,7 @@ Write DONE.md at the root of $WORKSPACE_DIR summarizing the decisions you made:
 - Which conflicts you encountered and how you resolved them
 - What fork customizations you identified and preserved
 - What upstream changes you accepted and why
-- Any test failures you fixed and how
+- Any commits you skipped and why
 TXT
 }
 

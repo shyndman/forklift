@@ -125,6 +125,65 @@ export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING
         self.assertNotEqual(result.returncode, 0)
         self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
 
+    def _init_clean_rebase(self) -> None:
+        _ = subprocess.run(["git", "init", "-b", "main"], cwd=self.workspace, check=True)
+        _ = subprocess.run(
+            ["git", "config", "user.name", "Harness Test"],
+            cwd=self.workspace,
+            check=True,
+        )
+        _ = subprocess.run(
+            ["git", "config", "user.email", "harness-test@example.com"],
+            cwd=self.workspace,
+            check=True,
+        )
+
+        tracked = self.workspace / "tracked.txt"
+        _ = tracked.write_text("base\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "tracked.txt"], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "commit", "-m", "base"], cwd=self.workspace, check=True)
+        base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+
+        fork_only = self.workspace / "fork-only.txt"
+        _ = fork_only.write_text("fork\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "fork-only.txt"], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "commit", "-m", "fork change"], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "branch", "upstream/main", base_sha], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "checkout", "upstream/main"], cwd=self.workspace, check=True)
+        upstream_only = self.workspace / "upstream-only.txt"
+        _ = upstream_only.write_text("upstream\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "upstream-only.txt"], cwd=self.workspace, check=True)
+        _ = subprocess.run(
+            ["git", "commit", "-m", "upstream change"],
+            cwd=self.workspace,
+            check=True,
+        )
+        _ = subprocess.run(["git", "checkout", "main"], cwd=self.workspace, check=True)
+
+    def _init_main_repo_without_upstream(self) -> None:
+        _ = subprocess.run(["git", "init", "-b", "main"], cwd=self.workspace, check=True)
+        _ = subprocess.run(
+            ["git", "config", "user.name", "Harness Test"],
+            cwd=self.workspace,
+            check=True,
+        )
+        _ = subprocess.run(
+            ["git", "config", "user.email", "harness-test@example.com"],
+            cwd=self.workspace,
+            check=True,
+        )
+
+        tracked = self.workspace / "tracked.txt"
+        _ = tracked.write_text("base\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "tracked.txt"], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "commit", "-m", "base"], cwd=self.workspace, check=True)
+
     def test_parse_fork_context_without_front_matter_treats_whole_file_as_body(self) -> None:
         fork_file = self.workspace / "FORK.md"
         _ = fork_file.write_text("## Mission\nKeep behavior stable.\n", encoding="utf-8")
@@ -505,6 +564,96 @@ printf '%s' "$AGENT_PAYLOAD" >"$HARNESS_STATE_DIR/agent-payload.txt"
         self.assertNotIn("---", instructions)
         self.assertNotIn("---", fork_context)
         self.assertNotIn("---", payload)
+
+    def test_main_skips_agent_when_initial_rebase_completes_cleanly(self) -> None:
+        self._init_clean_rebase()
+
+        result = self._run_harness_shell(
+            f'''
+HOME="{self.root / "home"}"
+mkdir -p "$HOME"
+OPENCODE_VARIANT=default
+OPENCODE_AGENT=worker
+launch_agent() {{
+  printf 'called\n' >"$HARNESS_STATE_DIR/launch-agent.txt"
+  return 0
+}}
+main
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertFalse((self.harness_state / "launch-agent.txt").exists())
+        self.assertFalse((self.harness_state / "instructions.txt").exists())
+        status = (self.harness_state / "harness-status.txt").read_text(encoding="utf-8")
+        self.assertIn("status=completed", status)
+        self.assertIn("phase=rebase", status)
+        self.assertIn("agent launch skipped", status)
+        self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
+        self.assertEqual(
+            subprocess.run(
+                ["git", "merge-base", "--is-ancestor", "upstream/main", "main"],
+                cwd=self.workspace,
+                check=False,
+            ).returncode,
+            0,
+        )
+
+    def test_main_launches_agent_when_initial_rebase_pauses_on_conflicts(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            f'''
+HOME="{self.root / "home"}"
+mkdir -p "$HOME"
+OPENCODE_VARIANT=default
+OPENCODE_AGENT=worker
+launch_agent() {{
+  printf 'called\n' >"$HARNESS_STATE_DIR/launch-agent.txt"
+  return 0
+}}
+main
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertTrue((self.harness_state / "launch-agent.txt").exists())
+        instructions = (self.harness_state / "instructions.txt").read_text(encoding="utf-8")
+        self.assertIn("Forklift already started `git rebase upstream/main`", instructions)
+        self.assertIn("git rebase --continue", instructions)
+        self.assertNotIn("Run `git rebase upstream/main`", instructions)
+        client_log = (self.harness_state / "opencode-client.log").read_text(encoding="utf-8")
+        self.assertIn("[rebase] Initial rebase paused on conflicts", client_log)
+
+    def test_main_fails_closed_when_initial_rebase_hard_fails(self) -> None:
+        self._init_main_repo_without_upstream()
+
+        result = self._run_harness_shell(
+            f'''
+HOME="{self.root / "home"}"
+mkdir -p "$HOME"
+OPENCODE_VARIANT=default
+OPENCODE_AGENT=worker
+launch_agent() {{
+  printf 'called\n' >"$HARNESS_STATE_DIR/launch-agent.txt"
+  return 0
+}}
+main
+'''
+        )
+
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse((self.harness_state / "launch-agent.txt").exists())
+        self.assertFalse((self.harness_state / "instructions.txt").exists())
+        status = (self.harness_state / "harness-status.txt").read_text(encoding="utf-8")
+        self.assertIn("status=failed", status)
+        self.assertIn("phase=rebase", status)
+        self.assertIn("Initial rebase failed before agent launch", status)
+        client_log = (self.harness_state / "opencode-client.log").read_text(encoding="utf-8")
+        self.assertIn(
+            "[rebase] Initial rebase failed before entering a paused rebase state",
+            client_log,
+        )
 
     def test_git_wrapper_passes_through_normal_git_commands(self) -> None:
         self._init_workspace_repo()

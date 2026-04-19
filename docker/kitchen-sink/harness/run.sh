@@ -54,7 +54,7 @@ main() {
     fail_harness "OPENCODE_AGENT is required"
   fi
 
-  log_client "Agent Starting..."
+  log_client "Harness starting..."
   log_client "  WORKSPACE_DIR=$WORKSPACE_DIR"
   log_client "  HARNESS_STATE_DIR=$HARNESS_STATE_DIR"
   log_client "  INSTRUCTIONS_FILE=$INSTRUCTIONS_FILE"
@@ -71,7 +71,7 @@ main() {
   log_client "  FORKLIFT_MAIN_BRANCH=$MAIN_BRANCH"
   log_client "  FORKLIFT_RUN_ID=${FORKLIFT_RUN_ID:-unknown}"
 
-  log_client "Configuring Forklift Agent git identity"
+  log_client "Configuring Forklift git identity"
   git config --global user.name "Forklift Agent"
   git config --global user.email forklift@github.com
   log_client "  git user.name=$(git config --global user.name)"
@@ -96,13 +96,29 @@ main() {
     fail_harness "Setup command failed before agent launch"
   fi
 
-  write_instructions
-  build_agent_payload
-  HARNESS_PHASE=agent
-  if ! launch_agent; then
-    fail_harness "Agent run failed; inspect $CLIENT_LOG" "$HARNESS_PHASE"
+  HARNESS_PHASE=rebase
+  if ! start_initial_rebase; then
+    fail_harness "Initial rebase failed before agent launch" "$HARNESS_PHASE"
   fi
-  write_harness_status "completed" "$HARNESS_PHASE" "Agent completed successfully"
+
+  case "$INITIAL_REBASE_RESULT" in
+    completed)
+      write_harness_status "completed" "$HARNESS_PHASE" "Initial rebase completed cleanly; agent launch skipped"
+      return 0
+      ;;
+    paused)
+      write_instructions
+      build_agent_payload
+      HARNESS_PHASE=agent
+      if ! launch_agent; then
+        fail_harness "Agent run failed; inspect $CLIENT_LOG" "$HARNESS_PHASE"
+      fi
+      write_harness_status "completed" "$HARNESS_PHASE" "Agent completed successfully"
+      ;;
+    *)
+      fail_harness "Initial rebase returned unexpected outcome '$INITIAL_REBASE_RESULT'" "$HARNESS_PHASE"
+      ;;
+  esac
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
