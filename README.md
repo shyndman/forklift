@@ -102,7 +102,7 @@ OPENROUTER_API_KEY=...
 
 ## FORK.md
 
-Add a `FORK.md` to your repo root to give the agent context about your fork. See the [template](FORK.md) for format and examples.
+Add a `FORK.md` to your repo root to give the agent context about your fork. If the repo-root file is absent, Forklift falls back to `.agents/FORK.md`. See the [template](FORK.md) for format and examples.
 
 ### Front matter gates
 

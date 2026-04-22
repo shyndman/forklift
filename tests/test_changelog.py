@@ -106,6 +106,61 @@ class ChangelogForkMetadataTests(unittest.TestCase):
 
         self.assertEqual(excludes, ["data/big.json", "!data/keep.json"])
 
+    def test_load_exclusions_falls_back_to_agents_fork_md(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            agents_dir = repo / ".agents"
+            agents_dir.mkdir()
+            _ = (agents_dir / "FORK.md").write_text(
+                lines(
+                    "---",
+                    "changelog:",
+                    "  exclude:",
+                    "    - generated/**",
+                    "---",
+                    "## Mission",
+                    "Keep behavior stable.",
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            excludes = load_changelog_exclude_patterns(repo)
+
+        self.assertEqual(excludes, ["generated/**"])
+
+    def test_load_exclusions_prefers_repo_root_fork_md_over_agents_fallback(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir)
+            agents_dir = repo / ".agents"
+            agents_dir.mkdir()
+            _ = (repo / "FORK.md").write_text(
+                lines(
+                    "---",
+                    "changelog:",
+                    "  exclude:",
+                    "    - root-only/**",
+                    "---",
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            _ = (agents_dir / "FORK.md").write_text(
+                lines(
+                    "---",
+                    "changelog:",
+                    "  exclude:",
+                    "    - agents-only/**",
+                    "---",
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            excludes = load_changelog_exclude_patterns(repo)
+
+        self.assertEqual(excludes, ["root-only/**"])
+
     def test_load_exclusions_rejects_unknown_rebase_key(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)

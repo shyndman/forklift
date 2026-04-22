@@ -11,6 +11,7 @@ from pydantic_ai.usage import RunUsage
 import structlog
 from structlog.stdlib import BoundLogger
 
+from .fork_context import resolve_fork_context_path
 from .changelog_analysis import (
     ChangelogAnalysisError,
     build_evidence_bundle,
@@ -33,7 +34,6 @@ from .opencode_env import (
 from .post_run_metrics import UsageSummary, UsageTotals, render_usage_summary
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
-FORK_CONTEXT_FILENAME = "FORK.md"
 
 
 def _usage_detail(usage: RunUsage, *keys: str) -> int:
@@ -307,15 +307,15 @@ def _consume_changelog_front_matter(
 def load_changelog_exclude_patterns(repo_path: Path) -> list[str]:
     """Load repo-owned changelog exclusion rules from strict FORK.md front matter."""
 
-    fork_path = repo_path / FORK_CONTEXT_FILENAME
-    if not fork_path.exists():
+    fork_path = resolve_fork_context_path(repo_path)
+    if fork_path is None:
         return []
 
     try:
         content = fork_path.read_text(encoding="utf-8")
     except OSError as exc:
         raise ChangelogAnalysisError(
-            f"Unable to read FORK.md for changelog metadata: {exc}"
+            f"Unable to read fork context file {fork_path}: {exc}"
         ) from exc
 
     lines = content.splitlines()

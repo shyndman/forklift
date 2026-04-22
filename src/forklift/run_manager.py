@@ -15,6 +15,7 @@ from typing import cast
 import structlog
 from structlog.stdlib import BoundLogger
 
+from .fork_context import FORK_CONTEXT_CANDIDATES, resolve_fork_context_path
 from .run_state import initialize_run_state
 
 CONTAINER_UID = 1000
@@ -259,13 +260,16 @@ class RunDirectoryManager:
         )
 
     def _overlay_fork_context(self, source_repo: Path, workspace: Path) -> None:
-        fork_file = source_repo / "FORK.md"
-        if not fork_file.exists():
-            logger.debug("No FORK.md found", path=fork_file)
+        fork_file = resolve_fork_context_path(source_repo)
+        if fork_file is None:
+            logger.debug(
+                "No FORK.md found",
+                searched_paths=[str(source_repo / path) for path in FORK_CONTEXT_CANDIDATES],
+            )
             return
         destination = workspace / "FORK.md"
         _ = shutil.copy2(fork_file, destination)
-        logger.debug("Copied FORK.md", destination=destination)
+        logger.debug("Copied FORK.md", source=fork_file, destination=destination)
 
     def _capture_branch_info(
         self, source_repo: Path, main_branch: str

@@ -4,15 +4,23 @@
 TBD - created by archiving change excludes-from-changelog. Update Purpose after archive.
 ## Requirements
 ### Requirement: Changelog exclusions are configurable in FORK metadata
-`forklift changelog` SHALL load optional exclusion rules from `FORK.md` front matter at key path `changelog.exclude` when present. The value MUST be an ordered list of non-empty string patterns.
+`forklift changelog` SHALL load optional exclusion rules from fork-context front matter at key path `changelog.exclude` when present. The command SHALL resolve the fork-context file from repo-root `FORK.md` first and `.agents/FORK.md` second. The value MUST be an ordered list of non-empty string patterns.
 
 #### Scenario: Exclusion rules are present
 - **WHEN** `FORK.md` includes `changelog.exclude` with one or more string patterns
 - **THEN** changelog analysis uses those patterns as the active exclusion rule set in declared order
 
 #### Scenario: Exclusion rules are absent
-- **WHEN** `FORK.md` is missing or has no `changelog.exclude` metadata
+- **WHEN** both `FORK.md` and `.agents/FORK.md` are missing, or the selected file has no `changelog.exclude` metadata
 - **THEN** changelog analysis runs with an empty exclusion rule set
+
+#### Scenario: Fallback fork context contributes exclusions
+- **WHEN** repo-root `FORK.md` is absent and `.agents/FORK.md` includes `changelog.exclude`
+- **THEN** changelog analysis uses the fallback file's exclusion rules
+
+#### Scenario: Repo-root fork context wins precedence
+- **WHEN** both repo-root `FORK.md` and `.agents/FORK.md` include `changelog.exclude`
+- **THEN** changelog analysis uses the repo-root file's rules and ignores the fallback file
 
 ### Requirement: Exclusion matching uses gitignore-style ordered semantics
 The changelog exclusion engine SHALL evaluate repo-relative paths using gitignore-style pattern behavior with ordered rules, `!` negation, and last-match-wins resolution.

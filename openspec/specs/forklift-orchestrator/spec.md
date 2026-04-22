@@ -4,12 +4,20 @@
 TBD - created by archiving change forklift-v0. Update Purpose after archive.
 ## Requirements
 ### Requirement: Run directory preparation
-The host orchestrator SHALL, for invocations that require integration work, create a new run directory at `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>` (defaults to `~/.local/state/forklift/runs/<project>_<YYYYMMDD_HHMMSS>`) containing a duplicated workspace copy of the current fork along with empty `harness-state` and metadata files. The duplicated workspace MUST have all Git remotes removed before being handed to the agent container. If the selected upstream target is already reachable from the configured main branch, the orchestrator SHALL exit successfully before run-directory creation. Read-only commands such as `forklift changelog` MUST NOT call run-directory preparation, run-state lifecycle updates, container launch, or post-run publication helpers.
+The host orchestrator SHALL, for invocations that require integration work, create a new run directory at `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>` (defaults to `~/.local/state/forklift/runs/<project>_<YYYYMMDD_HHMMSS>`) containing a duplicated workspace copy of the current fork along with empty `harness-state` and metadata files. When repo-owned fork context exists, the orchestrator SHALL resolve it from repo-root `FORK.md` first and `.agents/FORK.md` second, then copy the selected file into the duplicated workspace as `FORK.md`. The duplicated workspace MUST have all Git remotes removed before being handed to the agent container. If the selected upstream target is already reachable from the configured main branch, the orchestrator SHALL exit successfully before run-directory creation. Read-only commands such as `forklift changelog` MUST NOT call run-directory preparation, run-state lifecycle updates, container launch, or post-run publication helpers.
 
 #### Scenario: Fresh run setup
 - **WHEN** the user runs `forklift` inside a repository whose `origin` and `upstream` remotes resolve successfully and the selected upstream target is not yet an ancestor of the configured main branch
 - **THEN** the orchestrator creates `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>/workspace` (or `~/.local/state/forklift/runs/<project>_<timestamp>/workspace`) populated with the fork contents and no Git remotes, alongside sibling `harness-state` and metadata locations
 - **AND** metadata for the run records the selected target policy and resolved target SHA
+
+#### Scenario: Fallback fork context path is used
+- **WHEN** repo-root `FORK.md` is absent and `.agents/FORK.md` exists
+- **THEN** the orchestrator copies `.agents/FORK.md` into the duplicated workspace as `FORK.md`
+
+#### Scenario: Repo-root fork context wins precedence
+- **WHEN** both repo-root `FORK.md` and `.agents/FORK.md` exist
+- **THEN** the orchestrator selects the repo-root `FORK.md` and ignores the fallback file for that run
 
 #### Scenario: No-op integration short-circuit
 - **WHEN** the selected upstream target is already reachable from the configured main branch before orchestration begins

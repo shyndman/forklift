@@ -14,7 +14,7 @@
 - `src/forklift/` – Python package housing the CLI (`cli.py`), Git helpers (`git.py`), run directory preparation (`run_manager.py`), container launcher (`container_runner.py`), and package entry (`__init__.py`).
 - `docker/kitchen-sink/` – Dockerfile plus harness script that define the Ubuntu 24.04 sandbox with Git/build-essential, Node via `n`, Bun, Rust, jq, ripgrep, fd, tree, and `/opt/forklift/harness/run.sh`.
 - `openspec/changes/forklift-v0/` – Proposal, specs, and artifacts documenting host-orchestrator and sandbox requirements, docker build logs, and harness transcripts.
-- `FORK.md` – Template at repo root copied into every workspace so agents know mission themes, tests to run, risky areas, and contacts.
+- `FORK.md` – Fork context resolved from repo-root `FORK.md` or fallback `.agents/FORK.md`, then copied into every workspace so agents know mission themes, tests to run, risky areas, and contacts.
 - `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>/` (defaults to `~/.local/state/forklift/runs/...` and created at runtime) – Contains `workspace/`, `harness-state`, and `metadata.json`; inspect when debugging runs.
 
 ## Version Control
