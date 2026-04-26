@@ -69,6 +69,17 @@ uv run forklift files --hash
 
 This command uses local refs only, ignores uncommitted files, and prints plain text output for easy piping or agent consumption.
 
+### First divergent commit
+
+Print the first commit that exists on your fork branch but not on upstream:
+
+```bash
+uv run forklift first
+uv run forklift first --main-branch=dev
+```
+
+This command uses local refs only, prints the full SHA of the earliest fork-only commit, and exits non-zero when no fork-only commits exist.
+
 ## Configuration
 
 Create `~/.config/forklift/opencode.env` (mode `0600`):
