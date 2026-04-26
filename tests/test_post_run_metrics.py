@@ -262,9 +262,9 @@ class RenderUsageSummaryTests(unittest.TestCase):
             "Total tokens",
             "Wall clock",
             "Tool calls",
-            "Conflicting commits",
             "↳ read",
             "↳ write",
+            "Conflicting commits",
             "Total cost",
         ]
         positions = [output.index(label) for label in expected_rows]

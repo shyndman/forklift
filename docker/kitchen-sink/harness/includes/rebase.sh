@@ -83,6 +83,7 @@ start_initial_rebase() {
 
   if rebase_in_progress; then
     INITIAL_REBASE_RESULT="paused"
+    record_current_conflicting_commit
     emit_phase_message "rebase" "stdout" "Initial rebase paused on conflicts"
     return 0
   fi

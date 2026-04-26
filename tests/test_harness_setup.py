@@ -601,6 +601,20 @@ main
 
     def test_main_launches_agent_when_initial_rebase_pauses_on_conflicts(self) -> None:
         self._init_conflicting_rebase()
+        expected_sha = subprocess.run(
+            ["git", "rev-parse", "REBASE_HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        expected_subject = subprocess.run(
+            ["git", "show", "-s", "--format=%s", "REBASE_HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
 
         result = self._run_harness_shell(
             f'''
@@ -623,7 +637,15 @@ main
         self.assertIn("git rebase --continue", instructions)
         self.assertNotIn("Run `git rebase upstream/main`", instructions)
         client_log = (self.harness_state / "opencode-client.log").read_text(encoding="utf-8")
+        self.assertIn(
+            f"[rebase] Recorded conflicting commit for {expected_sha} {expected_subject}",
+            client_log,
+        )
         self.assertIn("[rebase] Initial rebase paused on conflicts", client_log)
+        self.assertEqual(
+            (self.harness_state / "rebase-conflicting-commits.json").read_text(encoding="utf-8"),
+            f"[\n  {{\n    \"sha\": \"{expected_sha}\",\n    \"subject\": \"{expected_subject}\"\n  }}\n]\n",
+        )
 
     def test_main_fails_closed_when_initial_rebase_hard_fails(self) -> None:
         self._init_main_repo_without_upstream()

@@ -300,15 +300,15 @@ def _build_usage_table(totals: UsageTotals) -> Table:
     table.add_row("Total tokens", Text(_format_tokens(totals.total_tokens), style=USAGE_TOKEN_VALUE_STYLE))
     table.add_row("Wall clock", Text(_format_duration(totals.wall_clock_ms), style=USAGE_TOKEN_VALUE_STYLE))
     table.add_row("Tool calls", Text(_format_tokens(totals.tool_calls), style=USAGE_TOKEN_VALUE_STYLE))
-    table.add_row(
-        "Conflicting commits",
-        Text(_format_tokens(totals.conflicting_commits), style=USAGE_TOKEN_VALUE_STYLE),
-    )
     for tool_total in totals.tool_breakdown:
         table.add_row(
             f"    ↳ {tool_total.tool}",
             Text(_format_tokens(tool_total.calls), style=USAGE_LABEL_STYLE),
         )
+    table.add_row(
+        "Conflicting commits",
+        Text(_format_tokens(totals.conflicting_commits), style=USAGE_TOKEN_VALUE_STYLE),
+    )
     table.add_row("Total cost", Text(_format_cost(totals.total_cost), style=USAGE_COST_VALUE_STYLE))
     return table
 
