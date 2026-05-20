@@ -8,7 +8,7 @@ import json
 import os
 from typing import cast
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, AgentRunResult
 from pydantic_ai.exceptions import (
     AgentRunError,
     ModelAPIError,
@@ -26,7 +26,6 @@ from .changelog_models import (
     UpstreamNarrativeSections,
 )
 from .opencode_env import OpenCodeEnv
-
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
@@ -274,8 +273,8 @@ async def _run_markdown_generation(
     model_name = resolve_agent_model(env)
     try:
         with provider_env_from_opencode(env):
-            agent = Agent(model_name, system_prompt=system_prompt)
-            result = await agent.run(prompt)
+            agent: Agent[None, str] = Agent(model_name, system_prompt=system_prompt)
+            result: AgentRunResult[str] = await agent.run(prompt)
     except UserError as exc:
         raise ChangelogLlmError(f"Changelog model configuration error: {exc}") from exc
     except ModelHTTPError as exc:
@@ -304,9 +303,15 @@ async def _run_markdown_generation(
             model=model_name,
             error=str(exc),
         )
+    usage_attr = cast(object, result.usage)
+    raw_usage = usage_attr() if callable(usage_attr) else usage_attr
+    if not isinstance(raw_usage, RunUsage):
+        raise ChangelogLlmError(
+            f"Changelog model returned unexpected usage payload type: {type(raw_usage).__name__}"
+        )
     return _MarkdownGenerationResult(
         markdown=output,
-        usage=result.usage(),
+        usage=raw_usage,
         estimated_cost=estimated_cost,
     )
 
