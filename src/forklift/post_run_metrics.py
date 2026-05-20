@@ -61,18 +61,34 @@ class UsageSummary:
     available: bool
     totals: UsageTotals | None
     reason_unavailable: str | None
+    post_table_notice: str | None = None
 
     @classmethod
-    def from_totals(cls, totals: UsageTotals) -> UsageSummary:
+    def from_totals(
+        cls,
+        totals: UsageTotals,
+        *,
+        post_table_notice: str | None = None,
+    ) -> UsageSummary:
         """Build an available summary for callers that computed totals."""
 
-        return cls(available=True, totals=totals, reason_unavailable=None)
+        return cls(
+            available=True,
+            totals=totals,
+            reason_unavailable=None,
+            post_table_notice=post_table_notice,
+        )
 
     @classmethod
     def unavailable(cls, reason: str) -> UsageSummary:
         """Build an unavailable summary with a user-facing reason."""
 
-        return cls(available=False, totals=None, reason_unavailable=reason)
+        return cls(
+            available=False,
+            totals=None,
+            reason_unavailable=reason,
+            post_table_notice=None,
+        )
 
 
 def parse_usage_summary(log_path: Path, *, harness_state: Path) -> UsageSummary:
@@ -103,7 +119,16 @@ def render_usage_summary(
         active_console.print(f"Reason: {reason}", markup=False)
         return
 
-    active_console.print(Align.center(_build_usage_table(summary.totals)))
+    show_total_cost = not (
+        summary.post_table_notice is not None and summary.totals.total_cost is None
+    )
+    active_console.print(
+        Align.center(
+            _build_usage_table(summary.totals, show_total_cost=show_total_cost)
+        )
+    )
+    if summary.post_table_notice is not None:
+        active_console.print(summary.post_table_notice, markup=False)
 
 
 def render_completion_report(
@@ -280,7 +305,7 @@ def _cache_read_tokens(tokens: dict[str, object]) -> int:
     return _token_value(cache, "read")
 
 
-def _build_usage_table(totals: UsageTotals) -> Table:
+def _build_usage_table(totals: UsageTotals, *, show_total_cost: bool) -> Table:
     table = Table(
         box=box.ROUNDED,
         width=USAGE_TABLE_WIDTH,
@@ -309,7 +334,8 @@ def _build_usage_table(totals: UsageTotals) -> Table:
         "Conflicting commits",
         Text(_format_tokens(totals.conflicting_commits), style=USAGE_TOKEN_VALUE_STYLE),
     )
-    table.add_row("Total cost", Text(_format_cost(totals.total_cost), style=USAGE_COST_VALUE_STYLE))
+    if show_total_cost:
+        table.add_row("Total cost", Text(_format_cost(totals.total_cost), style=USAGE_COST_VALUE_STYLE))
     return table
 
 

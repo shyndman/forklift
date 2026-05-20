@@ -35,6 +35,8 @@ from .post_run_metrics import UsageSummary, UsageTotals, render_usage_summary
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
+CHANGELOG_PRICING_UNAVAILABLE_NOTICE = "Pricing information could not be shown"
+
 
 def _usage_detail(usage: RunUsage, *keys: str) -> int:
     """Read provider-specific usage detail counters with a deterministic fallback."""
@@ -71,7 +73,13 @@ def build_changelog_usage_summary(
         conflicting_commits=0,
         tool_breakdown=(),
     )
-    return UsageSummary.from_totals(totals)
+    post_table_notice = (
+        CHANGELOG_PRICING_UNAVAILABLE_NOTICE if estimated_cost is None else None
+    )
+    return UsageSummary.from_totals(
+        totals,
+        post_table_notice=post_table_notice,
+    )
 
 
 def combine_run_usages(usages: list[RunUsage]) -> RunUsage:

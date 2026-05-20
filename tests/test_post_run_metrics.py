@@ -329,6 +329,35 @@ class RenderUsageSummaryTests(unittest.TestCase):
 
         self.assertIn("$0.0001875", output)
 
+    def test_omits_total_cost_row_and_prints_notice_when_requested(self) -> None:
+        rendered = StringIO()
+        render_usage_summary(
+            "changelog",
+            UsageSummary.from_totals(
+                UsageTotals(
+                    input_tokens=9,
+                    output_tokens=61,
+                    reasoning_tokens=60,
+                    cache_read_tokens=0,
+                    total_tokens=70,
+                    total_cost=None,
+                    wall_clock_ms=321,
+                    tool_calls=0,
+                    conflicting_commits=0,
+                    tool_breakdown=(),
+                ),
+                post_table_notice="Pricing information could not be shown",
+            ),
+            console=self._console(rendered),
+        )
+        output = rendered.getvalue()
+
+        self.assertIn("Run complete: changelog", output)
+        self.assertIn("Grand total", output)
+        self.assertIn("Total tokens", output)
+        self.assertNotIn("Total cost", output)
+        self.assertIn("Pricing information could not be shown", output)
+
         unavailable = StringIO()
         render_usage_summary(
             "failure",

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Generator
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 import json
 import os
+from typing import cast
 
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import (
@@ -15,6 +16,8 @@ from pydantic_ai.exceptions import (
     UserError,
 )
 from pydantic_ai.usage import RunUsage
+import structlog
+from structlog.stdlib import BoundLogger
 
 from .changelog_models import (
     ConflictReviewSections,
@@ -23,6 +26,9 @@ from .changelog_models import (
     UpstreamNarrativeSections,
 )
 from .opencode_env import OpenCodeEnv
+
+
+logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
 
 class ChangelogLlmError(RuntimeError):
@@ -167,7 +173,7 @@ def resolve_agent_model(env: OpenCodeEnv) -> str:
 
 
 @contextmanager
-def provider_env_from_opencode(env: OpenCodeEnv) -> Iterator[None]:
+def provider_env_from_opencode(env: OpenCodeEnv) -> Generator[None, None, None]:
     """Temporarily bridge OpenCode provider keys into env vars expected by pydantic-ai."""
 
     sentinel = object()
@@ -204,6 +210,7 @@ async def generate_upstream_narrative(
     call_result = await _run_markdown_generation(
         prompt=build_upstream_narrative_prompt(evidence),
         system_prompt=UPSTREAM_NARRATIVE_SYSTEM_PROMPT,
+        operation="upstream narrative",
         env=env,
     )
     sections = _extract_section_bodies(
@@ -229,6 +236,7 @@ async def generate_conflict_review(
     call_result = await _run_markdown_generation(
         prompt=build_conflict_review_prompt(evidence),
         system_prompt=CONFLICT_REVIEW_SYSTEM_PROMPT,
+        operation="conflict review",
         env=env,
     )
     sections = _extract_section_bodies(
@@ -258,6 +266,7 @@ async def _run_markdown_generation(
     *,
     prompt: str,
     system_prompt: str,
+    operation: str,
     env: OpenCodeEnv,
 ) -> _MarkdownGenerationResult:
     """Run one pydantic-ai markdown generation call with shared env and error handling."""
@@ -285,10 +294,16 @@ async def _run_markdown_generation(
     output = result.output.strip()
     if not output:
         raise ChangelogLlmError("Changelog model returned empty markdown output.")
+    estimated_cost: Decimal | None = None
     try:
         estimated_cost = result.response.cost().total_price
     except LookupError as exc:
-        raise ChangelogLlmError(f"Unable to estimate changelog model cost: {exc}") from exc
+        logger.warning(
+            "Unable to estimate changelog model cost",
+            operation=operation,
+            model=model_name,
+            error=str(exc),
+        )
     return _MarkdownGenerationResult(
         markdown=output,
         usage=result.usage(),

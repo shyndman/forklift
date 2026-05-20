@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, Mock, patch
 from pydantic_ai.usage import RunUsage
 
 from forklift.changelog import (
+    CHANGELOG_PRICING_UNAVAILABLE_NOTICE,
     Changelog,
     build_changelog_usage_summary,
     load_changelog_exclude_patterns,
@@ -483,6 +484,21 @@ class ChangelogLlmTests(unittest.TestCase):
         self.assertEqual(summary.totals.wall_clock_ms, 4_321)
         self.assertEqual(summary.totals.tool_calls, 2)
         self.assertEqual(summary.totals.total_cost, Decimal("0.0001875"))
+        self.assertIsNone(summary.post_table_notice)
+
+    def test_build_changelog_usage_summary_adds_notice_when_cost_missing(self) -> None:
+        summary = build_changelog_usage_summary(
+            RunUsage(input_tokens=2, output_tokens=3, tool_calls=1),
+            wall_clock_ms=123,
+            estimated_cost=None,
+        )
+
+        assert summary.totals is not None
+        self.assertIsNone(summary.totals.total_cost)
+        self.assertEqual(
+            summary.post_table_notice,
+            CHANGELOG_PRICING_UNAVAILABLE_NOTICE,
+        )
 
     def test_upstream_prompt_contract_bans_conflict_sections(self) -> None:
         self.assertIn("## Summary", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
@@ -513,7 +529,7 @@ class ChangelogLlmTests(unittest.TestCase):
         self.assertIn("Do not leave unexplained labels", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
         self.assertIn("Do not leave unexplained labels", CONFLICT_REVIEW_SYSTEM_PROMPT)
 
-    def test_generate_conflict_review_wraps_cost_lookup_failures(self) -> None:
+    def test_generate_conflict_review_allows_missing_cost_lookup(self) -> None:
         env = OpenCodeEnv(
             api_key="opencode",
             model="google/gemini-3-flash-preview",
@@ -544,11 +560,24 @@ class ChangelogLlmTests(unittest.TestCase):
                 )
 
         with patch.dict(os.environ, {}, clear=True):
-            with patch("forklift.changelog_llm.Agent", FakeAgent):
-                with self.assertRaises(ChangelogLlmError) as ctx:
-                    _ = asyncio.run(generate_conflict_review(self._sample_evidence(), env))
+            with (
+                patch("forklift.changelog_llm.Agent", FakeAgent),
+                patch("forklift.changelog_llm.logger.warning") as warning_mock,
+            ):
+                output = asyncio.run(generate_conflict_review(self._sample_evidence(), env))
 
-        self.assertIn("Unable to estimate changelog model cost", str(ctx.exception))
+        self.assertEqual(
+            output.sections.conflict_pair_evaluations_markdown,
+            "insufficient evidence",
+        )
+        self.assertEqual(output.sections.risk_and_review_notes_markdown, "Review carefully.")
+        self.assertIsNone(output.estimated_cost)
+        warning_mock.assert_called_once_with(
+            "Unable to estimate changelog model cost",
+            operation="conflict review",
+            model="google-gla:gemini-3-flash-preview",
+            error="missing price",
+        )
 
 
 class ChangelogRendererTests(unittest.TestCase):
@@ -1137,6 +1166,88 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage_summary.totals.reasoning_tokens, 60)
         self.assertEqual(usage_summary.totals.cache_read_tokens, 24)
         self.assertEqual(usage_summary.totals.total_cost, Decimal("0.0004000"))
+        self.assertIsNone(usage_summary.post_table_notice)
+
+    async def test_missing_pricing_still_renders_changelog_and_carries_notice(self) -> None:
+        command = Changelog(main_branch="main")
+        captured: dict[str, object] = {}
+
+        def _capture_markdown(markdown: str) -> None:
+            captured["markdown"] = markdown
+
+        def _capture_usage_summary(outcome: str, summary: object) -> None:
+            captured["usage_outcome"] = outcome
+            captured["usage_summary"] = summary
+
+        with (
+            self._patch_env(command),
+            patch(
+                "forklift.changelog.build_evidence_bundle",
+                return_value=self._sample_evidence(),
+            ),
+            patch(
+                "forklift.changelog.build_upstream_narrative_evidence",
+                return_value=build_upstream_narrative_evidence(self._sample_evidence()),
+            ),
+            patch(
+                "forklift.changelog.generate_upstream_narrative",
+                new=AsyncMock(
+                    return_value=UpstreamNarrativeResult(
+                        sections=UpstreamNarrativeSections(
+                            summary_markdown="Main branch diverges from upstream.",
+                            key_change_arcs_markdown="- Refactors in src/.",
+                        ),
+                        usage=RunUsage(
+                            input_tokens=300,
+                            output_tokens=120,
+                            cache_read_tokens=15,
+                            details={"thoughts_tokens": 44},
+                            tool_calls=0,
+                        ),
+                        estimated_cost=None,
+                    )
+                ),
+            ),
+            patch(
+                "forklift.changelog.generate_conflict_review",
+                new=AsyncMock(
+                    return_value=ConflictReviewResult(
+                        sections=ConflictReviewSections(
+                            conflict_pair_evaluations_markdown="### `src/conflict.py`\n- Fork-side intent: Review carefully.",
+                            risk_and_review_notes_markdown="- Check parser edge cases.",
+                        ),
+                        usage=RunUsage(
+                            input_tokens=210,
+                            output_tokens=90,
+                            cache_read_tokens=9,
+                            details={"thoughts_tokens": 16},
+                            tool_calls=0,
+                        ),
+                        estimated_cost=None,
+                    )
+                ),
+            ),
+            patch(
+                "forklift.changelog.render_changelog_terminal",
+                side_effect=_capture_markdown,
+            ),
+            patch(
+                "forklift.changelog.render_usage_summary",
+                side_effect=_capture_usage_summary,
+            ),
+        ):
+            await command.run()
+
+        output = cast(str, captured["markdown"])
+        self._assert_markdown_sections(output)
+        self.assertEqual(captured["usage_outcome"], "changelog")
+        usage_summary = cast(UsageSummary, captured["usage_summary"])
+        assert usage_summary.totals is not None
+        self.assertIsNone(usage_summary.totals.total_cost)
+        self.assertEqual(
+            usage_summary.post_table_notice,
+            CHANGELOG_PRICING_UNAVAILABLE_NOTICE,
+        )
 
     async def test_upstream_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
         command = Changelog(main_branch="main")
