@@ -26,6 +26,9 @@ build-backend = "uv_build"
 [tool.basedpyright]
 typeCheckingMode = "recommended"
 
+[tool.uv.sources]
+genai-prices = { git = "https://github.com/pydantic/genai-prices", subdirectory = "packages/python/" }
+
 [dependency-groups]
 dev = [
     "basedpyright>=1.38.0",
