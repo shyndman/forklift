@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
 from contextlib import ExitStack
 from io import StringIO
 from pathlib import Path
@@ -23,7 +24,7 @@ from forklift.cli_runtime import (
     resolved_timeout_seconds,
     resolved_target_policy,
 )
-from forklift.container_runner import ContainerRunResult
+from forklift.container_runner import ContainerRunResult, RebaseEvent
 from forklift.git import ResolvedUpstreamTarget
 from forklift.opencode_env import OpenCodeEnv
 from forklift.post_run_metrics import UsageSummary, render_usage_summary as real_render_usage_summary
@@ -129,14 +130,17 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
         opencode_logs = run_dir / "opencode-logs"
+        control_dir = run_dir / "control"
         workspace.mkdir(parents=True, exist_ok=True)
         harness_state.mkdir(parents=True, exist_ok=True)
         opencode_logs.mkdir(parents=True, exist_ok=True)
+        control_dir.mkdir(parents=True, exist_ok=True)
         return RunPaths(
             run_dir=run_dir,
             workspace=workspace,
             harness_state=harness_state,
             opencode_logs=opencode_logs,
+            control_dir=control_dir,
             run_id="R123",
         )
 
@@ -144,6 +148,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self,
         *,
         container_result: ContainerRunResult,
+        container_events: list[RebaseEvent] | None = None,
         post_run_side_effect: Exception | None = None,
         monitor_logger_after_footer: bool = False,
         timeout_seconds: int | None = None,
@@ -182,15 +187,29 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
             class _ContainerRunnerStub:
                 _result: ContainerRunResult
+                _events: list[RebaseEvent]
                 timeout_seconds: int
 
-                def __init__(self, result: ContainerRunResult, timeout: int | None) -> None:
+                def __init__(
+                    self,
+                    result: ContainerRunResult,
+                    timeout: int | None,
+                    events: list[RebaseEvent] | None,
+                ) -> None:
                     self._result = result
+                    self._events = list(events or [])
                     self.timeout_seconds = (
                         timeout if timeout is not None else DEFAULT_RUN_TIMEOUT_SECONDS
                     )
 
                 def run(self, *_args: object, **_kwargs: object) -> ContainerRunResult:
+                    event_callback = cast(
+                        Callable[[RebaseEvent], None] | None,
+                        _kwargs.get("event_callback"),
+                    )
+                    if event_callback is not None:
+                        for event in self._events:
+                            event_callback(event)
                     return self._result
 
             forklift = Forklift()
@@ -286,6 +305,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 container_runner_cls.return_value = _ContainerRunnerStub(
                     container_result,
                     effective_timeout,
+                    container_events,
                 )
                 _ = stack.enter_context(
                     patch(
@@ -493,6 +513,110 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Run complete: failure", output)
         self.assertTrue(logger_events)
         self.assertFalse(any(after_footer for _, after_footer in logger_events))
+
+    async def test_rebase_events_render_front_loaded_ordinals(self) -> None:
+        captured: list[tuple[str, str, dict[str, object]]] = []
+
+        def record(level: str):
+            def _record(message: str, **kwargs: object) -> None:
+                captured.append((level, message, dict(kwargs)))
+
+            return _record
+
+        with (
+            patch("forklift.cli.logger.info", side_effect=record("info")),
+            patch("forklift.cli.logger.warning", side_effect=record("warning")),
+        ):
+            _, exit_code, _, _ = await self._run_cli(
+                container_result=ContainerRunResult(
+                    exit_code=0,
+                    timed_out=False,
+                    stdout="",
+                    stderr="",
+                    container_name="forklift-test",
+                ),
+                container_events=[
+                    RebaseEvent(
+                        event="progress",
+                        step=5,
+                        total=31,
+                        sha="abc123",
+                        subject="Rename auth middleware",
+                    ),
+                    RebaseEvent(
+                        event="conflict",
+                        step=5,
+                        total=31,
+                        sha="abc123",
+                        subject="Rename auth middleware",
+                        files=("src/auth.py", "tests/test_auth.py"),
+                    ),
+                    RebaseEvent(event="complete", step=31, total=31),
+                ],
+                harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
+            )
+
+        self.assertIsNone(exit_code)
+        self.assertIn(
+            (
+                "info",
+                "Rebase 5/31",
+                {
+                    "step": 5,
+                    "total": 31,
+                    "sha": "abc123",
+                    "subject": "Rename auth middleware",
+                },
+            ),
+            captured,
+        )
+        self.assertIn(
+            (
+                "warning",
+                "Conflict 5/31",
+                {
+                    "step": 5,
+                    "total": 31,
+                    "sha": "abc123",
+                    "subject": "Rename auth middleware",
+                    "files": "src/auth.py, tests/test_auth.py",
+                    "conflict_files": 2,
+                },
+            ),
+            captured,
+        )
+        self.assertIn(
+            ("info", "Rebase complete", {"step": 31, "total": 31}),
+            captured,
+        )
+
+    async def test_cli_degrades_cleanly_when_no_rebase_events_arrive(self) -> None:
+        captured: list[tuple[str, str]] = []
+
+        def record(level: str):
+            def _record(message: str, **_kwargs: object) -> None:
+                captured.append((level, message))
+
+            return _record
+
+        with (
+            patch("forklift.cli.logger.info", side_effect=record("info")),
+            patch("forklift.cli.logger.warning", side_effect=record("warning")),
+        ):
+            _, exit_code, _, _ = await self._run_cli(
+                container_result=ContainerRunResult(
+                    exit_code=0,
+                    timed_out=False,
+                    stdout="",
+                    stderr="",
+                    container_name="forklift-test",
+                ),
+                harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
+            )
+
+        self.assertIsNone(exit_code)
+        self.assertFalse(any(message.startswith("Rebase ") for _, message in captured))
+        self.assertFalse(any(message.startswith("Conflict ") for _, message in captured))
 
 
 if __name__ == "__main__":

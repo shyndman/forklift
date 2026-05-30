@@ -47,7 +47,7 @@ from .changelog import Changelog
 from .first_command import First
 from .files_command import Files
 from .clientlog import Clientlog
-from .container_runner import ContainerRunner
+from .container_runner import ContainerRunner, RebaseEvent
 from .git import (
     GitError,
     GitFetchResult,
@@ -178,6 +178,7 @@ class Forklift(Command):
             workspace=run_paths.workspace,
             harness_state=run_paths.harness_state,
             opencode_logs=run_paths.opencode_logs,
+            control_dir=run_paths.control_dir,
         )
         self._emit_clientlog_hint(run_paths.run_dir.name)
 
@@ -188,8 +189,10 @@ class Forklift(Command):
             run_paths.workspace,
             run_paths.harness_state,
             run_paths.opencode_logs,
+            run_paths.control_dir,
             run_paths.run_dir / "run-state.json",
             self._build_container_env(container_opencode_env, main_branch, run_paths.run_id),
+            event_callback=self._log_rebase_event,
         )
 
         agent_log_path = run_paths.harness_state / "opencode-client.log"
@@ -280,6 +283,37 @@ class Forklift(Command):
             cache_logger_on_first_use=True,
         )
         structlog.contextvars.clear_contextvars()
+
+    def _log_rebase_event(self, event: RebaseEvent) -> None:
+        fields: dict[str, object] = {"step": event.step, "total": event.total}
+        if event.sha is not None:
+            fields["sha"] = event.sha
+        if event.subject is not None:
+            fields["subject"] = event.subject
+        if event.files:
+            fields["files"] = ", ".join(event.files)
+
+        match event.event:
+            case "progress":
+                logger.info(f"Rebase {event.step}/{event.total}", **fields)
+            case "conflict":
+                logger.warning(
+                    f"Conflict {event.step}/{event.total}",
+                    conflict_files=len(event.files),
+                    **fields,
+                )
+            case "continue":
+                logger.info(f"Continue {event.step}/{event.total}", **fields)
+            case "skip":
+                logger.info(f"Skip {event.step}/{event.total}", **fields)
+            case "auto_skip":
+                logger.info(f"Auto-skip {event.step}/{event.total}", **fields)
+            case "abort":
+                logger.info(f"Abort {event.step}/{event.total}", **fields)
+            case "complete":
+                logger.info("Rebase complete", **fields)
+            case _:
+                logger.info("Rebase event", rebase_event=event.event, **fields)
 
     def _resolve_repo_path(self) -> Path:
         raw = self.repo

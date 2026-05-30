@@ -1,12 +1,81 @@
 from __future__ import annotations
 
+import json
+import socket
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
-from typing import override
+from typing import cast, override
 
 HARNESS_SCRIPT = Path(__file__).resolve().parents[1] / "docker/kitchen-sink/harness/run.sh"
+
+
+class RebaseEventServer:
+    socket_path: Path
+    events: list[dict[str, object]]
+    _listener: socket.socket | None
+    _stop: threading.Event
+    _thread: threading.Thread
+
+    def __init__(self, socket_path: Path) -> None:
+        self.socket_path = socket_path
+        self.events = []
+        self._listener = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._serve, daemon=True)
+
+    def __enter__(self) -> RebaseEventServer:
+        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
+        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self._listener.settimeout(0.2)
+        self._listener.bind(str(self.socket_path))
+        self._listener.listen()
+        self._thread.start()
+        return self
+
+    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
+        self._stop.set()
+        if self._listener is not None:
+            self._listener.close()
+        self._thread.join(timeout=1)
+        try:
+            self.socket_path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def wait_for_event_count(self, expected: int) -> None:
+        deadline = time.time() + 1
+        while len(self.events) < expected and time.time() < deadline:
+            time.sleep(0.01)
+
+    def _serve(self) -> None:
+        assert self._listener is not None
+        while not self._stop.is_set():
+            try:
+                accepted = cast(tuple[socket.socket, object], self._listener.accept())
+                connection = accepted[0]
+            except socket.timeout:
+                continue
+            except OSError:
+                if self._stop.is_set():
+                    break
+                raise
+
+            with connection:
+                chunks: list[bytes] = []
+                while True:
+                    chunk = connection.recv(4096)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                for line in b"".join(chunks).decode("utf-8").splitlines():
+                    if line.strip():
+                        payload_obj = cast(object, json.loads(line))
+                        if isinstance(payload_obj, dict):
+                            self.events.append(cast(dict[str, object], payload_obj))
 
 
 class HarnessSetupTests(unittest.TestCase):
@@ -183,6 +252,9 @@ export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING
         _ = tracked.write_text("base\n", encoding="utf-8")
         _ = subprocess.run(["git", "add", "tracked.txt"], cwd=self.workspace, check=True)
         _ = subprocess.run(["git", "commit", "-m", "base"], cwd=self.workspace, check=True)
+
+    def _event_socket_path(self) -> Path:
+        return self.root / "control" / "rebase-events.sock"
 
     def test_parse_fork_context_without_front_matter_treats_whole_file_as_body(self) -> None:
         fork_file = self.workspace / "FORK.md"
@@ -723,6 +795,23 @@ fi
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("unsupported paused rebase command", result.stderr)
 
+    def test_bash_subprocess_inherits_git_wrapper_for_paused_rebase(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+enable_rebase_mediation
+cd "$WORKSPACE_DIR"
+if bash -lc 'git -c color.ui=always rebase --continue'; then
+  echo "expected wrapper failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("unsupported paused rebase command", result.stderr)
+
     def test_handle_rebase_continue_succeeds_after_passing_check(self) -> None:
         self._init_conflicting_rebase()
         expected_sha = subprocess.run(
@@ -1136,6 +1225,348 @@ handle_rebase_abort rebase --abort
             result.stdout,
         )
         self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
+
+    def test_emit_rebase_event_from_snapshot_uses_merge_backend_progress(self) -> None:
+        self._init_conflicting_rebase()
+        expected_sha = subprocess.run(
+            ["git", "rev-parse", "REBASE_HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        expected_subject = subprocess.run(
+            ["git", "show", "-s", "--format=%s", "REBASE_HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        socket_path = self._event_socket_path()
+
+        with RebaseEventServer(socket_path) as server:
+            result = self._run_harness_shell(
+                f'''
+resolve_real_git_bin
+export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
+emit_rebase_event_from_snapshot conflict
+'''
+            )
+            server.wait_for_event_count(1)
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(server.events[0]["event"], "conflict")
+        self.assertEqual(server.events[0]["step"], 1)
+        self.assertEqual(server.events[0]["total"], 1)
+        self.assertEqual(server.events[0]["sha"], expected_sha)
+        self.assertEqual(server.events[0]["subject"], expected_subject)
+        self.assertEqual(server.events[0]["files"], ["tracked.txt"])
+
+    def test_emit_rebase_event_from_snapshot_supports_apply_backend(self) -> None:
+        git_dir = self.workspace / ".git" / "rebase-apply"
+        git_dir.mkdir(parents=True, exist_ok=True)
+        _ = (git_dir / "next").write_text("7\n", encoding="utf-8")
+        _ = (git_dir / "last").write_text("9\n", encoding="utf-8")
+        fake_git = self.harness_state / "fake-git.sh"
+        _ = fake_git.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    'if [[ "$1" == "-C" ]]; then',
+                    '  shift 2',
+                    "fi",
+                    'if [[ "$1" == "rev-parse" && "$2" == "REBASE_HEAD" ]]; then',
+                    "  printf '1234567890abcdef1234567890abcdef12345678\\n'",
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "show" && "$2" == "-s" && "$3" == "--format=%s" && "$4" == "REBASE_HEAD" ]]; then',
+                    "  printf 'Apply backend commit\\n'",
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "diff" && "$2" == "--name-only" && "$3" == "--diff-filter=U" ]]; then',
+                    "  printf 'src/apply.py\\n'",
+                    "  printf 'tests/test_apply.py\\n'",
+                    "  exit 0",
+                    "fi",
+                    'printf "unexpected fake git args: %s\\n" "$*" >&2',
+                    "exit 99",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        socket_path = self._event_socket_path()
+
+        with RebaseEventServer(socket_path) as server:
+            result = self._run_harness_shell(
+                f'''
+REAL_GIT_BIN="{fake_git}"
+export REAL_GIT_BIN
+export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
+emit_rebase_event_from_snapshot progress
+'''
+            )
+            server.wait_for_event_count(1)
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(
+            server.events,
+            [
+                {
+                    "v": 1,
+                    "event": "progress",
+                    "step": 7,
+                    "total": 9,
+                    "sha": "1234567890abcdef1234567890abcdef12345678",
+                    "subject": "Apply backend commit",
+                    "files": ["src/apply.py", "tests/test_apply.py"],
+                }
+            ],
+        )
+
+    def test_emit_rebase_event_ignores_missing_or_unreachable_socket(self) -> None:
+        self._init_conflicting_rebase()
+
+        missing_socket_result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+emit_rebase_event_from_snapshot conflict
+"""
+        )
+        self.assertEqual(missing_socket_result.returncode, 0, msg=missing_socket_result.stderr)
+
+        unreachable_socket = self.root / "missing" / "rebase-events.sock"
+        unreachable_result = self._run_harness_shell(
+            f'''
+resolve_real_git_bin
+export FORKLIFT_REBASE_EVENTS_SOCK="{unreachable_socket}"
+emit_rebase_event_from_snapshot conflict
+'''
+        )
+        self.assertEqual(unreachable_result.returncode, 0, msg=unreachable_result.stderr)
+        self.assertIn(
+            "Unable to emit structured rebase event conflict",
+            unreachable_result.stderr,
+        )
+
+    def test_main_emits_progress_and_conflict_events_for_initial_pause(self) -> None:
+        self._init_conflicting_rebase()
+        socket_path = self._event_socket_path()
+
+        with RebaseEventServer(socket_path) as server:
+            result = self._run_harness_shell(
+                f'''
+HOME="{self.root / "home"}"
+mkdir -p "$HOME"
+OPENCODE_VARIANT=default
+OPENCODE_AGENT=worker
+export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
+launch_agent() {{
+  return 0
+}}
+main
+'''
+            )
+            server.wait_for_event_count(2)
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual([event["event"] for event in server.events], ["progress", "conflict"])
+
+    def test_main_emits_complete_event_for_clean_initial_rebase(self) -> None:
+        self._init_clean_rebase()
+        socket_path = self._event_socket_path()
+
+        with RebaseEventServer(socket_path) as server:
+            result = self._run_harness_shell(
+                f'''
+HOME="{self.root / "home"}"
+mkdir -p "$HOME"
+OPENCODE_VARIANT=default
+OPENCODE_AGENT=worker
+export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
+launch_agent() {{
+  return 0
+}}
+main
+'''
+            )
+            server.wait_for_event_count(1)
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(server.events, [{"v": 1, "event": "complete", "step": 1, "total": 1}])
+
+    def test_handle_rebase_continue_emits_continue_then_repeated_conflict(self) -> None:
+        self._init_conflicting_rebase()
+        fake_git = self.harness_state / "fake-git.sh"
+        _ = fake_git.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    'if [[ "$1" == "-C" ]]; then',
+                    '  workspace_dir="$2"',
+                    '  shift 2',
+                    "else",
+                    '  workspace_dir=""',
+                    "fi",
+                    'if [[ "$1" == "status" ]]; then',
+                    '  printf "UU tracked.txt\\n"',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "rev-parse" && "$2" == "REBASE_HEAD" ]]; then',
+                    '  git -C "$workspace_dir" rev-parse REBASE_HEAD',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "show" && "$2" == "-s" && "$3" == "--format=%s" && "$4" == "REBASE_HEAD" ]]; then',
+                    '  git -C "$workspace_dir" show -s --format=%s REBASE_HEAD',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "diff" && "$2" == "--name-only" && "$3" == "--diff-filter=U" ]]; then',
+                    '  printf tracked.txt\\n',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "rebase" && "$2" == "--continue" ]]; then',
+                    "  exit 1",
+                    "fi",
+                    'printf "unexpected fake git args: %s\\n" "$*" >&2',
+                    "exit 99",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        socket_path = self._event_socket_path()
+
+        with RebaseEventServer(socket_path) as server:
+            result = self._run_harness_shell(
+                f'''
+REAL_GIT_BIN="{fake_git}"
+export REAL_GIT_BIN
+export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
+initialize_rebase_conflicting_commits_file
+handle_rebase_continue rebase --continue || true
+'''
+            )
+            server.wait_for_event_count(3)
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(
+            [event["event"] for event in server.events],
+            ["continue", "progress", "conflict"],
+        )
+
+    def test_handle_rebase_skip_emits_skip_and_complete_events(self) -> None:
+        self._init_conflicting_rebase()
+        socket_path = self._event_socket_path()
+
+        with RebaseEventServer(socket_path) as server:
+            result = self._run_harness_shell(
+                f'''
+resolve_real_git_bin
+initialize_rebase_skipped_commits_file
+export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
+handle_rebase_skip rebase --skip
+'''
+            )
+            server.wait_for_event_count(2)
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual([event["event"] for event in server.events], ["skip", "complete"])
+
+    def test_handle_rebase_continue_emits_auto_skip_sequence(self) -> None:
+        self._init_conflicting_rebase()
+        fake_git = self.harness_state / "fake-git.sh"
+        skip_marker = self.harness_state / "skip-called.txt"
+        rebase_merge = self.workspace / ".git" / "rebase-merge"
+        _ = fake_git.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    'if [[ "$1" == "-C" ]]; then',
+                    '  workspace_dir="$2"',
+                    '  shift 2',
+                    "else",
+                    '  workspace_dir=""',
+                    "fi",
+                    'if [[ "$1" == "status" ]]; then',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "rev-parse" && "$2" == "REBASE_HEAD" ]]; then',
+                    '  git -C "$workspace_dir" rev-parse REBASE_HEAD',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "show" && "$2" == "-s" && "$3" == "--format=%s" && "$4" == "REBASE_HEAD" ]]; then',
+                    '  git -C "$workspace_dir" show -s --format=%s REBASE_HEAD',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "diff" && "$2" == "--name-only" && "$3" == "--diff-filter=U" ]]; then',
+                    '  printf tracked.txt\\n',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "rebase" && "$2" == "--continue" ]]; then',
+                    "  exit 1",
+                    "fi",
+                    'if [[ "$1" == "rebase" && "$2" == "--skip" ]]; then',
+                    f'  printf skip-called >"{skip_marker}"',
+                    f'  rm -rf "{rebase_merge}"',
+                    "  exit 0",
+                    "fi",
+                    'printf "unexpected fake git args: %s\\n" "$*" >&2',
+                    "exit 99",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        socket_path = self._event_socket_path()
+
+        with RebaseEventServer(socket_path) as server:
+            result = self._run_harness_shell(
+                f'''
+REAL_GIT_BIN="{fake_git}"
+export REAL_GIT_BIN
+initialize_rebase_conflicting_commits_file
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+true
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
+handle_rebase_continue rebase --continue
+'''
+            )
+            server.wait_for_event_count(3)
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(skip_marker.read_text(encoding="utf-8"), "skip-called")
+        self.assertEqual(
+            [event["event"] for event in server.events],
+            ["continue", "auto_skip", "complete"],
+        )
+
+    def test_handle_rebase_abort_emits_abort_event(self) -> None:
+        self._init_conflicting_rebase()
+        socket_path = self._event_socket_path()
+
+        with RebaseEventServer(socket_path) as server:
+            result = self._run_harness_shell(
+                f'''
+resolve_real_git_bin
+printf 'Need help\n' >"$WORKSPACE_DIR/STUCK.md"
+export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
+handle_rebase_abort rebase --abort
+'''
+            )
+            server.wait_for_event_count(1)
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(server.events[0]["event"], "abort")
 
 
 if __name__ == "__main__":

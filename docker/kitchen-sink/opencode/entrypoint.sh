@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source /opt/forklift/harness/includes/runtime_env.sh
+
 STATE_DIR=/run/opencode
 PID_FILE="$STATE_DIR/server.pid"
 READY_FILE="$STATE_DIR/server.ready"
 SERVER_LOG=/harness-state/opencode-server.log
-CLIENT_LOG=/harness-state/opencode-client.log
 CLIENT_ENV_VARS=(
   OPENCODE_MODEL
   OPENCODE_VARIANT

@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+source /opt/forklift/harness/includes/runtime_env.sh
+source /opt/forklift/harness/includes/rebase.sh
+
 LOG_FILE=/harness-state/opencode-server.log
 STATE_DIR=/run/opencode
 PID_FILE="$STATE_DIR/server.pid"
@@ -32,7 +35,24 @@ if [[ ! -f "$CONFIG_PATH" ]]; then
   exit 1
 fi
 
-server_env=("OPENCODE_CONFIG=$CONFIG_PATH")
+if ! enable_rebase_mediation; then
+  echo "$(date --iso-8601=seconds) Unable to resolve real git binary before starting OpenCode server" >>"$LOG_FILE"
+  exit 1
+fi
+
+server_env=(
+  "OPENCODE_CONFIG=$CONFIG_PATH"
+  "PATH=$PATH"
+  "REAL_GIT_BIN=$REAL_GIT_BIN"
+  "WORKSPACE_DIR=$WORKSPACE_DIR"
+  "HARNESS_STATE_DIR=$HARNESS_STATE_DIR"
+  "CLIENT_LOG=$CLIENT_LOG"
+  "HARNESS_STATUS_FILE=$HARNESS_STATUS_FILE"
+  "REBASE_CONTINUE_CHECK_FILE=$REBASE_CONTINUE_CHECK_FILE"
+  "REBASE_SKIPPED_COMMITS_FILE=$REBASE_SKIPPED_COMMITS_FILE"
+  "REBASE_CONFLICTING_COMMITS_FILE=$REBASE_CONFLICTING_COMMITS_FILE"
+  "FORKLIFT_REBASE_EVENTS_SOCK=$FORKLIFT_REBASE_EVENTS_SOCK"
+)
 if [[ -n "${OPENCODE_API_KEY:-}" ]]; then
   server_env+=("OPENCODE_API_KEY=$OPENCODE_API_KEY")
 fi

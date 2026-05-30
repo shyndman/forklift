@@ -3,16 +3,10 @@ set -euo pipefail
 
 # Rebuild docker/kitchen-sink after editing this file so the image picks up harness changes.
 
-WORKSPACE_DIR=${WORKSPACE_DIR:-/workspace}
-HARNESS_STATE_DIR=${HARNESS_STATE_DIR:-/harness-state}
-INSTRUCTIONS_FILE=${INSTRUCTIONS_FILE:-$HARNESS_STATE_DIR/instructions.txt}
-FORK_CONTEXT_FILE=${FORK_CONTEXT_FILE:-$HARNESS_STATE_DIR/fork-context.md}
-SETUP_LOG=${SETUP_LOG:-$HARNESS_STATE_DIR/setup.log}
-CLIENT_LOG=${OPENCODE_CLIENT_LOG:-$HARNESS_STATE_DIR/opencode-client.log}
-HARNESS_STATUS_FILE=${HARNESS_STATUS_FILE:-$HARNESS_STATE_DIR/harness-status.txt}
-REBASE_CONTINUE_CHECK_FILE=${REBASE_CONTINUE_CHECK_FILE:-$HARNESS_STATE_DIR/rebase-continue-check.sh}
-REBASE_SKIPPED_COMMITS_FILE=${REBASE_SKIPPED_COMMITS_FILE:-$HARNESS_STATE_DIR/rebase-skipped-commits.json}
-REBASE_CONFLICTING_COMMITS_FILE=${REBASE_CONFLICTING_COMMITS_FILE:-$HARNESS_STATE_DIR/rebase-conflicting-commits.json}
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+source "$SCRIPT_DIR/includes/runtime_env.sh"
+
 OPENCODE_BIN=/opt/opencode/bin/opencode
 OPENCODE_MODEL=${OPENCODE_MODEL:-}
 OPENCODE_VARIANT=${OPENCODE_VARIANT:-}
@@ -24,16 +18,11 @@ MAIN_BRANCH=${FORKLIFT_MAIN_BRANCH:-main}
 UPSTREAM_REF="upstream/${MAIN_BRANCH}"
 HELPER_BRANCH="upstream-${MAIN_BRANCH//\//-}"
 
-export WORKSPACE_DIR HARNESS_STATE_DIR INSTRUCTIONS_FILE FORK_CONTEXT_FILE SETUP_LOG CLIENT_LOG HARNESS_STATUS_FILE
-export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING_COMMITS_FILE
-
 FORK_CONTEXT_PRESENT=0
 FORK_CONTEXT_BODY=""
 FORK_SETUP_COMMAND=""
 FORK_REBASE_CONTINUE_CHECK=""
 HARNESS_PHASE=bootstrap
-
-SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 
 source "$SCRIPT_DIR/includes/common.sh"
 source "$SCRIPT_DIR/includes/fork_context.sh"
@@ -70,6 +59,7 @@ main() {
   log_client "  SETUP_TIMEOUT_SECONDS=${SETUP_TIMEOUT_SECONDS}s"
   log_client "  FORKLIFT_MAIN_BRANCH=$MAIN_BRANCH"
   log_client "  FORKLIFT_RUN_ID=${FORKLIFT_RUN_ID:-unknown}"
+  log_client "  FORKLIFT_REBASE_EVENTS_SOCK=${FORKLIFT_REBASE_EVENTS_SOCK:-unset}"
 
   log_client "Configuring Forklift git identity"
   git config --global user.name "Forklift Agent"
@@ -86,10 +76,9 @@ main() {
   initialize_rebase_conflicting_commits_file
   write_rebase_continue_check_file
   export FORK_REBASE_CONTINUE_CHECK
-  if ! resolve_real_git_bin; then
+  if ! enable_rebase_mediation; then
     fail_harness "Unable to resolve real git binary before enabling rebase mediation"
   fi
-  prepend_git_wrapper_path
 
   HARNESS_PHASE=setup
   if ! run_setup_command; then

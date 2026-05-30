@@ -192,15 +192,18 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
         opencode_logs = run_dir / "opencode-logs"
+        control_dir = run_dir / "control"
         workspace.mkdir(parents=True, exist_ok=True)
         harness_state.mkdir(parents=True, exist_ok=True)
         opencode_logs.mkdir(parents=True, exist_ok=True)
+        control_dir.mkdir(parents=True, exist_ok=True)
         return RunPaths(
             run_dir=run_dir,
             workspace=workspace,
             harness_state=harness_state,
             opencode_logs=opencode_logs,
-            run_id="R123",
+            control_dir=control_dir,
+            run_id="TEST1",
         )
 
     async def test_pre_run_noop_skips_run_directory_and_container(self) -> None:

@@ -5,6 +5,12 @@ REBASE_CONTINUE_CHECK_EXIT_CODE=0
 REBASE_CONTINUE_CHECK_STDOUT=""
 REBASE_CONTINUE_CHECK_STDERR=""
 INITIAL_REBASE_RESULT=""
+REBASE_EVENT_STEP=""
+REBASE_EVENT_TOTAL=""
+REBASE_EVENT_SHA=""
+REBASE_EVENT_SUBJECT=""
+REBASE_EVENT_FILES=()
+REBASE_HELPER_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 
 resolve_real_git_bin() {
   local resolved
@@ -18,11 +24,17 @@ resolve_real_git_bin() {
 }
 
 prepend_git_wrapper_path() {
-  local harness_root wrapper_dir
-  harness_root=${SCRIPT_DIR:-$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)}
-  wrapper_dir="$harness_root/includes/bin"
+  local wrapper_dir
+  wrapper_dir="$REBASE_HELPER_ROOT/includes/bin"
   PATH="$wrapper_dir:$PATH"
   export PATH
+}
+
+enable_rebase_mediation() {
+  if ! resolve_real_git_bin; then
+    return 1
+  fi
+  prepend_git_wrapper_path
 }
 
 initialize_rebase_skipped_commits_file() {
@@ -59,10 +71,149 @@ run_real_git() {
   "$REAL_GIT_BIN" "$@"
 }
 
+count_rebase_commits() {
+  run_real_git -C "$WORKSPACE_DIR" rev-list --count "$UPSTREAM_REF..HEAD" 2>/dev/null || printf '0\n'
+}
+
+read_rebase_progress_snapshot() {
+  local state_dir step_file total_file
+
+  REBASE_EVENT_STEP=""
+  REBASE_EVENT_TOTAL=""
+  REBASE_EVENT_SHA=""
+  REBASE_EVENT_SUBJECT=""
+  REBASE_EVENT_FILES=()
+
+  if [[ -d "$WORKSPACE_DIR/.git/rebase-merge" ]]; then
+    state_dir="$WORKSPACE_DIR/.git/rebase-merge"
+    step_file="msgnum"
+    total_file="end"
+  elif [[ -d "$WORKSPACE_DIR/.git/rebase-apply" ]]; then
+    state_dir="$WORKSPACE_DIR/.git/rebase-apply"
+    step_file="next"
+    total_file="last"
+  else
+    return 1
+  fi
+
+  REBASE_EVENT_STEP=$(tr -d '[:space:]' <"$state_dir/$step_file")
+  REBASE_EVENT_TOTAL=$(tr -d '[:space:]' <"$state_dir/$total_file")
+  REBASE_EVENT_SHA=$(run_real_git -C "$WORKSPACE_DIR" rev-parse REBASE_HEAD 2>/dev/null || true)
+  REBASE_EVENT_SUBJECT=$(run_real_git -C "$WORKSPACE_DIR" show -s --format=%s REBASE_HEAD 2>/dev/null || true)
+  mapfile -t REBASE_EVENT_FILES < <(
+    run_real_git -C "$WORKSPACE_DIR" diff --name-only --diff-filter=U 2>/dev/null || true
+  )
+
+  [[ -n "$REBASE_EVENT_STEP" && -n "$REBASE_EVENT_TOTAL" ]]
+}
+
+emit_rebase_event_payload() {
+  local event step total sha subject event_output
+  event="$1"
+  step="$2"
+  total="$3"
+  sha="$4"
+  subject="$5"
+  shift 5
+
+  if [[ -z "${FORKLIFT_REBASE_EVENTS_SOCK:-}" ]]; then
+    return 0
+  fi
+
+  if ! event_output=$(python3 - "$FORKLIFT_REBASE_EVENTS_SOCK" "$event" "$step" "$total" "$sha" "$subject" "$@" 2>&1 <<'PY'
+from __future__ import annotations
+
+import json
+import socket
+import sys
+
+socket_path = sys.argv[1]
+event_name = sys.argv[2]
+step = int(sys.argv[3])
+total = int(sys.argv[4])
+sha = sys.argv[5]
+subject = sys.argv[6]
+files = [value for value in sys.argv[7:] if value]
+
+payload = {
+    "v": 1,
+    "event": event_name,
+    "step": step,
+    "total": total,
+}
+if sha:
+    payload["sha"] = sha
+if subject:
+    payload["subject"] = subject
+if files:
+    payload["files"] = files
+
+client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+client.settimeout(1)
+try:
+    client.connect(socket_path)
+    client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
+except Exception as exc:  # noqa: BLE001
+    print(f"Unable to emit structured rebase event {event_name}: {exc}", file=sys.stderr)
+    raise SystemExit(1)
+finally:
+    client.close()
+PY
+  ); then
+
+    if [[ -n "$event_output" ]]; then
+      emit_phase_message "rebase" "stderr" "$event_output"
+    else
+      emit_phase_message "rebase" "stderr" "Unable to emit structured rebase event $event"
+    fi
+  fi
+  return 0
+}
+
+emit_rebase_event_from_snapshot() {
+  local event
+  event="$1"
+  if ! read_rebase_progress_snapshot; then
+    return 0
+  fi
+  emit_rebase_event_payload \
+    "$event" \
+    "$REBASE_EVENT_STEP" \
+    "$REBASE_EVENT_TOTAL" \
+    "$REBASE_EVENT_SHA" \
+    "$REBASE_EVENT_SUBJECT" \
+    "${REBASE_EVENT_FILES[@]}"
+}
+
+emit_paused_rebase_events() {
+  emit_rebase_event_from_snapshot "progress"
+  emit_rebase_event_from_snapshot "conflict"
+}
+
+emit_complete_rebase_event() {
+  local total
+  total="$1"
+  if [[ -z "$total" ]]; then
+    return 0
+  fi
+  emit_rebase_event_payload "complete" "$total" "$total" "" ""
+}
+
+emit_post_rebase_transition_events() {
+  local total
+  total="$1"
+  if rebase_in_progress; then
+    emit_paused_rebase_events
+    return 0
+  fi
+  emit_complete_rebase_event "${total:-$(count_rebase_commits)}"
+}
+
 start_initial_rebase() {
-  local rebase_exit_code
+  local rebase_exit_code rebase_total
 
   INITIAL_REBASE_RESULT=""
+  rebase_total=$(count_rebase_commits)
   emit_phase_message "rebase" "stdout" "Starting initial rebase onto $UPSTREAM_REF"
   set +e
   run_real_git -C "$WORKSPACE_DIR" rebase "$UPSTREAM_REF"
@@ -78,12 +229,14 @@ start_initial_rebase() {
 
     INITIAL_REBASE_RESULT="completed"
     emit_phase_message "rebase" "stdout" "Initial rebase completed cleanly"
+    emit_complete_rebase_event "$rebase_total"
     return 0
   fi
 
   if rebase_in_progress; then
     INITIAL_REBASE_RESULT="paused"
     record_current_conflicting_commit
+    emit_paused_rebase_events
     emit_phase_message "rebase" "stdout" "Initial rebase paused on conflicts"
     return 0
   fi
@@ -227,56 +380,89 @@ record_current_conflicting_commit() {
 }
 
 handle_rebase_continue() {
-  local before_status after_status continue_exit_code skip_exit_code
+  local before_status after_status continue_exit_code skip_exit_code current_total
 
   emit_phase_message "rebase" "stdout" "Intercepted git rebase --continue"
   record_current_conflicting_commit
 
+  current_total=""
+  if read_rebase_progress_snapshot; then
+    current_total="$REBASE_EVENT_TOTAL"
+    emit_rebase_event_payload \
+      "continue" \
+      "$REBASE_EVENT_STEP" \
+      "$REBASE_EVENT_TOTAL" \
+      "$REBASE_EVENT_SHA" \
+      "$REBASE_EVENT_SUBJECT" \
+      "${REBASE_EVENT_FILES[@]}"
+  fi
+
   if [[ ! -f "$REBASE_CONTINUE_CHECK_FILE" || ! -s "$REBASE_CONTINUE_CHECK_FILE" ]]; then
     emit_phase_message "rebase" "stdout" "Invoking real git rebase --continue"
+    set +e
     run_real_git -C "$WORKSPACE_DIR" "$@"
-    return $?
+    continue_exit_code=$?
+    set -e
+  else
+    before_status=$(capture_status_snapshot)
+    emit_phase_message "rebase" "stdout" "Running frozen rebase continue check"
+    run_continue_check || true
+    after_status=$(capture_status_snapshot)
+
+    if [[ $REBASE_CONTINUE_CHECK_EXIT_CODE -ne 0 ]]; then
+      emit_rebase_continue_failure "Rebase continue check failed." "$REBASE_CONTINUE_CHECK_EXIT_CODE" "$after_status"
+      return 1
+    fi
+
+    if [[ "$after_status" != "$before_status" ]]; then
+      emit_rebase_continue_failure "Rebase continue check changed workspace state." "0" "$after_status"
+      return 1
+    fi
+
+    emit_phase_message "rebase" "stdout" "Rebase continue check passed with stable workspace state"
+    emit_phase_message "rebase" "stdout" "Invoking real git rebase --continue"
+    set +e
+    run_real_git -C "$WORKSPACE_DIR" "$@"
+    continue_exit_code=$?
+    set -e
   fi
-
-  before_status=$(capture_status_snapshot)
-  emit_phase_message "rebase" "stdout" "Running frozen rebase continue check"
-  run_continue_check || true
-  after_status=$(capture_status_snapshot)
-
-  if [[ $REBASE_CONTINUE_CHECK_EXIT_CODE -ne 0 ]]; then
-    emit_rebase_continue_failure "Rebase continue check failed." "$REBASE_CONTINUE_CHECK_EXIT_CODE" "$after_status"
-    return 1
-  fi
-
-  if [[ "$after_status" != "$before_status" ]]; then
-    emit_rebase_continue_failure "Rebase continue check changed workspace state." "0" "$after_status"
-    return 1
-  fi
-
-  emit_phase_message "rebase" "stdout" "Rebase continue check passed with stable workspace state"
-  emit_phase_message "rebase" "stdout" "Invoking real git rebase --continue"
-  set +e
-  run_real_git -C "$WORKSPACE_DIR" "$@"
-  continue_exit_code=$?
-  set -e
 
   if [[ $continue_exit_code -ne 0 ]] && rebase_in_progress; then
     after_status=$(capture_status_snapshot)
     if [[ -z "$after_status" ]]; then
+      if read_rebase_progress_snapshot; then
+        current_total="$REBASE_EVENT_TOTAL"
+        emit_rebase_event_payload \
+          "auto_skip" \
+          "$REBASE_EVENT_STEP" \
+          "$REBASE_EVENT_TOTAL" \
+          "$REBASE_EVENT_SHA" \
+          "$REBASE_EVENT_SUBJECT" \
+          "${REBASE_EVENT_FILES[@]}"
+      fi
       emit_phase_message "rebase" "stdout" "Auto-skipping mechanically empty commit after failed continue"
       set +e
       run_real_git -C "$WORKSPACE_DIR" rebase --skip >/dev/null 2>&1
       skip_exit_code=$?
       set -e
+      if [[ $skip_exit_code -eq 0 ]]; then
+        emit_post_rebase_transition_events "$current_total"
+      fi
       return $skip_exit_code
     fi
+
+    emit_paused_rebase_events
+  fi
+
+  if [[ $continue_exit_code -eq 0 ]]; then
+    emit_post_rebase_transition_events "$current_total"
   fi
 
   return $continue_exit_code
 }
 
 handle_rebase_skip() {
-  local rebase_sha rebase_subject skip_exit_code
+  local rebase_sha rebase_subject skip_exit_code current_total
   emit_phase_message "rebase" "stdout" "Intercepted git rebase --skip"
   rebase_sha=$(run_real_git -C "$WORKSPACE_DIR" rev-parse REBASE_HEAD 2>/dev/null || true)
   rebase_subject=$(run_real_git -C "$WORKSPACE_DIR" show -s --format=%s REBASE_HEAD 2>/dev/null || true)
@@ -285,12 +471,27 @@ handle_rebase_skip() {
     return 1
   fi
 
+  current_total=""
+  if read_rebase_progress_snapshot; then
+    current_total="$REBASE_EVENT_TOTAL"
+    emit_rebase_event_payload \
+      "skip" \
+      "$REBASE_EVENT_STEP" \
+      "$REBASE_EVENT_TOTAL" \
+      "$REBASE_EVENT_SHA" \
+      "$REBASE_EVENT_SUBJECT" \
+      "${REBASE_EVENT_FILES[@]}"
+  fi
+
   append_agent_skip_record "$rebase_sha" "$rebase_subject"
   emit_phase_message "rebase" "stdout" "Recorded explicit skip for $rebase_sha $rebase_subject"
   set +e
   run_real_git -C "$WORKSPACE_DIR" "$@"
   skip_exit_code=$?
   set -e
+  if [[ $skip_exit_code -eq 0 ]]; then
+    emit_post_rebase_transition_events "$current_total"
+  fi
   return $skip_exit_code
 }
 
@@ -308,6 +509,7 @@ handle_rebase_abort() {
     return 1
   fi
 
+  emit_rebase_event_from_snapshot "abort"
   emit_phase_message "rebase" "stdout" "Allowing git rebase --abort because STUCK.md is present"
   set +e
   run_real_git -C "$WORKSPACE_DIR" "$@"

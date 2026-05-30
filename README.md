@@ -134,6 +134,7 @@ Run artifacts are stored in `~/.local/state/forklift/runs/<project>_<timestamp>/
 |------|-------------|
 | `workspace/` | Cloned repo where the agent worked |
 | `workspace/STUCK.md` | Written if the agent couldn't complete |
+| `control/` | Host-owned control mount used for live structured rebase events during the run |
 | `harness-state/rebase-continue-check.sh` | Frozen copy of `FORK.md` `rebase.continue_check` for the active run |
 | `harness-state/rebase-skipped-commits.json` | Host-owned metadata for explicit agent `git rebase --skip` decisions |
 | `harness-state/opencode-client.log` | Agent transcript |
@@ -141,7 +142,7 @@ Run artifacts are stored in `~/.local/state/forklift/runs/<project>_<timestamp>/
 | `harness-state/setup.log` | Mirrored setup diagnostics and command output |
 | `opencode-logs/` | Full OpenCode debug traces |
 
-Setup failures and rebase continue-check failures are surfaced in the main `Container stdout` / `Container stderr` log entries after the container exits. Successful mediated paused-rebase transitions now emit proof-of-life log lines there too, including intercepted `git rebase --continue`, continue-check start/pass, real continue invocation, explicit `--skip` recording, auto-skip of mechanically empty commits, and allowed `--abort`. `opencode-client.log` remains the deep transcript artifact.
+Forklift now emits live top-level `Rebase N/Total`, `Conflict N/Total`, `Continue N/Total`, `Skip N/Total`, `Auto-skip N/Total`, and `Rebase complete` log lines while the container is still running. Those structured events travel over a dedicated bind-mounted Unix domain socket in `control/`; `Container stdout` / `Container stderr` remain post-exit human-log surfaces, and `opencode-client.log` remains the deep transcript artifact.
 
 On success, Forklift publishes a review branch: `upstream-merge/<timestamp>/<branch>`.
 

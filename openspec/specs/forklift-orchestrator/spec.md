@@ -4,11 +4,11 @@
 TBD - created by archiving change forklift-v0. Update Purpose after archive.
 ## Requirements
 ### Requirement: Run directory preparation
-The host orchestrator SHALL, for invocations that require integration work, create a new run directory at `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>` (defaults to `~/.local/state/forklift/runs/<project>_<YYYYMMDD_HHMMSS>`) containing a duplicated workspace copy of the current fork along with empty `harness-state` and metadata files. When repo-owned fork context exists, the orchestrator SHALL resolve it from repo-root `FORK.md` first and `.agents/FORK.md` second, then copy the selected file into the duplicated workspace as `FORK.md`. The duplicated workspace MUST have all Git remotes removed before being handed to the agent container. If the selected upstream target is already reachable from the configured main branch, the orchestrator SHALL exit successfully before run-directory creation. Read-only commands such as `forklift changelog` MUST NOT call run-directory preparation, run-state lifecycle updates, container launch, or post-run publication helpers.
+The host orchestrator SHALL, for invocations that require integration work, create a new run directory at `$XDG_STATE_HOME/forklift/runs/<project>_<YYYYMMDD_HHMMSS>` (defaults to `~/.local/state/forklift/runs/<project>_<YYYYMMDD_HHMMSS>`) containing a duplicated workspace copy of the current fork along with empty `harness-state`, `control`, and metadata files. When repo-owned fork context exists, the orchestrator SHALL resolve it from repo-root `FORK.md` first and `.agents/FORK.md` second, then copy the selected file into the duplicated workspace as `FORK.md`. The duplicated workspace MUST have all Git remotes removed before being handed to the agent container. If the selected upstream target is already reachable from the configured main branch, the orchestrator SHALL exit successfully before run-directory creation. Read-only commands such as `forklift changelog` MUST NOT call run-directory preparation, run-state lifecycle updates, container launch, or post-run publication helpers.
 
 #### Scenario: Fresh run setup
 - **WHEN** the user runs `forklift` inside a repository whose `origin` and `upstream` remotes resolve successfully and the selected upstream target is not yet an ancestor of the configured main branch
-- **THEN** the orchestrator creates `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>/workspace` (or `~/.local/state/forklift/runs/<project>_<timestamp>/workspace`) populated with the fork contents and no Git remotes, alongside sibling `harness-state` and metadata locations
+- **THEN** the orchestrator creates `$XDG_STATE_HOME/forklift/runs/<project>_<timestamp>/workspace` (or `~/.local/state/forklift/runs/<project>_<timestamp>/workspace`) populated with the fork contents and no Git remotes, alongside sibling `harness-state`, `control`, and metadata locations
 - **AND** metadata for the run records the selected target policy and resolved target SHA
 
 #### Scenario: Fallback fork context path is used
@@ -31,18 +31,18 @@ The host orchestrator SHALL, for invocations that require integration work, crea
 - **AND** no local publication branch is created as part of changelog execution
 
 ### Requirement: Workspace ownership alignment
-Before launching the container, the orchestrator SHALL adjust ownership or permissions of `workspace/` and `harness-state/` so they are writable by the container's non-root user (UID/GID 1000). This can be done via `chown -R 1000:1000` or by running the container with matching UID/GID.
+Before launching the container, the orchestrator SHALL adjust ownership or permissions of `workspace/`, `harness-state/`, and `control/` so they are writable by the container's non-root user (UID/GID 1000). This can be done via `chown -R 1000:1000` or by running the container with matching UID/GID.
 
 #### Scenario: Writable mounts
 - **WHEN** the orchestrator prepares a new run directory
-- **THEN** `workspace/` and `harness-state/` are writable inside the container without requiring root privileges
+- **THEN** `workspace/`, `harness-state/`, and `control/` are writable inside the container without requiring root privileges
 
 ### Requirement: Container execution with enforced timeout
-The orchestrator SHALL start exactly one containerized agent run per invocation, mounting the run's `workspace` and `harness-state` directories read-write, and SHALL terminate the container after eight minutes of wall-clock time if it has not exited on its own. The container command MUST be fixed to the bundled harness entrypoint; generic overrides such as `FORKLIFT_DOCKER_COMMAND` SHALL NOT be supported. Only the validated OpenCode environment variables (`OPENCODE_MODEL`, `OPENCODE_VARIANT`, `OPENCODE_AGENT`, `OPENCODE_API_KEY`, and related settings) may be forwarded, ensuring the harness always executes the same deterministic client startup sequence.
+The orchestrator SHALL start exactly one containerized agent run per invocation, mounting the run's `workspace`, `harness-state`, and `control` directories read-write. The `control` mount SHALL carry a host-created Unix domain socket exposed to the container via `FORKLIFT_REBASE_EVENTS_SOCK=/forklift-control/rebase-events.sock` so the harness can stream structured paused-rebase progress and conflict events without using stdout. The orchestrator SHALL terminate the container after eight minutes of wall-clock time if it has not exited on its own. The container command MUST be fixed to the bundled harness entrypoint; generic overrides such as `FORKLIFT_DOCKER_COMMAND` SHALL NOT be supported. Only the validated OpenCode environment variables (`OPENCODE_MODEL`, `OPENCODE_VARIANT`, `OPENCODE_AGENT`, `OPENCODE_API_KEY`, and related settings) may be forwarded, ensuring the harness always executes the same deterministic client startup sequence.
 
 #### Scenario: Timeout enforcement
 - **WHEN** the containerized agent is still running at 8 minutes elapsed since launch
-- **THEN** the orchestrator stops the container, exits with a timeout status, and does not create a pull request, and logs show that the container was launched with the fixed harness command and sanitized OpenCode environment
+- **THEN** the orchestrator stops the container, exits with a timeout status, and does not create a pull request, and logs show that the container was launched with the fixed harness command, sanitized OpenCode environment, and live structured `Rebase N/Total` / `Conflict N/Total` reporting when the harness emitted events
 
 ### Requirement: Upstream verification before pull request
 After the container exits, the orchestrator SHALL verify that every commit in `upstream/{branch}` is reachable from `{branch}` in the run workspace before publishing rewritten output to local branch `upstream-merge/{YYYYMMDDTHHMMSS}/{branch}`. If verification fails, no publication SHALL occur and the maintainer SHALL inspect the run directory or `STUCK.md` manually.
