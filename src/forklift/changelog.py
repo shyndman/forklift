@@ -24,7 +24,7 @@ from .changelog_llm import (
 )
 from .changelog_models import ChangelogReportSections
 from .changelog_renderer import render_changelog_markdown, render_changelog_terminal
-from .cli_runtime import apply_cli_overrides, resolved_main_branch
+from .cli_runtime import apply_cli_overrides, resolved_main_branch, resolved_target_policy
 from .opencode_env import (
     DEFAULT_ENV_PATH,
     OpenCodeEnv,
@@ -400,6 +400,10 @@ class Changelog(Command):
         "main",
         help="Name of the primary branch to compare against upstream (default: main)",
     )
+    target_policy: str = arg(
+        "tip",
+        help="Upstream target policy: 'tip' or 'latest-version' (default: tip)",
+    )
     model: str | None = arg(
         None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/)."
     )
@@ -413,11 +417,12 @@ class Changelog(Command):
     @override
     async def run(self) -> None:
         """<intent>
-        Generate a read-only changelog between <main_branch> and upstream/<main_branch> by combining deterministic git evidence (including merge-tree conflict hotspots) with an LLM narrative, without running container orchestration or mutating local history.
+        Generate a read-only changelog between <main_branch> and the selected upstream target by combining deterministic git evidence (including merge-tree conflict hotspots) with an LLM narrative, without running container orchestration or mutating local history.
         </intent>"""
 
         repo_path = self._resolve_repo_path()
         branch = resolved_main_branch(self.main_branch)
+        target_policy = resolved_target_policy(self.target_policy)
         env = self._prepare_opencode_env()
         started_at = time.perf_counter()
 
@@ -426,6 +431,7 @@ class Changelog(Command):
             evidence = build_evidence_bundle(
                 repo_path,
                 branch,
+                target_policy=target_policy,
                 exclusion_patterns=exclusion_patterns,
             )
             upstream_evidence = build_upstream_narrative_evidence(evidence)

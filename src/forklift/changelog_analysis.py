@@ -20,7 +20,7 @@ from .changelog_models import (
     UpstreamNarrativeEvidence,
 )
 from .cli_runtime import resolved_main_branch
-from .git import GitError, ensure_required_remotes, fetch_remotes, run_git
+from .git import GitError, ensure_required_remotes, fetch_remotes, resolve_upstream_target, run_git
 
 MIN_GIT_VERSION = (2, 38, 0)
 DEFAULT_TOP_CHANGED_FILES = 30
@@ -58,19 +58,27 @@ class CurrentPathChange:
     status: str
 
 
-def resolve_analysis_refs(repo_path: Path, main_branch: str) -> tuple[str, str]:
+def resolve_analysis_refs(
+    repo_path: Path,
+    main_branch: str,
+    *,
+    target_policy: str = "tip",
+) -> tuple[str, str]:
     """Resolve and validate branch refs used by deterministic changelog analysis."""
 
     resolved_main = resolved_main_branch(main_branch)
-    upstream_ref = f"upstream/{resolved_main}"
     try:
         _ = run_git(repo_path, ["rev-parse", "--verify", resolved_main])
-        _ = run_git(repo_path, ["rev-parse", "--verify", upstream_ref])
+        selected_target = resolve_upstream_target(
+            repo_path,
+            main_branch=resolved_main,
+            policy=target_policy,
+        )
     except GitError as exc:
         raise ChangelogAnalysisError(
-            f"Unable to resolve analysis refs {resolved_main!r} and {upstream_ref!r}: {exc}"
+            f"Unable to resolve analysis refs for {resolved_main!r} using policy {target_policy!r}: {exc}"
         ) from exc
-    return resolved_main, upstream_ref
+    return resolved_main, selected_target.target_ref
 
 
 def ensure_supported_git_version(repo_path: Path) -> tuple[int, int, int]:
@@ -552,6 +560,7 @@ def build_evidence_bundle(
     repo_path: Path,
     main_branch: str,
     *,
+    target_policy: str = "tip",
     exclusion_patterns: list[str] | None = None,
     max_changed_files: int = DEFAULT_TOP_CHANGED_FILES,
 ) -> EvidenceBundle:
@@ -567,7 +576,11 @@ def build_evidence_bundle(
             f"Unable to refresh required remotes: {exc}"
         ) from exc
 
-    resolved_main, upstream_ref = resolve_analysis_refs(repo_path, main_branch)
+    resolved_main, upstream_ref = resolve_analysis_refs(
+        repo_path,
+        main_branch,
+        target_policy=target_policy,
+    )
     base_sha = compute_merge_base(repo_path, resolved_main, upstream_ref)
     hotspots = resolve_merge_tree_hotspots(
         run_merge_tree(repo_path, resolved_main, upstream_ref)

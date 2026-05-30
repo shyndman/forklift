@@ -38,6 +38,7 @@ from forklift.changelog_analysis import (
     parse_merge_tree_conflict_hotspots,
     parse_name_status_output,
     parse_numstat_output,
+    resolve_analysis_refs,
     resolve_merge_tree_hotspots,
 )
 from forklift.changelog_llm import (
@@ -66,6 +67,7 @@ from forklift.changelog_models import (
     UpstreamNarrativeSections,
 )
 from forklift.cli import Forklift
+from forklift.git import ResolvedUpstreamTarget
 from forklift.opencode_env import OpenCodeEnv
 from forklift.changelog_renderer import render_changelog_markdown, render_changelog_terminal
 from forklift.post_run_metrics import UsageSummary
@@ -79,6 +81,20 @@ class ChangelogCliParsingTests(unittest.TestCase):
     def test_forklift_parse_routes_changelog_subcommand(self) -> None:
         command = Forklift.parse(["changelog"])
         self.assertIsInstance(command.subcommand, Changelog)
+
+    def test_changelog_defaults_target_policy_to_tip(self) -> None:
+        command = Forklift.parse(["changelog"])
+
+        self.assertIsInstance(command.subcommand, Changelog)
+        subcommand = cast(Changelog, command.subcommand)
+        self.assertEqual(subcommand.target_policy, "tip")
+
+    def test_changelog_parses_explicit_target_policy(self) -> None:
+        command = Forklift.parse(["changelog", "--target-policy=latest-version"])
+
+        self.assertIsInstance(command.subcommand, Changelog)
+        subcommand = cast(Changelog, command.subcommand)
+        self.assertEqual(subcommand.target_policy, "latest-version")
 
 
 class ChangelogForkMetadataTests(unittest.TestCase):
@@ -678,6 +694,37 @@ class ChangelogRendererTests(unittest.TestCase):
 
 
 class ChangelogAnalysisTests(unittest.TestCase):
+    def test_resolve_analysis_refs_uses_selected_target_policy(self) -> None:
+        with (
+            patch(
+                "forklift.changelog_analysis.run_git",
+                return_value="1111111111111111111111111111111111111111",
+            ) as run_git_mock,
+            patch(
+                "forklift.changelog_analysis.resolve_upstream_target",
+                return_value=ResolvedUpstreamTarget(
+                    policy="latest-version",
+                    target_ref="v2.0.0",
+                    target_sha="2222222222222222222222222222222222222222",
+                    resolved_tag="v2.0.0",
+                ),
+            ) as target_mock,
+        ):
+            branch, upstream_ref = resolve_analysis_refs(
+                Path("."),
+                "main",
+                target_policy="latest-version",
+            )
+
+        run_git_mock.assert_called_once_with(Path("."), ["rev-parse", "--verify", "main"])
+        target_mock.assert_called_once_with(
+            Path("."),
+            main_branch="main",
+            policy="latest-version",
+        )
+        self.assertEqual(branch, "main")
+        self.assertEqual(upstream_ref, "v2.0.0")
+
     def test_build_upstream_narrative_evidence_excludes_conflict_side_payloads(self) -> None:
         evidence = EvidenceBundle(
             base_sha="1234567890abcdef1234567890abcdef12345678",
@@ -970,6 +1017,60 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(evidence.excluded_file_count, 0)
         self.assertEqual(evidence.conflict_side_comparisons, [])
 
+    def test_build_evidence_bundle_uses_selected_upstream_target_for_analysis(self) -> None:
+        with (
+            patch(
+                "forklift.changelog_analysis.ensure_supported_git_version",
+                return_value=(2, 40, 1),
+            ),
+            patch(
+                "forklift.changelog_analysis.ensure_required_remotes",
+                return_value={"origin": object(), "upstream": object()},
+            ),
+            patch("forklift.changelog_analysis.fetch_remotes", return_value=[]),
+            patch(
+                "forklift.changelog_analysis.resolve_analysis_refs",
+                return_value=("main", "v1.2.3"),
+            ) as refs_mock,
+            patch(
+                "forklift.changelog_analysis.compute_merge_base",
+                return_value="abc123",
+            ) as base_mock,
+            patch(
+                "forklift.changelog_analysis.run_merge_tree",
+                return_value=MergeTreeResult(exit_code=0, output="treeoid"),
+            ) as merge_tree_mock,
+            patch(
+                "forklift.changelog_analysis.resolve_merge_tree_hotspots",
+                return_value=[],
+            ),
+            patch(
+                "forklift.changelog_analysis.collect_supporting_diff_stats",
+                return_value=(DiffSummary(), []),
+            ) as stats_mock,
+            patch(
+                "forklift.changelog_analysis.build_conflict_side_comparisons",
+                return_value=[],
+            ) as comparisons_mock,
+        ):
+            evidence = build_evidence_bundle(
+                Path("."),
+                "main",
+                target_policy="latest-version",
+            )
+
+        refs_mock.assert_called_once_with(
+            Path("."),
+            "main",
+            target_policy="latest-version",
+        )
+        base_mock.assert_called_once_with(Path("."), "main", "v1.2.3")
+        merge_tree_mock.assert_called_once_with(Path("."), "main", "v1.2.3")
+        stats_mock.assert_called_once_with(Path("."), "main", "v1.2.3")
+        kwargs = comparisons_mock.call_args.kwargs
+        self.assertEqual(kwargs["upstream_ref"], "v1.2.3")
+        self.assertEqual(evidence.upstream_ref, "v1.2.3")
+
     def test_build_evidence_bundle_applies_exclusion_rules_to_metrics_and_hotspots(self) -> None:
         changed_files = [
             ChangedFileStat(path="data/big.json", added=100, removed=20, status="M"),
@@ -1078,7 +1179,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def test_successful_flow_builds_evidence_calls_llm_and_renders_sections(
         self,
     ) -> None:
-        command = Changelog(main_branch="main")
+        command = Changelog(main_branch="main", target_policy="latest-version")
         captured: dict[str, object] = {}
 
         def _capture_markdown(markdown: str) -> str:
@@ -1148,7 +1249,12 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         ):
             await command.run()
 
-        evidence_mock.assert_called_once()
+        evidence_mock.assert_called_once_with(
+            Path.cwd().resolve(),
+            "main",
+            target_policy="latest-version",
+            exclusion_patterns=[],
+        )
         upstream_payload_mock.assert_called_once()
         upstream_llm_mock.assert_called_once()
         conflict_llm_mock.assert_called_once()

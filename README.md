@@ -53,9 +53,12 @@ Preview what's changed upstream before running the full sync:
 ```bash
 uv run forklift changelog
 uv run forklift changelog --main-branch=dev
+uv run forklift changelog --target-policy=latest-version
 ```
 
-This runs entirely on the host with no container launch or history mutation. Requires Git 2.38+.
+This runs entirely on the host with no container launch or history mutation. `forklift changelog`
+accepts the same `--target-policy` values as the main command, so you can compare against
+either `upstream/<main-branch>` or the latest stable upstream tag. Requires Git 2.38+.
 
 ### Fork-owned files
 
