@@ -77,6 +77,11 @@ def lines(*rows: str) -> str:
     return "\n".join(rows)
 
 
+class CallableUsage(RunUsage):
+    def __call__(self) -> RunUsage:
+        raise AssertionError("AgentRunResult.usage must be read as a property.")
+
+
 class ChangelogCliParsingTests(unittest.TestCase):
     def test_forklift_parse_routes_changelog_subcommand(self) -> None:
         command = Forklift.parse(["changelog"])
@@ -369,7 +374,7 @@ class ChangelogLlmTests(unittest.TestCase):
                     response=SimpleNamespace(
                         cost=lambda: SimpleNamespace(total_price=Decimal("0.0001875"))
                     ),
-                    usage=lambda: RunUsage(
+                    usage=CallableUsage(
                         input_tokens=120,
                         output_tokens=45,
                         cache_read_tokens=7,
@@ -433,7 +438,7 @@ class ChangelogLlmTests(unittest.TestCase):
                     response=SimpleNamespace(
                         cost=lambda: SimpleNamespace(total_price=Decimal("0.0003125"))
                     ),
-                    usage=lambda: RunUsage(
+                    usage=CallableUsage(
                         input_tokens=140,
                         output_tokens=60,
                         cache_read_tokens=5,
@@ -572,7 +577,7 @@ class ChangelogLlmTests(unittest.TestCase):
                     response=SimpleNamespace(
                         cost=lambda: (_ for _ in ()).throw(LookupError("missing price"))
                     ),
-                    usage=lambda: RunUsage(input_tokens=1, output_tokens=1),
+                    usage=CallableUsage(input_tokens=1, output_tokens=1),
                 )
 
         with patch.dict(os.environ, {}, clear=True):

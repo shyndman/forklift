@@ -303,8 +303,7 @@ async def _run_markdown_generation(
             model=model_name,
             error=str(exc),
         )
-    usage_attr = cast(object, result.usage)
-    raw_usage = usage_attr() if callable(usage_attr) else usage_attr
+    raw_usage = cast(object, result.usage)
     if not isinstance(raw_usage, RunUsage):
         raise ChangelogLlmError(
             f"Changelog model returned unexpected usage payload type: {type(raw_usage).__name__}"
