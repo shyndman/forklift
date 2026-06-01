@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
 import logging
 from importlib import metadata
 from pathlib import Path
 from shlex import quote as shell_quote
+import sys
 from typing import cast, override
 
 from clypi import Command, arg, boxed
+from clypi._cli import arg_parser
 import structlog
 from rich.traceback import install as install_rich_traceback
 from rich.console import Console
@@ -62,11 +65,18 @@ from .git import (
     resolve_upstream_target,
     run_git,
 )
+from libsh.logs import setup_logging_from_env, get_logger
 from .logs import build_renderer
-from .opencode_env import DEFAULT_ENV_PATH, OpenCodeEnv, OpenCodeEnvError, load_opencode_env
+from .opencode_env import (
+    DEFAULT_ENV_PATH,
+    OpenCodeEnv,
+    OpenCodeEnvError,
+    load_opencode_env,
+)
 from .run_manager import RunDirectoryManager, RunPaths
 
-logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
+setup_logging_from_env()
+logger = get_logger()
 
 AGENT_NAME = AUTHORSHIP_AGENT_NAME
 AGENT_EMAIL = AUTHORSHIP_AGENT_EMAIL
@@ -77,6 +87,14 @@ HARNESS_STATUS_FILE_NAME = "harness-status.txt"
 CLIENT_LOG_TAIL_LINES = 120
 CLIENTLOG_HINT_TITLE = "Client log tail command"
 CLIENTLOG_HINT_TEMPLATE = "forklift clientlog {run_dir_name} --follow"
+INSTRUCTION_OPTION = "--instruction"
+INSTRUCTION_VALUE_HINT = "Use --instruction='...'."
+
+
+def _default_instruction_list() -> list[str]:
+    """Provide a strongly typed default for repeatable CLI instruction blocks."""
+
+    return []
 
 
 class Forklift(Command):
@@ -111,6 +129,10 @@ class Forklift(Command):
         None,
         help="Override run timeout in seconds for this run.",
     )
+    instruction: list[str] = arg(
+        default_factory=_default_instruction_list,
+        help="Extra instructions provided in addition to FORK.md contents. Repeat the flag to add more than one block.",
+    )
 
     @override
     async def run(self) -> None:
@@ -119,7 +141,6 @@ class Forklift(Command):
             return
 
         repo_path = self._resolve_repo_path()
-        self._configure_logging()
         logger.info("Starting Forklift orchestration", repo=str(repo_path))
         run_manager = RunDirectoryManager()
         _ = run_manager.cleanup_expired_runs()
@@ -127,6 +148,7 @@ class Forklift(Command):
         operator_identity = self._capture_operator_identity(repo_path)
         main_branch = self._resolved_main_branch()
         target_policy = self._resolved_target_policy()
+        extra_instructions = self._validated_instructions()
         opencode_env = self._prepare_opencode_env()
         chown_uid, chown_gid = self._resolve_chown_target()
 
@@ -170,6 +192,7 @@ class Forklift(Command):
             main_branch=main_branch,
             selected_upstream_sha=selected_target.target_sha,
             extra_metadata=self._metadata_overrides(operator_identity, selected_target),
+            extra_instructions=extra_instructions,
         )
         _ = structlog.contextvars.bind_contextvars(run=run_paths.run_id)
         logger.info(
@@ -191,7 +214,9 @@ class Forklift(Command):
             run_paths.opencode_logs,
             run_paths.control_dir,
             run_paths.run_dir / "run-state.json",
-            self._build_container_env(container_opencode_env, main_branch, run_paths.run_id),
+            self._build_container_env(
+                container_opencode_env, main_branch, run_paths.run_id
+            ),
             event_callback=self._log_rebase_event,
         )
 
@@ -204,8 +229,12 @@ class Forklift(Command):
                 path=agent_log_path,
             )
 
-        self._chown_artifact(run_paths.harness_state, "harness-state", chown_uid, chown_gid)
-        self._chown_artifact(run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid)
+        self._chown_artifact(
+            run_paths.harness_state, "harness-state", chown_uid, chown_gid
+        )
+        self._chown_artifact(
+            run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid
+        )
 
         if container_result.stdout.strip():
             logger.info("Container stdout", stdout=container_result.stdout.strip())
@@ -319,6 +348,18 @@ class Forklift(Command):
         raw = self.repo
         base = Path.cwd() if raw is None else Path(raw)
         return base.expanduser().resolve()
+
+    def _validated_instructions(self) -> tuple[str, ...]:
+        """Reject empty run instructions while preserving caller-supplied text exactly."""
+
+        validated: list[str] = []
+        for instruction in self.instruction:
+            if not instruction.strip():
+                raise SystemExit(
+                    f"{INSTRUCTION_OPTION} must not be empty or whitespace only."
+                )
+            validated.append(instruction)
+        return tuple(validated)
 
     def _capture_operator_identity(self, repo_path: Path) -> OperatorIdentity:
         """Read and validate git operator identity used for run metadata."""
@@ -457,7 +498,9 @@ class Forklift(Command):
         summary = parse_usage_summary(agent_log_path, harness_state=harness_state)
         console = Console()
         render_usage_summary(outcome, summary, console=console)
-        _ = render_completion_report(workspace, harness_state=harness_state, console=console)
+        _ = render_completion_report(
+            workspace, harness_state=harness_state, console=console
+        )
 
     def _resolved_exit_code(self, code: object) -> int:
         """Normalize SystemExit payloads so re-raises preserve explicit integer codes."""
@@ -477,7 +520,9 @@ class Forklift(Command):
             tail_lines=CLIENT_LOG_TAIL_LINES,
         )
 
-    def _log_harness_log_tail(self, log_path: Path, *, label: str, tail_lines: int) -> None:
+    def _log_harness_log_tail(
+        self, log_path: Path, *, label: str, tail_lines: int
+    ) -> None:
         """Emit a bounded tail from a harness artifact when runs fail."""
 
         if not log_path.exists():
@@ -588,7 +633,9 @@ class Forklift(Command):
     def _assert_no_agent_commits(self, workspace: Path, rewrite_range: str) -> None:
         assert_no_agent_commits(workspace, rewrite_range, run_git_cmd=run_git)
 
-    def _log_rewrite_summary(self, repo_path: Path, result: RewriteResult | None) -> None:
+    def _log_rewrite_summary(
+        self, repo_path: Path, result: RewriteResult | None
+    ) -> None:
         log_rewrite_summary(repo_path, result)
 
     def _prepare_opencode_env(self) -> OpenCodeEnv:
@@ -638,7 +685,9 @@ class Forklift(Command):
         return resolved_target_policy(self.target_policy)
 
     def _resolved_timeout_seconds(self, env_timeout_seconds: int | None) -> int:
-        return resolved_effective_timeout_seconds(self.timeout_seconds, env_timeout_seconds)
+        return resolved_effective_timeout_seconds(
+            self.timeout_seconds, env_timeout_seconds
+        )
 
     def _print_version(self) -> None:
         try:
@@ -652,3 +701,63 @@ class Forklift(Command):
 
     def _chown_artifact(self, target: Path, label: str, uid: int, gid: int) -> None:
         chown_artifact(target, label=label, uid=uid, gid=gid)
+
+
+def _extract_instruction_args(
+    raw_args: Sequence[str],
+    *,
+    subcommands: set[str],
+) -> tuple[list[str], list[str]]:
+    """Collect repeatable `--instruction` values before Clypi sees the argv."""
+
+    normalized_args = arg_parser.normalize_args(raw_args)
+    filtered_args: list[str] = []
+    instructions: list[str] = []
+    index = 0
+    while index < len(normalized_args):
+        argument = normalized_args[index]
+        if argument == "--":
+            filtered_args.extend(normalized_args[index:])
+            break
+
+        parsed_argument = arg_parser.parse_as_attr(argument)
+        if parsed_argument.is_pos() and parsed_argument.value in subcommands:
+            filtered_args.extend(normalized_args[index:])
+            break
+
+        if argument != INSTRUCTION_OPTION:
+            filtered_args.append(argument)
+            index += 1
+            continue
+
+        next_index = index + 1
+        if next_index >= len(normalized_args):
+            raise SystemExit(
+                f"{INSTRUCTION_OPTION} requires a value. {INSTRUCTION_VALUE_HINT}"
+            )
+
+        value = normalized_args[next_index]
+        if value == "--" or arg_parser.parse_as_attr(value).is_opt():
+            raise SystemExit(
+                f"{INSTRUCTION_OPTION} requires a value. {INSTRUCTION_VALUE_HINT}"
+            )
+
+        instructions.append(value)
+        index += 2
+
+    return filtered_args, instructions
+
+
+def parse_forklift_args(args: Sequence[str] | None = None) -> Forklift:
+    """Parse CLI arguments while preserving repeatable `--instruction` order."""
+
+    raw_args = list(args) if args is not None else sys.argv[1:]
+    filtered_args, instructions = _extract_instruction_args(
+        raw_args,
+        subcommands={name for name in Forklift.subcommands() if name is not None},
+    )
+    command = Forklift.parse(filtered_args)
+    command.instruction = instructions
+    if command.subcommand is not None and instructions:
+        raise SystemExit("--instruction is only valid for the main forklift run.")
+    return command

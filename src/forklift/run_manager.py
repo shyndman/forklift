@@ -23,6 +23,22 @@ CONTAINER_GID = 1000
 SECONDS_PER_DAY = 24 * 60 * 60
 RUN_RETENTION_DAYS = 7
 RUN_RETENTION_WINDOW_SECONDS = RUN_RETENTION_DAYS * SECONDS_PER_DAY
+EXTRA_RUN_INSTRUCTIONS_FILE_NAME = "extra-run-instructions.md"
+EXTRA_RUN_INSTRUCTIONS_CALLOUT = (
+    "> This information was provided by the user with foreknowledge of what conflicts will occur in this rebase. "
+    "You **MUST** follow any resolution decisions therein when the situation is encountered."
+)
+
+
+def render_extra_run_instructions(extra_instructions: Sequence[str]) -> str:
+    """Render the host-provided instruction section appended to the agent prompt."""
+
+    instruction_body = "\n\n".join(extra_instructions)
+    return (
+        "## Extra Run Instructions\n\n"
+        f"{EXTRA_RUN_INSTRUCTIONS_CALLOUT}\n\n"
+        f"{instruction_body}\n"
+    )
 
 
 def _default_runs_root() -> Path:
@@ -153,6 +169,7 @@ class RunDirectoryManager:
         main_branch: str = "main",
         selected_upstream_sha: str | None = None,
         extra_metadata: dict[str, object] | None = None,
+        extra_instructions: Sequence[str] = (),
     ) -> RunPaths:
         """Create a detached run workspace seeded to the caller-selected upstream target."""
 
@@ -179,10 +196,13 @@ class RunDirectoryManager:
         metadata_payload: dict[str, object] = {**branch_info}
         if extra_metadata:
             metadata_payload.update(extra_metadata)
+        if extra_instructions:
+            metadata_payload["extra_instructions"] = list(extra_instructions)
         metadata_payload["run_id"] = run_id
         upstream_main_sha = branch_info.get("upstream_main_sha")
         seed_upstream_sha = selected_upstream_sha or upstream_main_sha
         self._write_metadata(run_dir, source_repo, timestamp, metadata_payload)
+        self._write_extra_run_instructions(harness_state, extra_instructions)
         _ = initialize_run_state(run_dir, run_id)
         self._remove_remotes(workspace)
         self._seed_upstream_ref(workspace, seed_upstream_sha, main_branch)
@@ -261,6 +281,22 @@ class RunDirectoryManager:
         }
         _ = (run_dir / "metadata.json").write_text(
             json.dumps(metadata, indent=2) + "\n"
+        )
+
+    def _write_extra_run_instructions(
+        self,
+        harness_state: Path,
+        extra_instructions: Sequence[str],
+    ) -> None:
+        """Persist host-provided prompt overlays where the harness can read them."""
+
+        if not extra_instructions:
+            return
+
+        rendered = render_extra_run_instructions(extra_instructions)
+        _ = (harness_state / EXTRA_RUN_INSTRUCTIONS_FILE_NAME).write_text(
+            rendered,
+            encoding="utf-8",
         )
 
     def _overlay_fork_context(self, source_repo: Path, workspace: Path) -> None:

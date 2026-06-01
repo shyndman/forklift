@@ -12,7 +12,7 @@ from typing import cast
 
 from rich.console import Console
 
-from forklift.cli import Forklift, HARNESS_STATUS_FILE_NAME
+from forklift.cli import Forklift, HARNESS_STATUS_FILE_NAME, parse_forklift_args
 from forklift.cli_authorship import OperatorIdentity
 from forklift.cli_runtime import (
     DEFAULT_RUN_TIMEOUT_SECONDS,
@@ -109,8 +109,30 @@ class CliRuntimeHelperTests(unittest.TestCase):
         )
 
     def test_forklift_parse_accepts_timeout_seconds_flag(self) -> None:
-        command = Forklift.parse(["--timeout-seconds", "33"])
+        command = parse_forklift_args(["--timeout-seconds", "33"])
         self.assertEqual(command.timeout_seconds, 33)
+
+    def test_forklift_parse_collects_repeated_instruction_flags(self) -> None:
+        command = parse_forklift_args(
+            [
+                "--instruction",
+                "Resolve package-lock.json using upstream",
+                "--instruction",
+                "Keep fork-only telemetry hooks",
+            ]
+        )
+
+        self.assertEqual(
+            command.instruction,
+            [
+                "Resolve package-lock.json using upstream",
+                "Keep fork-only telemetry hooks",
+            ],
+        )
+
+    def test_instruction_flag_is_rejected_for_subcommands(self) -> None:
+        with self.assertRaises(SystemExit):
+            _ = parse_forklift_args(["--instruction", "Resolve conflict", "changelog"])
 
 
 class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
@@ -149,6 +171,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         *,
         container_result: ContainerRunResult,
         container_events: list[RebaseEvent] | None = None,
+        instructions: list[str] | None = None,
         post_run_side_effect: Exception | None = None,
         monitor_logger_after_footer: bool = False,
         timeout_seconds: int | None = None,
@@ -217,6 +240,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             forklift.main_branch = "main"
             forklift.target_policy = "tip"
             forklift.timeout_seconds = timeout_seconds
+            forklift.instruction = list(instructions or [])
 
             post_run_patch = patch.object(Forklift, "_post_container_results", return_value=None)
             if post_run_side_effect is not None:
@@ -451,6 +475,21 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             constructor_kwargs.get("build_env_timeout_seconds"),
             DEFAULT_RUN_TIMEOUT_SECONDS,
         )
+
+    async def test_whitespace_only_instruction_fails_before_run_preparation(self) -> None:
+        _, exit_code, _, constructor_kwargs = await self._run_cli(
+            container_result=ContainerRunResult(
+                exit_code=0,
+                timed_out=False,
+                stdout="",
+                stderr="",
+                container_name="forklift-test",
+            ),
+            instructions=["   "],
+        )
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(constructor_kwargs, {})
 
     async def test_timeout_footer_keeps_exit_code_two(self) -> None:
         output, exit_code, _, _ = await self._run_cli(

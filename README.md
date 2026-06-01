@@ -44,6 +44,7 @@ uv run forklift --version
 | `--target-policy=tip` | Rebase to upstream branch tip (default) |
 | `--target-policy=latest-version` | Rebase to latest stable tag (`X.Y.Z` or `vX.Y.Z`) |
 | `--timeout-seconds=<n>` | Override agent timeout (default: 1500) |
+| `--instruction='...'` | Extra instructions provided in addition to `FORK.md` contents; repeat to add multiple blocks |
 | `--model`, `--variant`, `--agent` | Override OpenCode settings per-run |
 
 ### Changelog preflight
@@ -117,6 +118,8 @@ OPENROUTER_API_KEY=...
 ## FORK.md
 
 Add a `FORK.md` to your repo root to give the agent context about your fork. If the repo-root file is absent, Forklift falls back to `.agents/FORK.md`. See the [template](FORK.md) for format and examples.
+
+For one-off run guidance, pass `--instruction='...'` on the main `forklift` command. Forklift appends those blocks as a separate host-provided `## Extra Run Instructions` section in the agent prompt; `FORK.md` remains the durable fork baseline.
 
 ### Front matter gates
 

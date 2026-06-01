@@ -50,6 +50,14 @@ Write DONE.md at the root of $WORKSPACE_DIR summarizing the decisions you made:
 TXT
 }
 
+append_extra_run_instructions() {
+  if [[ ! -f "$EXTRA_RUN_INSTRUCTIONS_FILE" || ! -s "$EXTRA_RUN_INSTRUCTIONS_FILE" ]]; then
+    return
+  fi
+
+  cat "$EXTRA_RUN_INSTRUCTIONS_FILE" | tee -a "$INSTRUCTIONS_FILE"
+}
+
 # Parse optional FORK front matter into setup metadata while keeping agent-visible context body-only.
 parse_fork_context() {
   local fork_file setup_tmp body_tmp changelog_excludes_tmp rebase_continue_check_tmp
@@ -369,6 +377,7 @@ PY
 write_instructions() {
   print_header "Instructions" | tee "$INSTRUCTIONS_FILE"
   default_instructions | tee -a "$INSTRUCTIONS_FILE"
+  append_extra_run_instructions
   print_header "FORK.md Context" | tee -a "$INSTRUCTIONS_FILE"
   if [[ $FORK_CONTEXT_PRESENT -eq 1 ]]; then
     printf '%s' "$FORK_CONTEXT_BODY" >"$FORK_CONTEXT_FILE"

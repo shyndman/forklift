@@ -50,6 +50,6 @@ def __getattr__(name: str) -> object:
 
 
 def main() -> None:
-    from .cli import Forklift
+    from .cli import parse_forklift_args
 
-    _ = Forklift.parse().start()
+    _ = parse_forklift_args().start()

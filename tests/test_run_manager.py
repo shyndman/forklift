@@ -3,10 +3,11 @@ from __future__ import annotations
 from pathlib import Path
 import tempfile
 import unittest
-from typing import override
+import json
+from typing import cast, override
 from unittest.mock import patch
 
-from forklift.run_manager import RunDirectoryManager
+from forklift.run_manager import EXTRA_RUN_INSTRUCTIONS_FILE_NAME, RunDirectoryManager
 
 
 class OverlayRunDirectoryManager(RunDirectoryManager):
@@ -111,11 +112,54 @@ class RunManagerForkContextTests(unittest.TestCase):
             self.assertTrue(run_paths.control_dir.exists())
             self.assertTrue(run_paths.control_dir.stat().st_mode)
 
-            chowned_paths = {Path(call.args[0]) for call in chown_mock.call_args_list}
+            chowned_paths = {
+                Path(cast(str, call.args[0])) for call in chown_mock.call_args_list
+            }
             self.assertIn(run_paths.control_dir, chowned_paths)
             self.assertIn(run_paths.workspace, chowned_paths)
             self.assertIn(run_paths.harness_state, chowned_paths)
             self.assertIn(run_paths.opencode_logs, chowned_paths)
+
+    def test_prepare_persists_extra_run_instructions_for_harness_and_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source_repo = root / "source"
+            source_repo.mkdir()
+            manager = PrepareRunDirectoryManager(runs_root=root / "runs")
+
+            with patch("forklift.run_manager.os.chown", return_value=None):
+                run_paths = manager.prepare(
+                    source_repo,
+                    extra_instructions=(
+                        "Resolve package-lock.json using upstream.",
+                        "Keep fork-owned telemetry hooks intact.",
+                    ),
+                )
+
+            extra_file = run_paths.harness_state / EXTRA_RUN_INSTRUCTIONS_FILE_NAME
+            self.assertEqual(
+                extra_file.read_text(encoding="utf-8"),
+                "".join(
+                    (
+                        "## Extra Run Instructions\n\n",
+                        "> This information was provided by the user with foreknowledge of what conflicts will occur in this rebase. You **MUST** follow any resolution decisions therein when the situation is encountered.\n\n",
+                        "Resolve package-lock.json using upstream.\n\n",
+                        "Keep fork-owned telemetry hooks intact.\n",
+                    )
+                ),
+            )
+
+            metadata = cast(
+                dict[str, object],
+                json.loads((run_paths.run_dir / "metadata.json").read_text(encoding="utf-8")),
+            )
+            self.assertEqual(
+                metadata["extra_instructions"],
+                [
+                    "Resolve package-lock.json using upstream.",
+                    "Keep fork-owned telemetry hooks intact.",
+                ],
+            )
 
 
 if __name__ == "__main__":

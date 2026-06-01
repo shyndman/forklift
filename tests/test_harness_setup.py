@@ -102,20 +102,21 @@ class HarnessSetupTests(unittest.TestCase):
         script = f"""
 set -euo pipefail
 source \"{HARNESS_SCRIPT}\"
-WORKSPACE_DIR=\"{self.workspace}\"
-HARNESS_STATE_DIR=\"{self.harness_state}\"
-INSTRUCTIONS_FILE=\"$HARNESS_STATE_DIR/instructions.txt\"
-FORK_CONTEXT_FILE=\"$HARNESS_STATE_DIR/fork-context.md\"
-SETUP_LOG=\"$HARNESS_STATE_DIR/setup.log\"
-CLIENT_LOG=\"$HARNESS_STATE_DIR/opencode-client.log\"
-HARNESS_STATUS_FILE=\"$HARNESS_STATE_DIR/harness-status.txt\"
-REBASE_CONTINUE_CHECK_FILE=\"$HARNESS_STATE_DIR/rebase-continue-check.sh\"
-REBASE_SKIPPED_COMMITS_FILE=\"$HARNESS_STATE_DIR/rebase-skipped-commits.json\"
-REBASE_CONFLICTING_COMMITS_FILE=\"$HARNESS_STATE_DIR/rebase-conflicting-commits.json\"
-export WORKSPACE_DIR HARNESS_STATE_DIR INSTRUCTIONS_FILE FORK_CONTEXT_FILE SETUP_LOG CLIENT_LOG HARNESS_STATUS_FILE
+WORKSPACE_DIR="{self.workspace}"
+HARNESS_STATE_DIR="{self.harness_state}"
+INSTRUCTIONS_FILE="$HARNESS_STATE_DIR/instructions.txt"
+FORK_CONTEXT_FILE="$HARNESS_STATE_DIR/fork-context.md"
+EXTRA_RUN_INSTRUCTIONS_FILE="$HARNESS_STATE_DIR/extra-run-instructions.md"
+SETUP_LOG="$HARNESS_STATE_DIR/setup.log"
+CLIENT_LOG="$HARNESS_STATE_DIR/opencode-client.log"
+HARNESS_STATUS_FILE="$HARNESS_STATE_DIR/harness-status.txt"
+REBASE_CONTINUE_CHECK_FILE="$HARNESS_STATE_DIR/rebase-continue-check.sh"
+REBASE_SKIPPED_COMMITS_FILE="$HARNESS_STATE_DIR/rebase-skipped-commits.json"
+REBASE_CONFLICTING_COMMITS_FILE="$HARNESS_STATE_DIR/rebase-conflicting-commits.json"
+export WORKSPACE_DIR HARNESS_STATE_DIR INSTRUCTIONS_FILE FORK_CONTEXT_FILE EXTRA_RUN_INSTRUCTIONS_FILE SETUP_LOG CLIENT_LOG HARNESS_STATUS_FILE
 export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING_COMMITS_FILE
-: >\"$CLIENT_LOG\"
-: >\"$SETUP_LOG\"
+: >"$CLIENT_LOG"
+: >"$SETUP_LOG"
 {commands}
 """
         return subprocess.run(
@@ -635,6 +636,51 @@ printf '%s' "$AGENT_PAYLOAD" >"$HARNESS_STATE_DIR/agent-payload.txt"
         self.assertNotIn("setup:", payload)
         self.assertNotIn("---", instructions)
         self.assertNotIn("---", fork_context)
+        self.assertNotIn("---", payload)
+
+    def test_extra_run_instructions_are_appended_to_agent_visible_artifacts(self) -> None:
+        self._init_workspace_repo()
+        _ = (self.workspace / "FORK.md").write_text(
+            "---\nsetup: echo bootstrap-ok\n---\n## Mission\nKeep TV UX behavior.\n",
+            encoding="utf-8",
+        )
+        _ = (self.harness_state / "extra-run-instructions.md").write_text(
+            "".join(
+                (
+                    "## Extra Run Instructions\n\n",
+                    "> This information was provided by the user with foreknowledge of what conflicts will occur in this rebase. You **MUST** follow any resolution decisions therein when the situation is encountered.\n\n",
+                    "Resolve package-lock.json using upstream.\n\n",
+                    "Keep fork-owned telemetry hooks intact.\n",
+                )
+            ),
+            encoding="utf-8",
+        )
+
+        result = self._run_harness_shell(
+            """
+parse_fork_context
+run_setup_command
+write_instructions
+build_agent_payload
+printf '%s' "$AGENT_PAYLOAD" >"$HARNESS_STATE_DIR/agent-payload.txt"
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        instructions = (self.harness_state / "instructions.txt").read_text(encoding="utf-8")
+        fork_context = (self.harness_state / "fork-context.md").read_text(encoding="utf-8")
+        payload = (self.harness_state / "agent-payload.txt").read_text(encoding="utf-8")
+
+        self.assertIn("## Extra Run Instructions", instructions)
+        self.assertIn(
+            "This information was provided by the user with foreknowledge of what conflicts will occur in this rebase.",
+            instructions,
+        )
+        self.assertIn("Resolve package-lock.json using upstream.", instructions)
+        self.assertIn("Keep fork-owned telemetry hooks intact.", instructions)
+        self.assertIn("## Extra Run Instructions", payload)
+        self.assertNotIn("## Extra Run Instructions", fork_context)
+        self.assertNotIn("setup:", payload)
         self.assertNotIn("---", payload)
 
     def test_main_skips_agent_when_initial_rebase_completes_cleanly(self) -> None:
