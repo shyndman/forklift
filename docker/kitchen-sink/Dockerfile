@@ -125,8 +125,10 @@ if command -v pyenv >/dev/null 2>&1; then
 fi
 EOF
 
-COPY --chown=forklift:forklift harness/ /opt/forklift/harness/
-RUN chmod +x /opt/forklift/harness/run.sh
+COPY harness/ /opt/forklift/harness/
+RUN chown -R root:root /opt/forklift/harness && \
+    chmod -R go-w /opt/forklift/harness && \
+    chmod +x /opt/forklift/harness/run.sh /opt/forklift/harness/includes/bin/git
 
 COPY opencode/start_server.sh /opt/opencode/start_server.sh
 COPY opencode/entrypoint.sh /opt/opencode/entrypoint.sh

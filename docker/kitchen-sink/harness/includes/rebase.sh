@@ -68,7 +68,39 @@ capture_status_snapshot() {
 }
 
 run_real_git() {
-  "$REAL_GIT_BIN" "$@"
+  env -i \
+    HOME="${HOME:-/home/forklift}" \
+    PATH="$PATH" \
+    LANG="${LANG:-C.UTF-8}" \
+    LC_ALL="${LC_ALL:-${LANG:-C.UTF-8}}" \
+    TERM="${TERM:-dumb}" \
+    GIT_CONFIG_GLOBAL=/dev/null \
+    GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_EDITOR="${FORKLIFT_GIT_EDITOR:-true}" \
+    "$REAL_GIT_BIN" "$@"
+}
+
+has_caller_git_config_override() {
+  local arg
+  for arg in "$@"; do
+    case "$arg" in
+      -c|--config-env|--config-env=*|-c*)
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+is_allowed_paused_git_command() {
+  local command_name
+  command_name="${1:-}"
+  case "$command_name" in
+    add|checkout|diff|log|merge-file|rev-parse|show|status)
+      return 0
+      ;;
+  esac
+  return 1
 }
 
 count_rebase_commits() {
@@ -523,6 +555,16 @@ classify_paused_rebase_command() {
   PAUSED_REBASE_ACTION=""
   PAUSED_REBASE_HAS_REBASE=0
   PAUSED_REBASE_NORMALIZED=()
+
+  if has_caller_git_config_override "$@"; then
+    PAUSED_REBASE_ACTION="unsupported"
+    return 0
+  fi
+
+  if [[ -n "${1:-}" && "$1" != "rebase" ]] && ! is_allowed_paused_git_command "$1"; then
+    PAUSED_REBASE_ACTION="unsupported"
+    return 0
+  fi
 
   for arg in "$@"; do
     case "$arg" in

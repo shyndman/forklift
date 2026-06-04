@@ -812,7 +812,7 @@ git status --short >/dev/null
     def test_classify_paused_rebase_command_detects_continue_shape(self) -> None:
         result = self._run_harness_shell(
             """
-classify_paused_rebase_command rebase --continue --quiet
+classify_paused_rebase_command rebase --continue
 printf '%s' "$PAUSED_REBASE_ACTION" >"$HARNESS_STATE_DIR/rebase-action.txt"
 """
         )
@@ -840,6 +840,44 @@ fi
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("unsupported paused rebase command", result.stderr)
+
+    def test_git_wrapper_rejects_config_alias_bypass_during_paused_rebase(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+prepend_git_wrapper_path
+cd "$WORKSPACE_DIR"
+if git -c alias.stage='rebase --continue' stage; then
+  echo "expected wrapper failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
+
+    def test_git_wrapper_rejects_unapproved_command_during_paused_rebase(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+prepend_git_wrapper_path
+cd "$WORKSPACE_DIR"
+if git stage; then
+  echo "expected wrapper failure" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
 
     def test_bash_subprocess_inherits_git_wrapper_for_paused_rebase(self) -> None:
         self._init_conflicting_rebase()
