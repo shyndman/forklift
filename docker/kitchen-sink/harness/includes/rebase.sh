@@ -610,6 +610,20 @@ classify_paused_rebase_command() {
 
 fail_unsupported_paused_rebase_command() {
   emit_phase_message "rebase" "stderr" "Unsupported paused rebase command shape"
-  printf 'git: unsupported paused rebase command; use git rebase --continue, --skip, or --abort\n' >&2
+  cat >&2 <<'EOF'
+git: unsupported paused rebase command.
+
+Forklift is mediating this paused rebase. Do not alter Git behavior or bypass the
+wrapper with config overrides, aliases, alternate Git paths, or unsupported Git
+commands.
+
+Resolve conflicts, stage the resolved files, then use one of:
+  git rebase --continue
+  git rebase --skip
+  git rebase --abort
+
+If you cannot make progress using the wrapper-mediated flow, write STUCK.md at
+the workspace root explaining what blocked progress and what a human should do.
+EOF
   return 1
 }

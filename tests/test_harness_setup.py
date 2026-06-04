@@ -840,6 +840,8 @@ fi
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertIn("Do not alter Git behavior or bypass the", result.stderr)
+        self.assertIn("write STUCK.md", result.stderr)
 
     def test_git_wrapper_rejects_config_alias_bypass_during_paused_rebase(self) -> None:
         self._init_conflicting_rebase()
@@ -858,6 +860,8 @@ fi
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertIn("Do not alter Git behavior or bypass the", result.stderr)
+        self.assertIn("write STUCK.md", result.stderr)
         self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
 
     def test_git_wrapper_rejects_unapproved_command_during_paused_rebase(self) -> None:
@@ -877,6 +881,8 @@ fi
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertIn("Do not alter Git behavior or bypass the", result.stderr)
+        self.assertIn("write STUCK.md", result.stderr)
         self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
 
     def test_bash_subprocess_inherits_git_wrapper_for_paused_rebase(self) -> None:
@@ -895,6 +901,8 @@ fi
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertIn("Do not alter Git behavior or bypass the", result.stderr)
+        self.assertIn("write STUCK.md", result.stderr)
 
     def test_handle_rebase_continue_succeeds_after_passing_check(self) -> None:
         self._init_conflicting_rebase()
