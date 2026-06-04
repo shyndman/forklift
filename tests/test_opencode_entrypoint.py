@@ -232,6 +232,8 @@ sleep 60
             forwarded["PATH"].split(":", 1)[0],
             str(REBASE_SCRIPT.parent / "bin"),
         )
+        self.assertIn("/opt/bun/bin", forwarded["PATH"].split(":"))
+        self.assertIn("/opt/opencode/bin", forwarded["PATH"].split(":"))
 
     def _sandboxed_entrypoint(self) -> str:
         return (
