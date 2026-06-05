@@ -5,7 +5,7 @@ import subprocess
 import tempfile
 import time
 import unittest
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import cast
 from unittest.mock import patch
@@ -32,6 +32,8 @@ class SuccessfulProcess:
 
 class EventEmittingProcess:
     returncode: int
+    _socket_path: Path
+    _payloads: list[bytes]
 
     def __init__(self, socket_path: Path, payloads: list[bytes]) -> None:
         self.returncode = 0
@@ -117,7 +119,7 @@ class ContainerRunnerRunStateTests(unittest.TestCase):
             self.assertEqual(statuses, ["running", "completed"])
             self.assertEqual(update_state.call_args_list[-1].kwargs.get("exit_code"), 0)
 
-            command = popen_mock.call_args.args[0]
+            command = cast(Sequence[str], popen_mock.call_args.args[0])
             self.assertIn("-v", command)
             self.assertIn(f"{control_dir}:{CONTROL_MOUNT_DIR}", command)
             self.assertIn("-e", command)
@@ -144,7 +146,7 @@ class ContainerRunnerRunStateTests(unittest.TestCase):
                     ValueError,
                     "shorten XDG_STATE_HOME or the repository/run path",
                 ):
-                    runner.run(
+                    _ = runner.run(
                         workspace,
                         harness_state,
                         opencode_logs,

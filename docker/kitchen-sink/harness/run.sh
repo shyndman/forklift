@@ -62,8 +62,8 @@ main() {
   log_client "  FORKLIFT_REBASE_EVENTS_SOCK=${FORKLIFT_REBASE_EVENTS_SOCK:-unset}"
 
   log_client "Configuring Forklift git identity"
-  git config --global user.name "Forklift Agent"
-  git config --global user.email forklift@github.com
+  git config --global user.name "$FORKLIFT_GIT_USER_NAME"
+  git config --global user.email "$FORKLIFT_GIT_USER_EMAIL"
   log_client "  git user.name=$(git config --global user.name)"
   log_client "  git user.email=$(git config --global user.email)"
   configure_git_lfs_filters

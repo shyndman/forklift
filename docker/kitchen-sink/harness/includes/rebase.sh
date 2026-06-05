@@ -11,6 +11,8 @@ REBASE_EVENT_SHA=""
 REBASE_EVENT_SUBJECT=""
 REBASE_EVENT_FILES=()
 REBASE_HELPER_ROOT=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+FORKLIFT_GIT_USER_NAME=${FORKLIFT_GIT_USER_NAME:-Forklift Agent}
+FORKLIFT_GIT_USER_EMAIL=${FORKLIFT_GIT_USER_EMAIL:-forklift@github.com}
 
 resolve_real_git_bin() {
   local resolved
@@ -76,6 +78,8 @@ run_real_git() {
     TERM="${TERM:-dumb}" \
     GIT_CONFIG_GLOBAL=/dev/null \
     GIT_CONFIG_SYSTEM=/dev/null \
+    GIT_COMMITTER_NAME="$FORKLIFT_GIT_USER_NAME" \
+    GIT_COMMITTER_EMAIL="$FORKLIFT_GIT_USER_EMAIL" \
     GIT_EDITOR="${FORKLIFT_GIT_EDITOR:-true}" \
     "$REAL_GIT_BIN" "$@"
 }

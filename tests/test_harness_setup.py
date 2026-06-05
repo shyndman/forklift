@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import subprocess
 import tempfile
@@ -126,6 +127,21 @@ export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING
             check=False,
         )
 
+    def _run_git_with_commit_identity(self, args: list[str]) -> subprocess.CompletedProcess[str]:
+        env = os.environ.copy()
+        env["GIT_AUTHOR_NAME"] = "Fixture Author"
+        env["GIT_AUTHOR_EMAIL"] = "fixture-author@example.com"
+        env["GIT_COMMITTER_NAME"] = "Fixture Committer"
+        env["GIT_COMMITTER_EMAIL"] = "fixture-committer@example.com"
+        return subprocess.run(
+            ["git", *args],
+            cwd=self.workspace,
+            env=env,
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+
     def _init_workspace_repo(self) -> None:
         _ = subprocess.run(["git", "init"], cwd=self.workspace, check=True)
         _ = subprocess.run(
@@ -234,6 +250,33 @@ export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING
             cwd=self.workspace,
             check=True,
         )
+        _ = subprocess.run(["git", "checkout", "main"], cwd=self.workspace, check=True)
+
+    def _init_rebase_repo_without_configured_identity(self) -> None:
+        _ = subprocess.run(["git", "init", "-b", "main"], cwd=self.workspace, check=True)
+
+        tracked = self.workspace / "tracked.txt"
+        _ = tracked.write_text("base\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "tracked.txt"], cwd=self.workspace, check=True)
+        _ = self._run_git_with_commit_identity(["commit", "-m", "base"])
+        base_sha = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+
+        fork_only = self.workspace / "fork-only.txt"
+        _ = fork_only.write_text("fork\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "fork-only.txt"], cwd=self.workspace, check=True)
+        _ = self._run_git_with_commit_identity(["commit", "-m", "fork change"])
+        _ = subprocess.run(["git", "branch", "upstream/main", base_sha], cwd=self.workspace, check=True)
+        _ = subprocess.run(["git", "checkout", "upstream/main"], cwd=self.workspace, check=True)
+        upstream_only = self.workspace / "upstream-only.txt"
+        _ = upstream_only.write_text("upstream\n", encoding="utf-8")
+        _ = subprocess.run(["git", "add", "upstream-only.txt"], cwd=self.workspace, check=True)
+        _ = self._run_git_with_commit_identity(["commit", "-m", "upstream change"])
         _ = subprocess.run(["git", "checkout", "main"], cwd=self.workspace, check=True)
 
     def _init_main_repo_without_upstream(self) -> None:
@@ -764,6 +807,35 @@ main
             (self.harness_state / "rebase-conflicting-commits.json").read_text(encoding="utf-8"),
             f"[\n  {{\n    \"sha\": \"{expected_sha}\",\n    \"subject\": \"{expected_subject}\"\n  }}\n]\n",
         )
+
+    def test_start_initial_rebase_sets_committer_identity_without_git_config(self) -> None:
+        self._init_rebase_repo_without_configured_identity()
+
+        result = self._run_harness_shell(
+            f'''
+HOME="{self.root / "home"}"
+mkdir -p "$HOME"
+resolve_real_git_bin
+UPSTREAM_REF="upstream/main"
+start_initial_rebase
+printf '%s' "$INITIAL_REBASE_RESULT" >"$HARNESS_STATE_DIR/initial-rebase-result.txt"
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("Committer identity unknown", result.stderr)
+        self.assertEqual(
+            (self.harness_state / "initial-rebase-result.txt").read_text(encoding="utf-8"),
+            "completed",
+        )
+        committer = subprocess.run(
+            ["git", "log", "-1", "--format=%cn <%ce>"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(committer, "Forklift Agent <forklift@github.com>")
 
     def test_main_fails_closed_when_initial_rebase_hard_fails(self) -> None:
         self._init_main_repo_without_upstream()

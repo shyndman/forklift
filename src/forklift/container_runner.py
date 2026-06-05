@@ -355,7 +355,7 @@ class ContainerRunner:
 
     def _parse_rebase_event(self, raw_line: str) -> RebaseEvent | None:
         try:
-            payload_obj = json.loads(raw_line)
+            payload_obj = cast(object, json.loads(raw_line))
         except json.JSONDecodeError as exc:
             logger.warning(
                 "Ignoring malformed rebase event payload",
@@ -409,14 +409,15 @@ class ContainerRunner:
             return None
         normalized_files: tuple[str, ...] = ()
         if isinstance(files, list):
-            if any(not isinstance(item, str) for item in files):
+            raw_files = cast(list[object], files)
+            if any(not isinstance(item, str) for item in raw_files):
                 logger.warning(
                     "Ignoring rebase event with invalid files payload",
                     files=files,
                     payload=payload,
                 )
                 return None
-            normalized_files = tuple(cast(list[str], files))
+            normalized_files = tuple(cast(list[str], raw_files))
 
         if files is not None and not normalized_files and files != []:
             logger.warning(

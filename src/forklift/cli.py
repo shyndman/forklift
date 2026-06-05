@@ -7,14 +7,13 @@ from importlib import metadata
 from pathlib import Path
 from shlex import quote as shell_quote
 import sys
-from typing import cast, override
+from typing import override
 
 from clypi import Command, arg, boxed
 from clypi._cli import arg_parser
 import structlog
 from rich.traceback import install as install_rich_traceback
 from rich.console import Console
-from structlog.stdlib import BoundLogger
 
 from .cli_authorship import (
     AGENT_EMAIL as AUTHORSHIP_AGENT_EMAIL,
