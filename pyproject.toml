@@ -10,6 +10,7 @@ requires-python = ">=3.13"
 dependencies = [
     "clypi==1.8.2",
     "genai-prices>=0.0.61,<0.1",
+    "libsh>=0.2.0",
     "pydantic==2.12.5",
     "pydantic-ai==1.99.0",
     "rich~=14.3",
