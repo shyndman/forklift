@@ -41,8 +41,8 @@ uv run forklift --version
 | Flag | Description |
 |------|-------------|
 | `--main-branch=<name>` | Target branch if not `main` |
-| `--target-policy=tip` | Rebase to upstream branch tip (default) |
-| `--target-policy=latest-version` | Rebase to latest stable tag (`X.Y.Z` or `vX.Y.Z`) |
+| `--target-policy=latest-version` | Rebase to latest stable tag (`X.Y.Z` or `vX.Y.Z`) (default) |
+| `--target-policy=tip` | Rebase to upstream branch tip |
 | `--timeout-seconds=<n>` | Override agent timeout (default: 1500) |
 | `--instruction='...'` | Extra instructions provided in addition to `FORK.md` contents; repeat to add multiple blocks |
 | `--model`, `--variant`, `--agent` | Override OpenCode settings per-run |

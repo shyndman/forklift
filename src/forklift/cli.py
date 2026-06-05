@@ -37,6 +37,7 @@ from .post_run_metrics import (
     render_usage_summary,
 )
 from .cli_runtime import (
+    DEFAULT_TARGET_POLICY,
     apply_cli_overrides,
     build_container_env,
     chown_artifact,
@@ -105,8 +106,8 @@ class Forklift(Command):
         "main", help="Name of the primary branch to rebase (default: main)"
     )
     target_policy: str = arg(
-        "tip",
-        help="Upstream target policy: 'tip' or 'latest-version' (default: tip)",
+        DEFAULT_TARGET_POLICY,
+        help="Upstream target policy: 'tip' or 'latest-version' (default: latest-version)",
     )
     debug: bool = arg(False, short="d", help="Enable debug logging")
     version: bool = arg(False, short="v", help="Print version and exit")

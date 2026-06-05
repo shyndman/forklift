@@ -11,6 +11,7 @@ from typing import cast
 from .opencode_env import OpenCodeEnv, SAFE_VALUE_PATTERN
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
+DEFAULT_TARGET_POLICY = "latest-version"
 TARGET_POLICY_OPTIONS = frozenset({"tip", "latest-version"})
 HOST_UID_ENV = "FORKLIFT_HOST_UID"
 HOST_GID_ENV = "FORKLIFT_HOST_GID"
@@ -169,7 +170,7 @@ def resolved_effective_timeout_seconds(
 def resolved_target_policy(target_policy: str | None) -> str:
     """Normalize and validate the upstream target policy used by orchestration."""
 
-    policy = (target_policy or "tip").strip()
+    policy = (target_policy or DEFAULT_TARGET_POLICY).strip()
     if not policy:
         logger.error("--target-policy value must not be empty")
         raise SystemExit(1)

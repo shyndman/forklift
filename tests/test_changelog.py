@@ -67,6 +67,7 @@ from forklift.changelog_models import (
     UpstreamNarrativeSections,
 )
 from forklift.cli import Forklift
+from forklift.cli_runtime import DEFAULT_TARGET_POLICY
 from forklift.git import ResolvedUpstreamTarget
 from forklift.opencode_env import OpenCodeEnv
 from forklift.changelog_renderer import render_changelog_markdown, render_changelog_terminal
@@ -87,18 +88,19 @@ class ChangelogCliParsingTests(unittest.TestCase):
         command = Forklift.parse(["changelog"])
         self.assertIsInstance(command.subcommand, Changelog)
 
-    def test_changelog_defaults_target_policy_to_tip(self) -> None:
+    def test_changelog_defaults_target_policy_to_latest_version(self) -> None:
         command = Forklift.parse(["changelog"])
+        subcommand = command.subcommand
 
-        self.assertIsInstance(command.subcommand, Changelog)
-        subcommand = cast(Changelog, command.subcommand)
-        self.assertEqual(subcommand.target_policy, "tip")
+        assert isinstance(subcommand, Changelog)
+        self.assertEqual(subcommand.target_policy, DEFAULT_TARGET_POLICY)
+        self.assertEqual(DEFAULT_TARGET_POLICY, "latest-version")
 
     def test_changelog_parses_explicit_target_policy(self) -> None:
         command = Forklift.parse(["changelog", "--target-policy=latest-version"])
+        subcommand = command.subcommand
 
-        self.assertIsInstance(command.subcommand, Changelog)
-        subcommand = cast(Changelog, command.subcommand)
+        assert isinstance(subcommand, Changelog)
         self.assertEqual(subcommand.target_policy, "latest-version")
 
 

@@ -15,6 +15,7 @@ from rich.console import Console
 from forklift.cli import Forklift, HARNESS_STATUS_FILE_NAME, parse_forklift_args
 from forklift.cli_authorship import OperatorIdentity
 from forklift.cli_runtime import (
+    DEFAULT_TARGET_POLICY,
     DEFAULT_RUN_TIMEOUT_SECONDS,
     HOST_GID_ENV,
     HOST_UID_ENV,
@@ -71,8 +72,14 @@ class CliRuntimeHelperTests(unittest.TestCase):
         self.assertEqual(container_env[HOST_GID_ENV], "654")
         self.assertEqual(container_env["TZ"], "America/Vancouver")
 
-    def test_resolved_target_policy_defaults_to_tip(self) -> None:
-        self.assertEqual(resolved_target_policy(None), "tip")
+    def test_resolved_target_policy_defaults_to_latest_version(self) -> None:
+        self.assertEqual(resolved_target_policy(None), DEFAULT_TARGET_POLICY)
+        self.assertEqual(DEFAULT_TARGET_POLICY, "latest-version")
+
+    def test_forklift_defaults_target_policy_to_latest_version(self) -> None:
+        command = Forklift.parse([])
+
+        self.assertEqual(command.target_policy, DEFAULT_TARGET_POLICY)
 
     def test_resolved_target_policy_accepts_tip_and_latest_version(self) -> None:
         self.assertEqual(resolved_target_policy("tip"), "tip")

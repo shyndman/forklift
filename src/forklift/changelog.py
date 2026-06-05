@@ -24,7 +24,12 @@ from .changelog_llm import (
 )
 from .changelog_models import ChangelogReportSections
 from .changelog_renderer import render_changelog_markdown, render_changelog_terminal
-from .cli_runtime import apply_cli_overrides, resolved_main_branch, resolved_target_policy
+from .cli_runtime import (
+    DEFAULT_TARGET_POLICY,
+    apply_cli_overrides,
+    resolved_main_branch,
+    resolved_target_policy,
+)
 from .opencode_env import (
     DEFAULT_ENV_PATH,
     OpenCodeEnv,
@@ -401,8 +406,8 @@ class Changelog(Command):
         help="Name of the primary branch to compare against upstream (default: main)",
     )
     target_policy: str = arg(
-        "tip",
-        help="Upstream target policy: 'tip' or 'latest-version' (default: tip)",
+        DEFAULT_TARGET_POLICY,
+        help="Upstream target policy: 'tip' or 'latest-version' (default: latest-version)",
     )
     model: str | None = arg(
         None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/)."
