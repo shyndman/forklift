@@ -69,6 +69,23 @@ capture_status_snapshot() {
   "$REAL_GIT_BIN" -C "$WORKSPACE_DIR" status --porcelain=v1 --untracked-files=all
 }
 
+resolve_current_rebase_head_identity() {
+  CURRENT_REBASE_SHA=$(run_real_git -C "$WORKSPACE_DIR" rev-parse REBASE_HEAD 2>/dev/null || true)
+  CURRENT_REBASE_SUBJECT=$(run_real_git -C "$WORKSPACE_DIR" show -s --format=%s REBASE_HEAD 2>/dev/null || true)
+  [[ -n "$CURRENT_REBASE_SHA" && -n "$CURRENT_REBASE_SUBJECT" ]]
+}
+
+paused_rebase_is_clean_empty_stop() {
+  local status_snapshot
+
+  if ! rebase_in_progress; then
+    return 1
+  fi
+
+  status_snapshot=$(capture_status_snapshot)
+  [[ -z "$status_snapshot" ]]
+}
+
 run_real_git() {
   env -i \
     HOME="${HOME:-/home/forklift}" \
@@ -245,6 +262,36 @@ emit_post_rebase_transition_events() {
   emit_complete_rebase_event "${total:-$(count_rebase_commits)}"
 }
 
+auto_skip_clean_empty_rebase_stop() {
+  local current_total skip_exit_code
+
+  if ! paused_rebase_is_clean_empty_stop; then
+    return 1
+  fi
+
+  current_total=""
+  if read_rebase_progress_snapshot; then
+    current_total="$REBASE_EVENT_TOTAL"
+    emit_rebase_event_payload \
+      "auto_skip" \
+      "$REBASE_EVENT_STEP" \
+      "$REBASE_EVENT_TOTAL" \
+      "$REBASE_EVENT_SHA" \
+      "$REBASE_EVENT_SUBJECT" \
+      "${REBASE_EVENT_FILES[@]}"
+  fi
+
+  emit_phase_message "rebase" "stdout" "Auto-skipping clean empty rebase stop"
+  set +e
+  run_real_git -C "$WORKSPACE_DIR" rebase --skip
+  skip_exit_code=$?
+  set -e
+  if [[ $skip_exit_code -eq 0 ]]; then
+    emit_post_rebase_transition_events "$current_total"
+  fi
+  return $skip_exit_code
+}
+
 start_initial_rebase() {
   local rebase_exit_code rebase_total
 
@@ -270,6 +317,20 @@ start_initial_rebase() {
   fi
 
   if rebase_in_progress; then
+    while rebase_in_progress && paused_rebase_is_clean_empty_stop; do
+      if ! auto_skip_clean_empty_rebase_stop; then
+        INITIAL_REBASE_RESULT="failed"
+        emit_phase_message "rebase" "stderr" "Initial rebase could not auto-skip clean empty rebase stop"
+        return 1
+      fi
+    done
+
+    if ! rebase_in_progress; then
+      INITIAL_REBASE_RESULT="completed"
+      emit_phase_message "rebase" "stdout" "Initial rebase completed after auto-skipping clean empty stops"
+      return 0
+    fi
+
     INITIAL_REBASE_RESULT="paused"
     record_current_conflicting_commit
     emit_paused_rebase_events
@@ -419,6 +480,11 @@ handle_rebase_continue() {
   local before_status after_status continue_exit_code skip_exit_code current_total
 
   emit_phase_message "rebase" "stdout" "Intercepted git rebase --continue"
+  if paused_rebase_is_clean_empty_stop; then
+    auto_skip_clean_empty_rebase_stop
+    return $?
+  fi
+
   record_current_conflicting_commit
 
   current_total=""
@@ -503,6 +569,11 @@ handle_rebase_skip() {
   rebase_sha=$(run_real_git -C "$WORKSPACE_DIR" rev-parse REBASE_HEAD 2>/dev/null || true)
   rebase_subject=$(run_real_git -C "$WORKSPACE_DIR" show -s --format=%s REBASE_HEAD 2>/dev/null || true)
   if [[ -z "$rebase_sha" || -z "$rebase_subject" ]]; then
+    if paused_rebase_is_clean_empty_stop; then
+      auto_skip_clean_empty_rebase_stop
+      return $?
+    fi
+
     emit_phase_message "rebase" "stderr" "Unable to determine REBASE_HEAD for git rebase --skip"
     return 1
   fi
@@ -554,24 +625,26 @@ handle_rebase_abort() {
   return $abort_exit_code
 }
 
-classify_paused_rebase_command() {
-  local arg
-  PAUSED_REBASE_ACTION=""
-  PAUSED_REBASE_HAS_REBASE=0
+normalize_paused_rebase_command() {
+  local arg skip_next_arg
+  PAUSED_REBASE_HAS_CONFIG_OVERRIDE=0
   PAUSED_REBASE_NORMALIZED=()
-
-  if has_caller_git_config_override "$@"; then
-    PAUSED_REBASE_ACTION="unsupported"
-    return 0
-  fi
-
-  if [[ -n "${1:-}" && "$1" != "rebase" ]] && ! is_allowed_paused_git_command "$1"; then
-    PAUSED_REBASE_ACTION="unsupported"
-    return 0
-  fi
+  skip_next_arg=0
 
   for arg in "$@"; do
+    if [[ $skip_next_arg -eq 1 ]]; then
+      skip_next_arg=0
+      continue
+    fi
+
     case "$arg" in
+      -c|--config-env)
+        PAUSED_REBASE_HAS_CONFIG_OVERRIDE=1
+        skip_next_arg=1
+        ;;
+      -c*|--config-env=*)
+        PAUSED_REBASE_HAS_CONFIG_OVERRIDE=1
+        ;;
       --continue|--skip|--abort)
         PAUSED_REBASE_NORMALIZED+=("$arg")
         ;;
@@ -582,6 +655,19 @@ classify_paused_rebase_command() {
         ;;
     esac
   done
+}
+
+classify_paused_rebase_command() {
+  local arg command_name
+  PAUSED_REBASE_ACTION=""
+  PAUSED_REBASE_HAS_REBASE=0
+  normalize_paused_rebase_command "$@"
+
+  command_name="${PAUSED_REBASE_NORMALIZED[0]:-}"
+  if [[ -n "$command_name" && "$command_name" != "rebase" ]] && ! is_allowed_paused_git_command "$command_name"; then
+    PAUSED_REBASE_ACTION="unsupported"
+    return 0
+  fi
 
   for arg in "${PAUSED_REBASE_NORMALIZED[@]}"; do
     if [[ "$arg" == "rebase" ]]; then
@@ -589,6 +675,11 @@ classify_paused_rebase_command() {
       break
     fi
   done
+
+  if [[ $PAUSED_REBASE_HAS_REBASE -eq 1 && $PAUSED_REBASE_HAS_CONFIG_OVERRIDE -eq 1 ]]; then
+    PAUSED_REBASE_ACTION="unsupported"
+    return 0
+  fi
 
   if [[ ${#PAUSED_REBASE_NORMALIZED[@]} -eq 2 && "${PAUSED_REBASE_NORMALIZED[0]}" == "rebase" ]]; then
     case "${PAUSED_REBASE_NORMALIZED[1]}" in

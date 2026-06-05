@@ -300,6 +300,62 @@ export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING
     def _event_socket_path(self) -> Path:
         return self.root / "control" / "rebase-events.sock"
 
+    def _init_clean_empty_rebase_stop(self, *, dirty: bool = False) -> tuple[Path, Path]:
+        self._init_workspace_repo()
+        rebase_merge = self.workspace / ".git" / "rebase-merge"
+        rebase_merge.mkdir(parents=True, exist_ok=True)
+        _ = (rebase_merge / "msgnum").write_text("1\n", encoding="utf-8")
+        _ = (rebase_merge / "end").write_text("1\n", encoding="utf-8")
+
+        fake_git = self.harness_state / "fake-git.sh"
+        command_log = self.harness_state / "fake-git-commands.txt"
+        status_output = "?? generated.txt\\n" if dirty else ""
+        _ = fake_git.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    f'printf "%s\\n" "$*" >>"{command_log}"',
+                    'if [[ "$1" == "-C" ]]; then',
+                    '  workspace_dir="$2"',
+                    "  shift 2",
+                    "else",
+                    '  workspace_dir=""',
+                    "fi",
+                    'if [[ "$1" == "status" ]]; then',
+                    f'  printf "{status_output}"',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "rev-parse" && "$2" == "REBASE_HEAD" ]]; then',
+                    "  exit 1",
+                    "fi",
+                    'if [[ "$1" == "show" && "$2" == "-s" && "$3" == "--format=%s" && "$4" == "REBASE_HEAD" ]]; then',
+                    "  exit 1",
+                    "fi",
+                    'if [[ "$1" == "diff" && "$2" == "--name-only" && "$3" == "--diff-filter=U" ]]; then',
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "rev-list" && "$2" == "--count" ]]; then',
+                    "  printf '1\\n'",
+                    "  exit 0",
+                    "fi",
+                    'if [[ "$1" == "rebase" && "$2" == "upstream/main" ]]; then',
+                    "  exit 1",
+                    "fi",
+                    'if [[ "$1" == "rebase" && "$2" == "--skip" ]]; then',
+                    '  rm -rf "$workspace_dir/.git/rebase-merge"',
+                    "  exit 0",
+                    "fi",
+                    'printf "unexpected fake git args: %s\\n" "$*" >&2',
+                    "exit 99",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_git.chmod(0o755)
+        return fake_git, command_log
+
     def test_parse_fork_context_without_front_matter_treats_whole_file_as_body(self) -> None:
         fork_file = self.workspace / "FORK.md"
         _ = fork_file.write_text("## Mission\nKeep behavior stable.\n", encoding="utf-8")
@@ -808,35 +864,6 @@ main
             f"[\n  {{\n    \"sha\": \"{expected_sha}\",\n    \"subject\": \"{expected_subject}\"\n  }}\n]\n",
         )
 
-    def test_start_initial_rebase_sets_committer_identity_without_git_config(self) -> None:
-        self._init_rebase_repo_without_configured_identity()
-
-        result = self._run_harness_shell(
-            f'''
-HOME="{self.root / "home"}"
-mkdir -p "$HOME"
-resolve_real_git_bin
-UPSTREAM_REF="upstream/main"
-start_initial_rebase
-printf '%s' "$INITIAL_REBASE_RESULT" >"$HARNESS_STATE_DIR/initial-rebase-result.txt"
-'''
-        )
-
-        self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertNotIn("Committer identity unknown", result.stderr)
-        self.assertEqual(
-            (self.harness_state / "initial-rebase-result.txt").read_text(encoding="utf-8"),
-            "completed",
-        )
-        committer = subprocess.run(
-            ["git", "log", "-1", "--format=%cn <%ce>"],
-            cwd=self.workspace,
-            text=True,
-            capture_output=True,
-            check=True,
-        ).stdout.strip()
-        self.assertEqual(committer, "Forklift Agent <forklift@github.com>")
-
     def test_main_fails_closed_when_initial_rebase_hard_fails(self) -> None:
         self._init_main_repo_without_upstream()
 
@@ -867,6 +894,131 @@ main
             client_log,
         )
 
+    def test_start_initial_rebase_sets_committer_identity_without_git_config(self) -> None:
+        self._init_rebase_repo_without_configured_identity()
+
+        result = self._run_harness_shell(
+            f'''
+HOME="{self.root / "home"}"
+mkdir -p "$HOME"
+resolve_real_git_bin
+UPSTREAM_REF="upstream/main"
+start_initial_rebase
+printf '%s' "$INITIAL_REBASE_RESULT" >"$HARNESS_STATE_DIR/initial-rebase-result.txt"
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("Committer identity unknown", result.stderr)
+        self.assertEqual(
+            (self.harness_state / "initial-rebase-result.txt").read_text(encoding="utf-8"),
+            "completed",
+        )
+        committer = subprocess.run(
+            ["git", "log", "-1", "--format=%cn <%ce>"],
+            cwd=self.workspace,
+            text=True,
+            capture_output=True,
+            check=True,
+        ).stdout.strip()
+        self.assertEqual(committer, "Forklift Agent <forklift@github.com>")
+
+    def test_start_initial_rebase_auto_skips_clean_empty_stop_before_agent(self) -> None:
+        fake_git, command_log = self._init_clean_empty_rebase_stop()
+
+        result = self._run_harness_shell(
+            f'''
+REAL_GIT_BIN="{fake_git}"
+export REAL_GIT_BIN
+UPSTREAM_REF="upstream/main"
+start_initial_rebase
+printf '%s' "$INITIAL_REBASE_RESULT" >"$HARNESS_STATE_DIR/initial-rebase-result.txt"
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(
+            (self.harness_state / "initial-rebase-result.txt").read_text(encoding="utf-8"),
+            "completed",
+        )
+        self.assertIn("[rebase] Auto-skipping clean empty rebase stop", result.stdout)
+        self.assertIn(
+            "[rebase] Initial rebase completed after auto-skipping clean empty stops",
+            result.stdout,
+        )
+        self.assertNotIn("[rebase] Initial rebase paused on conflicts", result.stdout)
+        self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
+        self.assertIn("-C " + str(self.workspace) + " rebase upstream/main", command_log.read_text(encoding="utf-8"))
+        self.assertIn("-C " + str(self.workspace) + " rebase --skip", command_log.read_text(encoding="utf-8"))
+
+    def test_handle_rebase_continue_auto_skips_clean_empty_stop_without_running_check(self) -> None:
+        fake_git, command_log = self._init_clean_empty_rebase_stop()
+
+        result = self._run_harness_shell(
+            f'''
+REAL_GIT_BIN="{fake_git}"
+export REAL_GIT_BIN
+cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+echo check-must-not-run
+exit 7
+EOF
+chmod +x "$REBASE_CONTINUE_CHECK_FILE"
+handle_rebase_continue rebase --continue
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --continue", result.stdout)
+        self.assertIn("[rebase] Auto-skipping clean empty rebase stop", result.stdout)
+        self.assertNotIn("[rebase] Running frozen rebase continue check", result.stdout)
+        self.assertNotIn("check-must-not-run", result.stderr)
+        self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
+        self.assertIn("-C " + str(self.workspace) + " rebase --skip", command_log.read_text(encoding="utf-8"))
+
+    def test_handle_rebase_skip_auto_skips_clean_empty_stop_without_rebase_head(self) -> None:
+        fake_git, command_log = self._init_clean_empty_rebase_stop()
+
+        result = self._run_harness_shell(
+            f'''
+REAL_GIT_BIN="{fake_git}"
+export REAL_GIT_BIN
+initialize_rebase_skipped_commits_file
+handle_rebase_skip rebase --skip
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --skip", result.stdout)
+        self.assertIn("[rebase] Auto-skipping clean empty rebase stop", result.stdout)
+        self.assertNotIn("Unable to determine REBASE_HEAD", result.stderr)
+        self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
+        self.assertEqual(
+            (self.harness_state / "rebase-skipped-commits.json").read_text(encoding="utf-8").strip(),
+            "[]",
+        )
+        self.assertIn("-C " + str(self.workspace) + " rebase --skip", command_log.read_text(encoding="utf-8"))
+
+    def test_handle_rebase_skip_still_fails_without_rebase_head_when_workspace_dirty(self) -> None:
+        fake_git, _command_log = self._init_clean_empty_rebase_stop(dirty=True)
+
+        result = self._run_harness_shell(
+            f'''
+REAL_GIT_BIN="{fake_git}"
+export REAL_GIT_BIN
+if handle_rebase_skip rebase --skip; then
+  echo "expected skip rejection" >&2
+  exit 1
+fi
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("[rebase] Intercepted git rebase --skip", result.stdout)
+        self.assertIn("Unable to determine REBASE_HEAD for git rebase --skip", result.stderr)
+        self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())
+
     def test_git_wrapper_passes_through_normal_git_commands(self) -> None:
         self._init_workspace_repo()
 
@@ -880,6 +1032,21 @@ git status --short >/dev/null
         )
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
+
+    def test_git_wrapper_allows_read_only_configured_status_during_paused_rebase(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+prepend_git_wrapper_path
+cd "$WORKSPACE_DIR"
+git -c color.ui=always status --short >/dev/null
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("unsupported paused rebase command", result.stderr)
 
     def test_classify_paused_rebase_command_detects_continue_shape(self) -> None:
         result = self._run_harness_shell(
@@ -1182,7 +1349,7 @@ fi
             f"[\n  {{\n    \"sha\": \"{expected_sha}\",\n    \"subject\": \"{expected_subject}\"\n  }}\n]\n",
         )
 
-    def test_handle_rebase_continue_leaves_no_skip_record_when_git_drops_redundant_commit(self) -> None:
+    def test_handle_rebase_continue_auto_skips_resolved_redundant_commit(self) -> None:
         self._init_conflicting_rebase()
 
         result = self._run_harness_shell(
@@ -1203,34 +1370,17 @@ handle_rebase_continue rebase --continue
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("[rebase] Intercepted git rebase --continue", result.stdout)
-        self.assertIn("[rebase] Running frozen rebase continue check", result.stdout)
-        self.assertIn(
-            "[rebase] Rebase continue check passed with stable workspace state",
-            result.stdout,
-        )
-        self.assertIn("[rebase] Invoking real git rebase --continue", result.stdout)
+        self.assertIn("[rebase] Auto-skipping clean empty rebase stop", result.stdout)
+        self.assertNotIn("[rebase] Running frozen rebase continue check", result.stdout)
+        self.assertNotIn("[rebase] Invoking real git rebase --continue", result.stdout)
         self.assertFalse((self.workspace / ".git" / "rebase-merge").exists())
         self.assertEqual(
             (self.harness_state / "rebase-skipped-commits.json").read_text(encoding="utf-8").strip(),
             "[]",
         )
 
-    def test_handle_rebase_continue_auto_skips_empty_commit_after_failed_continue(self) -> None:
+    def test_handle_rebase_continue_auto_skips_clean_empty_commit_before_check(self) -> None:
         self._init_conflicting_rebase()
-        expected_sha = subprocess.run(
-            ["git", "rev-parse", "REBASE_HEAD"],
-            cwd=self.workspace,
-            text=True,
-            capture_output=True,
-            check=True,
-        ).stdout.strip()
-        expected_subject = subprocess.run(
-            ["git", "show", "-s", "--format=%s", "REBASE_HEAD"],
-            cwd=self.workspace,
-            text=True,
-            capture_output=True,
-            check=True,
-        ).stdout.strip()
         fake_git = self.harness_state / "fake-git.sh"
         skip_marker = self.harness_state / "skip-called.txt"
         rebase_merge = self.workspace / ".git" / "rebase-merge"
@@ -1282,7 +1432,8 @@ initialize_rebase_conflicting_commits_file
 cat >"$REBASE_CONTINUE_CHECK_FILE" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
-true
+echo check-must-not-run
+exit 7
 EOF
 chmod +x "$REBASE_CONTINUE_CHECK_FILE"
 handle_rebase_continue rebase --continue
@@ -1291,16 +1442,10 @@ handle_rebase_continue rebase --continue
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("[rebase] Intercepted git rebase --continue", result.stdout)
-        self.assertIn("[rebase] Running frozen rebase continue check", result.stdout)
-        self.assertIn(
-            "[rebase] Rebase continue check passed with stable workspace state",
-            result.stdout,
-        )
-        self.assertIn("[rebase] Invoking real git rebase --continue", result.stdout)
-        self.assertIn(
-            "[rebase] Auto-skipping mechanically empty commit after failed continue",
-            result.stdout,
-        )
+        self.assertIn("[rebase] Auto-skipping clean empty rebase stop", result.stdout)
+        self.assertNotIn("[rebase] Running frozen rebase continue check", result.stdout)
+        self.assertNotIn("[rebase] Invoking real git rebase --continue", result.stdout)
+        self.assertNotIn("check-must-not-run", result.stderr)
         self.assertEqual(skip_marker.read_text(encoding="utf-8"), "skip-called")
         self.assertFalse(rebase_merge.exists())
         self.assertEqual(
@@ -1308,8 +1453,8 @@ handle_rebase_continue rebase --continue
             "[]",
         )
         self.assertEqual(
-            (self.harness_state / "rebase-conflicting-commits.json").read_text(encoding="utf-8"),
-            f"[\n  {{\n    \"sha\": \"{expected_sha}\",\n    \"subject\": \"{expected_subject}\"\n  }}\n]\n",
+            (self.harness_state / "rebase-conflicting-commits.json").read_text(encoding="utf-8").strip(),
+            "[]",
         )
 
     def test_handle_rebase_skip_records_rebase_head_identity(self) -> None:
@@ -1705,13 +1850,13 @@ export FORKLIFT_REBASE_EVENTS_SOCK="{socket_path}"
 handle_rebase_continue rebase --continue
 '''
             )
-            server.wait_for_event_count(3)
+            server.wait_for_event_count(2)
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertEqual(skip_marker.read_text(encoding="utf-8"), "skip-called")
         self.assertEqual(
             [event["event"] for event in server.events],
-            ["continue", "auto_skip", "complete"],
+            ["auto_skip", "complete"],
         )
 
     def test_handle_rebase_abort_emits_abort_event(self) -> None:
