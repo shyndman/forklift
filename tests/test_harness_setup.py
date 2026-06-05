@@ -729,9 +729,14 @@ fi
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
+        client_log = (self.harness_state / "opencode-client.log").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("Tracked Changes After Setup", setup_log)
         self.assertIn("tracked.txt", setup_log)
         self.assertIn("Tracked Changes After Setup", result.stderr)
+        self.assertIn("Tracked Changes After Setup", client_log)
+        self.assertIn("tracked.txt", client_log)
 
     def test_front_matter_is_stripped_from_agent_visible_artifacts(self) -> None:
         self._init_workspace_repo()

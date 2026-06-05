@@ -104,7 +104,7 @@ stream_setup_output() {
 
 # Execute optional bootstrap in workspace and gate agent launch on deterministic, clean outcomes.
 run_setup_command() {
-  local setup_exit_code dirty_status
+  local setup_exit_code dirty_status dirty_report
 
   if [[ -z "$FORK_SETUP_COMMAND" ]]; then
     log_client "No setup command declared in FORK.md front matter"
@@ -146,10 +146,9 @@ run_setup_command() {
   dirty_status=$(git -C "$WORKSPACE_DIR" status --porcelain --untracked-files=no)
   if [[ -n "$dirty_status" ]]; then
     emit_phase_message "setup" "stderr" "Setup command left tracked git changes; failing closed"
-    {
-      print_header "Tracked Changes After Setup"
-      printf '%s\n' "$dirty_status"
-    } | tee -a "$SETUP_LOG" >&2
+    dirty_report=$(printf '%s\n%s\n' "$(print_header "Tracked Changes After Setup")" "$dirty_status")
+    printf '%s\n' "$dirty_report" | tee -a "$SETUP_LOG" >&2
+    log_client_block "setup" "$dirty_report"
     return 1
   fi
 
