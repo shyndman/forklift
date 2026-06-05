@@ -184,7 +184,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         timeout_seconds: int | None = None,
         env_timeout_seconds: int | None = None,
         harness_status_content: str | None = None,
-    ) -> tuple[str, int | None, list[tuple[str, bool]], dict[str, object]]:
+    ) -> tuple[str, int | None, list[tuple[str, bool, str | None]], dict[str, object]]:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             repo = root / "repo"
@@ -196,12 +196,13 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     encoding="utf-8",
                 )
             footer_output = StringIO()
-            logger_events: list[tuple[str, bool]] = []
+            logger_events: list[tuple[str, bool, str | None]] = []
             footer_started = False
 
             def log_event(method: str):
-                def _record(*_args: object, **_kwargs: object) -> None:
-                    logger_events.append((method, footer_started))
+                def _record(*args: object, **_kwargs: object) -> None:
+                    message = args[0] if args and isinstance(args[0], str) else None
+                    logger_events.append((method, footer_started, message))
 
                 return _record
 
@@ -558,7 +559,25 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(exit_code, 5)
         self.assertIn("Run complete: failure", output)
         self.assertTrue(logger_events)
-        self.assertFalse(any(after_footer for _, after_footer in logger_events))
+        self.assertFalse(any(after_footer for _, after_footer, _ in logger_events))
+
+    async def test_container_streams_are_not_logged_after_exit(self) -> None:
+        _, exit_code, logger_events, _ = await self._run_cli(
+            container_result=ContainerRunResult(
+                exit_code=0,
+                timed_out=False,
+                stdout="container stdout should stay hidden",
+                stderr="container stderr should stay hidden",
+                container_name="forklift-test",
+            ),
+            monitor_logger_after_footer=True,
+            harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
+        )
+
+        self.assertIsNone(exit_code)
+        logged_messages = [message for _, _, message in logger_events]
+        self.assertNotIn("Container stdout", logged_messages)
+        self.assertNotIn("Container stderr", logged_messages)
 
     async def test_rebase_events_render_front_loaded_ordinals(self) -> None:
         captured: list[tuple[str, str, dict[str, object]]] = []

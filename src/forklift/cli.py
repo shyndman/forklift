@@ -236,10 +236,6 @@ class Forklift(Command):
             run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid
         )
 
-        if container_result.stdout.strip():
-            logger.info("Container stdout", stdout=container_result.stdout.strip())
-        if container_result.stderr.strip():
-            logger.info("Container stderr", stderr=container_result.stderr.strip())
         outcome = "success"
         exit_code = 0
         try:

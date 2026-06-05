@@ -86,6 +86,22 @@ configure_git_lfs_filters() {
   log_client "  git-lfs=$(git lfs version)"
 }
 
+# Mirror setup command output to its original stream, setup.log, and clientlog.
+stream_setup_output() {
+  local stream line
+  stream="$1"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if [[ "$stream" == "stderr" ]]; then
+      printf '%s\n' "$line" >&2
+    else
+      printf '%s\n' "$line"
+    fi
+    printf '%s\n' "$line" >>"$SETUP_LOG"
+    log_client "[setup] $line"
+  done
+}
+
 # Execute optional bootstrap in workspace and gate agent launch on deterministic, clean outcomes.
 run_setup_command() {
   local setup_exit_code dirty_status
@@ -112,7 +128,7 @@ run_setup_command() {
   (
     cd "$WORKSPACE_DIR"
     timeout "$SETUP_TIMEOUT_SECONDS" bash -lc "$FORK_SETUP_COMMAND"
-  ) > >(tee -a "$SETUP_LOG") 2> >(tee -a "$SETUP_LOG" >&2)
+  ) > >(stream_setup_output "stdout") 2> >(stream_setup_output "stderr")
   setup_exit_code=$?
   set -e
 

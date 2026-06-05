@@ -551,7 +551,17 @@ bash "$REBASE_CONTINUE_CHECK_FILE"
     def test_setup_success_writes_setup_log(self) -> None:
         self._init_workspace_repo()
         _ = (self.workspace / "FORK.md").write_text(
-            "---\nsetup: echo bootstrap-ok\n---\n## Mission\nPreserve custom behavior.\n",
+            "".join(
+                [
+                    "---\n",
+                    "setup: |\n",
+                    "  printf '%s\\n' setup-stdout\n",
+                    "  printf '%s\\n' setup-stderr >&2\n",
+                    "---\n",
+                    "## Mission\n",
+                    "Preserve custom behavior.\n",
+                ]
+            ),
             encoding="utf-8",
         )
 
@@ -564,7 +574,15 @@ run_setup_command
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
-        self.assertIn("bootstrap-ok", setup_log)
+        self.assertIn("setup-stdout", result.stdout)
+        self.assertIn("setup-stderr", result.stderr)
+        self.assertIn("setup-stdout", setup_log)
+        self.assertIn("setup-stderr", setup_log)
+        client_log = (self.harness_state / "opencode-client.log").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("[setup] setup-stdout", client_log)
+        self.assertIn("[setup] setup-stderr", client_log)
 
     def test_configure_git_lfs_filters_installs_global_filters_when_available(self) -> None:
         bin_dir = self.root / "bin"
