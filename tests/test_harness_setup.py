@@ -660,6 +660,16 @@ fail_harness "setup exploded"
         self.assertIn("phase=setup", status)
         self.assertIn("message=setup exploded", status)
 
+    def test_setup_timeout_defaults_to_ten_minutes(self) -> None:
+        result = self._run_harness_shell(
+            """
+printf 'default_setup_timeout=%s\n' "$SETUP_TIMEOUT_SECONDS"
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("default_setup_timeout=600", result.stdout)
+
     def test_setup_timeout_fails_closed(self) -> None:
         self._init_workspace_repo()
         _ = (self.workspace / "FORK.md").write_text(

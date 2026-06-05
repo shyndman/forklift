@@ -125,7 +125,7 @@ For one-off run guidance, pass `--instruction='...'` on the main `forklift` comm
 
 `FORK.md` front matter is optional, but when present it is strict and machine-validated.
 
-- `setup` runs once in `/workspace` before agent launch with a 180-second timeout.
+- `setup` runs once in `/workspace` before agent launch with a 600-second (10-minute) timeout.
 - `rebase.continue_check` runs from `/workspace` before every mediated `git rebase --continue`.
 - Continue checks must exit zero and leave tracked, staged, and untracked workspace state unchanged.
 - Forklift snapshots the active continue check into `/harness-state/rebase-continue-check.sh` before the agent starts, so editing the workspace copy of `FORK.md` during the run does not change enforcement.
