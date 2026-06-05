@@ -124,6 +124,26 @@ is_allowed_paused_git_command() {
   return 1
 }
 
+is_known_paused_git_command() {
+  local command_name
+  command_name="${1:-}"
+  if [[ "$command_name" == "rebase" ]] || is_allowed_paused_git_command "$command_name"; then
+    return 0
+  fi
+  return 1
+}
+
+is_dangerous_paused_git_config_key() {
+  local config_key
+  config_key="${1,,}"
+  case "$config_key" in
+    alias.*|core.pager|pager.*|diff.external|interactive.difffilter)
+      return 0
+      ;;
+  esac
+  return 1
+}
+
 count_rebase_commits() {
   run_real_git -C "$WORKSPACE_DIR" rev-list --count "$UPSTREAM_REF..HEAD" 2>/dev/null || printf '0\n'
 }
@@ -626,34 +646,52 @@ handle_rebase_abort() {
 }
 
 normalize_paused_rebase_command() {
-  local arg skip_next_arg
+  local arg config_key config_value index
+  local args=("$@")
   PAUSED_REBASE_HAS_CONFIG_OVERRIDE=0
+  PAUSED_REBASE_HAS_REDIRECT_OVERRIDE=0
   PAUSED_REBASE_NORMALIZED=()
-  skip_next_arg=0
+  index=0
 
-  for arg in "$@"; do
-    if [[ $skip_next_arg -eq 1 ]]; then
-      skip_next_arg=0
-      continue
-    fi
-
+  while [[ $index -lt ${#args[@]} ]]; do
+    arg="${args[$index]}"
     case "$arg" in
-      -c|--config-env)
+      -c)
         PAUSED_REBASE_HAS_CONFIG_OVERRIDE=1
-        skip_next_arg=1
+        index=$((index + 1))
+        config_value="${args[$index]:-}"
+        config_key="${config_value%%=*}"
+        if [[ -z "$config_key" ]] || is_dangerous_paused_git_config_key "$config_key"; then
+          PAUSED_REBASE_HAS_REDIRECT_OVERRIDE=1
+        fi
         ;;
-      -c*|--config-env=*)
+      --config-env)
         PAUSED_REBASE_HAS_CONFIG_OVERRIDE=1
+        PAUSED_REBASE_HAS_REDIRECT_OVERRIDE=1
+        index=$((index + 1))
+        ;;
+      -c*)
+        PAUSED_REBASE_HAS_CONFIG_OVERRIDE=1
+        config_value="${arg#-c}"
+        config_key="${config_value%%=*}"
+        if [[ -z "$config_key" ]] || is_dangerous_paused_git_config_key "$config_key"; then
+          PAUSED_REBASE_HAS_REDIRECT_OVERRIDE=1
+        fi
+        ;;
+      --config-env|--config-env=*|--exec-path|--exec-path=*)
+        PAUSED_REBASE_HAS_CONFIG_OVERRIDE=1
+        PAUSED_REBASE_HAS_REDIRECT_OVERRIDE=1
         ;;
       --continue|--skip|--abort)
         PAUSED_REBASE_NORMALIZED+=("$arg")
         ;;
-      -*)
-        ;;
       *)
-        PAUSED_REBASE_NORMALIZED+=("$arg")
+        if is_known_paused_git_command "$arg"; then
+          PAUSED_REBASE_NORMALIZED+=("$arg")
+        fi
         ;;
     esac
+    index=$((index + 1))
   done
 }
 
@@ -663,8 +701,21 @@ classify_paused_rebase_command() {
   PAUSED_REBASE_HAS_REBASE=0
   normalize_paused_rebase_command "$@"
 
+  if [[ $PAUSED_REBASE_HAS_REDIRECT_OVERRIDE -eq 1 ]]; then
+    PAUSED_REBASE_ACTION="unsupported"
+    return 0
+  fi
+
   command_name="${PAUSED_REBASE_NORMALIZED[0]:-}"
-  if [[ -n "$command_name" && "$command_name" != "rebase" ]] && ! is_allowed_paused_git_command "$command_name"; then
+  if [[ -z "$command_name" ]]; then
+    PAUSED_REBASE_ACTION="unsupported"
+    return 0
+  fi
+
+  if [[ "$command_name" != "rebase" ]]; then
+    if is_allowed_paused_git_command "$command_name"; then
+      return 0
+    fi
     PAUSED_REBASE_ACTION="unsupported"
     return 0
   fi

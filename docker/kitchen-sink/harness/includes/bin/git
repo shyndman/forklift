@@ -26,6 +26,10 @@ if rebase_in_progress; then
       fail_unsupported_paused_rebase_command "$@"
       exit $?
       ;;
+    "")
+      run_real_git "$@"
+      exit $?
+      ;;
   esac
 fi
 

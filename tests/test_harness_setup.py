@@ -1198,6 +1198,64 @@ git -c color.ui=always status --short >/dev/null
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertNotIn("unsupported paused rebase command", result.stderr)
 
+    def test_git_wrapper_allows_read_only_global_path_probes_during_paused_rebase(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+prepend_git_wrapper_path
+git -C "$WORKSPACE_DIR" rev-parse --short upstream/main >/dev/null
+git -C "$WORKSPACE_DIR" log --format=%ar upstream/main -1 >/dev/null
+git -C "$WORKSPACE_DIR" rev-parse --short main >/dev/null
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertNotIn("unsupported paused rebase command", result.stderr)
+        client_log = (self.harness_state / "opencode-client.log").read_text(
+            encoding="utf-8"
+        )
+        self.assertNotIn("Unsupported paused rebase command shape", client_log)
+
+    def test_git_wrapper_rejects_command_redirection_during_paused_rebase(self) -> None:
+        self._init_conflicting_rebase()
+
+        result = self._run_harness_shell(
+            """
+resolve_real_git_bin
+prepend_git_wrapper_path
+cd "$WORKSPACE_DIR"
+FORKLIFT_ALIAS='rebase --continue'
+export FORKLIFT_ALIAS
+if git -c core.pager='sh -c true' log -1; then
+  echo "expected core.pager rejection" >&2
+  exit 1
+fi
+if git -c pager.log='sh -c true' log -1; then
+  echo "expected pager.log rejection" >&2
+  exit 1
+fi
+if git -c diff.external='sh -c true' diff; then
+  echo "expected diff.external rejection" >&2
+  exit 1
+fi
+if git --exec-path=/tmp log -1; then
+  echo "expected exec-path rejection" >&2
+  exit 1
+fi
+if git --config-env=alias.stage=FORKLIFT_ALIAS stage; then
+  echo "expected config-env rejection" >&2
+  exit 1
+fi
+"""
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertIn("Do not alter Git behavior or bypass the", result.stderr)
+        self.assertIn("write STUCK.md", result.stderr)
+
     def test_classify_paused_rebase_command_detects_continue_shape(self) -> None:
         result = self._run_harness_shell(
             """
