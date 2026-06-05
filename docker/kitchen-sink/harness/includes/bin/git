@@ -23,7 +23,7 @@ if rebase_in_progress; then
       exit $?
       ;;
     unsupported)
-      fail_unsupported_paused_rebase_command
+      fail_unsupported_paused_rebase_command "$@"
       exit $?
       ;;
   esac

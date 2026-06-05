@@ -1111,7 +1111,14 @@ fi
         )
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertIn(
+            "Unsupported paused rebase command shape: git -c color.ui=always rebase --continue",
+            (self.harness_state / "opencode-client.log").read_text(encoding="utf-8"),
+        )
+        self.assertIn(
+            "Rejected command: git -c color.ui=always rebase --continue",
+            result.stderr,
+        )
         self.assertIn("Do not alter Git behavior or bypass the", result.stderr)
         self.assertIn("write STUCK.md", result.stderr)
 
@@ -1152,7 +1159,7 @@ fi
         )
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
-        self.assertIn("unsupported paused rebase command", result.stderr)
+        self.assertIn("Rejected command: git stage", result.stderr)
         self.assertIn("Do not alter Git behavior or bypass the", result.stderr)
         self.assertIn("write STUCK.md", result.stderr)
         self.assertTrue((self.workspace / ".git" / "rebase-merge").exists())

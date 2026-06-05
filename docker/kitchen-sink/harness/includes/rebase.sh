@@ -703,8 +703,23 @@ classify_paused_rebase_command() {
   fi
 }
 
+format_git_command_for_log() {
+  local arg rendered quoted
+  rendered="git"
+
+  for arg in "$@"; do
+    printf -v quoted '%q' "$arg"
+    rendered+=" $quoted"
+  done
+
+  printf '%s\n' "$rendered"
+}
+
 fail_unsupported_paused_rebase_command() {
-  emit_phase_message "rebase" "stderr" "Unsupported paused rebase command shape"
+  local rejected_command
+  rejected_command=$(format_git_command_for_log "$@")
+
+  emit_phase_message "rebase" "stderr" "Unsupported paused rebase command shape: $rejected_command"
   cat >&2 <<'EOF'
 git: unsupported paused rebase command.
 
@@ -720,5 +735,6 @@ Resolve conflicts, stage the resolved files, then use one of:
 If you cannot make progress using the wrapper-mediated flow, write STUCK.md at
 the workspace root explaining what blocked progress and what a human should do.
 EOF
+  printf 'Rejected command: %s\n' "$rejected_command" >&2
   return 1
 }
