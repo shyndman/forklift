@@ -2,7 +2,7 @@
 # OpenCode launch and retry loop helpers for harness runtime.
 
 launch_agent() {
-  local command_args done_file stuck_file deadline log_model attempt remaining
+  local command_args done_file stuck_file deadline log_model attempt remaining exit_code
   command_args=(
     "$OPENCODE_BIN" run
     --attach "http://127.0.0.1:$OPENCODE_SERVER_PORT"
@@ -43,11 +43,20 @@ launch_agent() {
     attempt=$((attempt + 1))
     if [[ $attempt -eq 1 ]]; then
       log_client "Attempt $attempt (${remaining}s remaining)"
-      timeout "$remaining" "${command_args[@]}" "$AGENT_PAYLOAD" >>"$CLIENT_LOG" 2>&1 || true
+      if timeout "$remaining" "${command_args[@]}" "$AGENT_PAYLOAD" >>"$CLIENT_LOG" 2>&1; then
+        exit_code=0
+      else
+        exit_code=$?
+      fi
     else
       log_client "Attempt $attempt (${remaining}s remaining, continuing)"
-      timeout "$remaining" "${command_args[@]}" --continue "Continue where you left off." >>"$CLIENT_LOG" 2>&1 || true
+      if timeout "$remaining" "${command_args[@]}" --continue "Continue where you left off." >>"$CLIENT_LOG" 2>&1; then
+        exit_code=0
+      else
+        exit_code=$?
+      fi
     fi
+    log_client "OpenCode client exited with code $exit_code"
 
     if [[ -f "$done_file" ]]; then
       log_client "Agent completed successfully (DONE.md present)"
@@ -60,6 +69,8 @@ launch_agent() {
       return 1
     fi
 
-    log_client "Agent exited without signalling completion; retrying"
+    log_client "Agent exited without signalling completion; failing closed"
+    printf 'Agent exited without DONE.md or STUCK.md after OpenCode client exit code %s; see %s\n' "$exit_code" "$CLIENT_LOG" >&2
+    return 1
   done
 }

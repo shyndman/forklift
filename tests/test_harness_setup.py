@@ -738,6 +738,123 @@ fi
         self.assertIn("Tracked Changes After Setup", client_log)
         self.assertIn("tracked.txt", client_log)
 
+    def test_launch_agent_fails_closed_when_opencode_exits_without_signal(self) -> None:
+        fake_opencode = self.harness_state / "fake-opencode.sh"
+        _ = fake_opencode.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    "printf 'fake-opencode invoked %s\\n' \"$*\"",
+                    "exit 37",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_opencode.chmod(0o755)
+
+        result = self._run_harness_shell(
+            f'''
+OPENCODE_BIN="{fake_opencode}"
+OPENCODE_SERVER_PORT=4099
+OPENCODE_VARIANT=default
+OPENCODE_AGENT=worker
+OPENCODE_TIMEOUT=5
+AGENT_PAYLOAD="Run the fork instructions."
+if launch_agent; then
+  echo "expected agent failure" >&2
+  exit 1
+fi
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("without DONE.md or STUCK.md", result.stderr)
+        client_log = (self.harness_state / "opencode-client.log").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("Attempt 1 (", client_log)
+        self.assertIn("fake-opencode invoked", client_log)
+        self.assertIn("OpenCode client exited with code 37", client_log)
+        self.assertIn("Agent exited without signalling completion; failing closed", client_log)
+        self.assertNotIn("Attempt 2", client_log)
+
+    def test_launch_agent_logs_exit_code_and_succeeds_when_done_exists(self) -> None:
+        fake_opencode = self.harness_state / "fake-opencode-done.sh"
+        _ = fake_opencode.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    "printf 'fake-opencode wrote DONE.md\\n'",
+                    "printf 'complete\\n' >\"$WORKSPACE_DIR/DONE.md\"",
+                    "exit 0",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_opencode.chmod(0o755)
+
+        result = self._run_harness_shell(
+            f'''
+OPENCODE_BIN="{fake_opencode}"
+OPENCODE_SERVER_PORT=4099
+OPENCODE_VARIANT=default
+OPENCODE_AGENT=worker
+OPENCODE_TIMEOUT=5
+AGENT_PAYLOAD="Run the fork instructions."
+launch_agent
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        client_log = (self.harness_state / "opencode-client.log").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("fake-opencode wrote DONE.md", client_log)
+        self.assertIn("OpenCode client exited with code 0", client_log)
+        self.assertIn("Agent completed successfully (DONE.md present)", client_log)
+
+    def test_launch_agent_logs_exit_code_and_fails_when_stuck_exists(self) -> None:
+        fake_opencode = self.harness_state / "fake-opencode-stuck.sh"
+        _ = fake_opencode.write_text(
+            "\n".join(
+                [
+                    "#!/usr/bin/env bash",
+                    "set -euo pipefail",
+                    "printf 'fake-opencode wrote STUCK.md\\n'",
+                    "printf 'blocked\\n' >\"$WORKSPACE_DIR/STUCK.md\"",
+                    "exit 0",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        fake_opencode.chmod(0o755)
+
+        result = self._run_harness_shell(
+            f'''
+OPENCODE_BIN="{fake_opencode}"
+OPENCODE_SERVER_PORT=4099
+OPENCODE_VARIANT=default
+OPENCODE_AGENT=worker
+OPENCODE_TIMEOUT=5
+AGENT_PAYLOAD="Run the fork instructions."
+if launch_agent; then
+  echo "expected stuck failure" >&2
+  exit 1
+fi
+'''
+        )
+
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertIn("Agent is stuck", result.stderr)
+        client_log = (self.harness_state / "opencode-client.log").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("fake-opencode wrote STUCK.md", client_log)
+        self.assertIn("OpenCode client exited with code 0", client_log)
+        self.assertIn("Agent reported stuck (STUCK.md present)", client_log)
+
     def test_front_matter_is_stripped_from_agent_visible_artifacts(self) -> None:
         self._init_workspace_repo()
         _ = (self.workspace / "FORK.md").write_text(
