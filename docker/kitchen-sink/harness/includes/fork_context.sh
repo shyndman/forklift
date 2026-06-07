@@ -34,6 +34,14 @@ upstream $upstream_ref branch and the fork's $branch_name branch.
 2. Resolve any conflicts. Your goal is to preserve the functionality of both $upstream_ref and $branch_name. If this seems impossible, write a STUCK.md as described below.
    Refer to the FORK.md if supplied to understand intentional fork customizations worth
    preserving.
+   Exception: if upstream is introducing a feature that substantially overlaps one the
+   fork already maintains, prefer upstream's implementation and drop the fork's duplicate,
+   even when both could be kept. "Close enough" is acceptable here — adopting upstream
+   removes that feature from the fork's future maintenance burden. This is the only case
+   where you favor one side over merging; everywhere else, integrate both sides.
+   This applies only to functional overlap. Stylistic differences — visuals, branding,
+   wording, flavor (e.g. a custom welcome screen) — are never "close enough": the fork's
+   version is deliberate, so always preserve it over upstream's.
 3. Continue the rebase with \`git rebase --continue\` until it is complete. If a commit becomes mechanically empty, use \`git rebase --skip\` only when that is the truthful outcome.
 4. Verify the rebase is finished and no rebase is still in progress. Do not create any extra final commit after the rebase completes.
 
