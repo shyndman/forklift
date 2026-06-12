@@ -132,31 +132,22 @@ def render_usage_summary(
 
 
 def render_completion_report(
-    workspace: Path,
     *,
     harness_state: Path,
     console: Console | None = None,
 ) -> Path | None:
-    """Render terminal completion report markdown using STUCK-over-DONE precedence."""
+    """Render the terminal completion report from the orchestrator rebase report."""
 
-    report_path = _select_report_path(workspace)
-    if report_path is None:
+    report = _load_report(harness_state)
+    if report is None:
         return None
 
-    try:
-        report_body = report_path.read_text(encoding="utf-8")
-    except OSError:
-        return None
-
-    report_body = _append_skipped_commits_section(
-        report_body,
-        _load_skipped_commits(harness_state),
-    )
+    report_body = _build_report_body(report)
 
     active_console = console or Console()
     active_console.print()
     active_console.print(Markdown(report_body))
-    return report_path
+    return harness_state / "rebase-report.json"
 
 
 def _parse_usage_lines(lines: Iterable[str], *, harness_state: Path) -> UsageSummary:
@@ -220,7 +211,9 @@ def _parse_usage_lines(lines: Iterable[str], *, harness_state: Path) -> UsageSum
     total_tool_calls = sum(tool_call_counts.values())
     tool_breakdown = tuple(
         ToolCallTotal(tool=tool_name, calls=calls)
-        for tool_name, calls in sorted(tool_call_counts.items(), key=lambda item: (-item[1], item[0]))
+        for tool_name, calls in sorted(
+            tool_call_counts.items(), key=lambda item: (-item[1], item[0])
+        )
     )
     wall_clock_ms = _elapsed_wall_clock_ms(first_timestamp_ms, last_timestamp_ms)
 
@@ -285,7 +278,9 @@ def _tool_name(part: dict[str, object] | None) -> str:
     return "unknown"
 
 
-def _elapsed_wall_clock_ms(first_timestamp_ms: int | None, last_timestamp_ms: int | None) -> int:
+def _elapsed_wall_clock_ms(
+    first_timestamp_ms: int | None, last_timestamp_ms: int | None
+) -> int:
     if first_timestamp_ms is None or last_timestamp_ms is None:
         return 0
     return max(last_timestamp_ms - first_timestamp_ms, 0)
@@ -317,14 +312,35 @@ def _build_usage_table(totals: UsageTotals, *, show_total_cost: bool) -> Table:
     )
     table.add_column("Metric", style=USAGE_LABEL_STYLE)
     table.add_column("Value", justify="right")
-    table.add_row("Input", Text(_format_tokens(totals.input_tokens), style=USAGE_TOKEN_VALUE_STYLE))
-    table.add_row("Output", Text(_format_tokens(totals.output_tokens), style=USAGE_TOKEN_VALUE_STYLE))
-    table.add_row("Reasoning", Text(_format_tokens(totals.reasoning_tokens), style=USAGE_TOKEN_VALUE_STYLE))
-    table.add_row("Cache read", Text(_format_tokens(totals.cache_read_tokens), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row(
+        "Input",
+        Text(_format_tokens(totals.input_tokens), style=USAGE_TOKEN_VALUE_STYLE),
+    )
+    table.add_row(
+        "Output",
+        Text(_format_tokens(totals.output_tokens), style=USAGE_TOKEN_VALUE_STYLE),
+    )
+    table.add_row(
+        "Reasoning",
+        Text(_format_tokens(totals.reasoning_tokens), style=USAGE_TOKEN_VALUE_STYLE),
+    )
+    table.add_row(
+        "Cache read",
+        Text(_format_tokens(totals.cache_read_tokens), style=USAGE_TOKEN_VALUE_STYLE),
+    )
     table.add_section()
-    table.add_row("Total tokens", Text(_format_tokens(totals.total_tokens), style=USAGE_TOKEN_VALUE_STYLE))
-    table.add_row("Wall clock", Text(_format_duration(totals.wall_clock_ms), style=USAGE_TOKEN_VALUE_STYLE))
-    table.add_row("Tool calls", Text(_format_tokens(totals.tool_calls), style=USAGE_TOKEN_VALUE_STYLE))
+    table.add_row(
+        "Total tokens",
+        Text(_format_tokens(totals.total_tokens), style=USAGE_TOKEN_VALUE_STYLE),
+    )
+    table.add_row(
+        "Wall clock",
+        Text(_format_duration(totals.wall_clock_ms), style=USAGE_TOKEN_VALUE_STYLE),
+    )
+    table.add_row(
+        "Tool calls",
+        Text(_format_tokens(totals.tool_calls), style=USAGE_TOKEN_VALUE_STYLE),
+    )
     for tool_total in totals.tool_breakdown:
         table.add_row(
             f"    ↳ {tool_total.tool}",
@@ -335,7 +351,10 @@ def _build_usage_table(totals: UsageTotals, *, show_total_cost: bool) -> Table:
         Text(_format_tokens(totals.conflicting_commits), style=USAGE_TOKEN_VALUE_STYLE),
     )
     if show_total_cost:
-        table.add_row("Total cost", Text(_format_cost(totals.total_cost), style=USAGE_COST_VALUE_STYLE))
+        table.add_row(
+            "Total cost",
+            Text(_format_cost(totals.total_cost), style=USAGE_COST_VALUE_STYLE),
+        )
     return table
 
 
@@ -363,58 +382,88 @@ def _format_duration(value_ms: int) -> str:
     return f"{minutes:02}:{seconds:02}.{milliseconds:03}"
 
 
-def _select_report_path(workspace: Path) -> Path | None:
-    stuck_path = workspace / "STUCK.md"
-    if stuck_path.exists():
-        return stuck_path
-
-    done_path = workspace / "DONE.md"
-    if done_path.exists():
-        return done_path
-
-    return None
-
-
-def _load_skipped_commits(harness_state: Path) -> tuple[tuple[str, str], ...]:
-    return _load_rebase_commits(harness_state, "rebase-skipped-commits.json")
-
-def _load_conflicting_commit_count(harness_state: Path) -> int:
-    return len(_load_rebase_commits(harness_state, "rebase-conflicting-commits.json"))
-
-def _load_rebase_commits(harness_state: Path, file_name: str) -> tuple[tuple[str, str], ...]:
-    commit_path = harness_state / file_name
-
+def _load_report(harness_state: Path) -> dict[str, object] | None:
+    report_path = harness_state / "rebase-report.json"
     try:
-        raw_payload = cast(object, json.loads(commit_path.read_text(encoding="utf-8")))
+        raw = cast(object, json.loads(report_path.read_text(encoding="utf-8")))
     except (OSError, json.JSONDecodeError):
-        return ()
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return cast(dict[str, object], raw)
 
-    if not isinstance(raw_payload, list):
-        return ()
-    payload = cast(list[object], raw_payload)
 
-    commits: list[tuple[str, str]] = []
-    for entry in payload:
+def _report_records(report: dict[str, object], key: str) -> tuple[dict[str, str], ...]:
+    raw = report.get(key)
+    if not isinstance(raw, list):
+        return ()
+    records: list[dict[str, str]] = []
+    for entry in cast(list[object], raw):
         if not isinstance(entry, dict):
             continue
         record = cast(dict[str, object], entry)
-        sha = record.get("sha")
-        subject = record.get("subject")
-        if isinstance(sha, str) and sha and isinstance(subject, str) and subject:
-            commits.append((sha, subject))
+        normalized = {
+            field: value for field, value in record.items() if isinstance(value, str)
+        }
+        records.append(normalized)
+    return tuple(records)
 
-    return tuple(commits)
+
+def _load_conflicting_commit_count(harness_state: Path) -> int:
+    report = _load_report(harness_state)
+    if report is None:
+        return 0
+    # Every recorded transition (resolved-via-continue or dropped-via-skip) is a
+    # commit the rebase paused on. Counting only resolutions undercounts conflicts
+    # the agent resolved by skipping.
+    return len(_report_records(report, "resolutions")) + len(
+        _report_records(report, "skips")
+    )
 
 
-def _append_skipped_commits_section(
-    report_body: str,
-    skipped_commits: tuple[tuple[str, str], ...],
-) -> str:
-    lines = ["## Skipped Commits", ""]
-    if not skipped_commits:
-        lines.append("None")
+def _build_report_body(report: dict[str, object]) -> str:
+    outcome = report.get("outcome")
+    sections: list[str] = []
+
+    stuck = report.get("stuck")
+    if outcome == "stuck" and isinstance(stuck, dict):
+        stuck_record = cast(dict[str, object], stuck)
+        sha = str(stuck_record.get("sha", ""))
+        subject = str(stuck_record.get("subject", ""))
+        reason = str(stuck_record.get("reason", ""))
+        lines = ["# Rebase Stuck", ""]
+        if sha or subject:
+            lines.append(f"Blocked on `{sha}` {subject}".rstrip())
+            lines.append("")
+        lines.append(reason or "No reason recorded.")
+        sections.append("\n".join(lines))
+
+    resolutions = _report_records(report, "resolutions")
+    res_lines = ["## Resolved Conflicts", ""]
+    if not resolutions:
+        res_lines.append("None")
     else:
-        lines.extend(f"- `{sha}` {subject}" for sha, subject in skipped_commits)
+        for record in resolutions:
+            res_lines.append(
+                f"- `{record.get('sha', '')}` {record.get('subject', '')}".rstrip()
+            )
+            note = record.get("note", "")
+            if note:
+                res_lines.append(f"  - {note}")
+    sections.append("\n".join(res_lines))
 
-    skipped_section = "\n".join(lines)
-    return f"{report_body.rstrip()}\n\n{skipped_section}\n"
+    skips = _report_records(report, "skips")
+    skip_lines = ["## Skipped Commits", ""]
+    if not skips:
+        skip_lines.append("None")
+    else:
+        for record in skips:
+            skip_lines.append(
+                f"- `{record.get('sha', '')}` {record.get('subject', '')}".rstrip()
+            )
+            note = record.get("note", "")
+            if note:
+                skip_lines.append(f"  - {note}")
+    sections.append("\n".join(skip_lines))
+
+    return "\n\n".join(sections) + "\n"

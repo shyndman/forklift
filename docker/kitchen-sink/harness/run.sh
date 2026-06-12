@@ -28,7 +28,6 @@ source "$SCRIPT_DIR/includes/common.sh"
 source "$SCRIPT_DIR/includes/fork_context.sh"
 source "$SCRIPT_DIR/includes/rebase.sh"
 source "$SCRIPT_DIR/includes/setup.sh"
-source "$SCRIPT_DIR/includes/agent.sh"
 
 main() {
   mkdir -p "$HARNESS_STATE_DIR"
@@ -60,6 +59,8 @@ main() {
   log_client "  FORKLIFT_MAIN_BRANCH=$MAIN_BRANCH"
   log_client "  FORKLIFT_RUN_ID=${FORKLIFT_RUN_ID:-unknown}"
   log_client "  FORKLIFT_REBASE_EVENTS_SOCK=${FORKLIFT_REBASE_EVENTS_SOCK:-unset}"
+  log_client "  FORKLIFT_REBASE_CONTROL_SOCK=${FORKLIFT_REBASE_CONTROL_SOCK:-unset}"
+  log_client "  FORKLIFT_AGENT_LIFETIME=${FORKLIFT_AGENT_LIFETIME:-conflict}"
 
   log_client "Configuring Forklift git identity"
   git config --global user.name "$FORKLIFT_GIT_USER_NAME"
@@ -72,8 +73,6 @@ main() {
   if ! parse_fork_context; then
     fail_harness "Invalid FORK.md front matter; fix format and retry"
   fi
-  initialize_rebase_skipped_commits_file
-  initialize_rebase_conflicting_commits_file
   write_rebase_continue_check_file
   export FORK_REBASE_CONTINUE_CHECK
   if ! enable_rebase_mediation; then
@@ -86,28 +85,17 @@ main() {
   fi
 
   HARNESS_PHASE=rebase
-  if ! start_initial_rebase; then
-    fail_harness "Initial rebase failed before agent launch" "$HARNESS_PHASE"
-  fi
+  write_instructions
 
-  case "$INITIAL_REBASE_RESULT" in
-    completed)
-      write_harness_status "completed" "$HARNESS_PHASE" "Initial rebase completed cleanly; agent launch skipped"
-      return 0
-      ;;
-    paused)
-      write_instructions
-      build_agent_payload
-      HARNESS_PHASE=agent
-      if ! launch_agent; then
-        fail_harness "Agent run failed; inspect $CLIENT_LOG" "$HARNESS_PHASE"
-      fi
-      write_harness_status "completed" "$HARNESS_PHASE" "Agent completed successfully"
-      ;;
-    *)
-      fail_harness "Initial rebase returned unexpected outcome '$INITIAL_REBASE_RESULT'" "$HARNESS_PHASE"
-      ;;
-  esac
+  # Hand the rebase + agent lifecycle to the Python orchestrator. It drives the
+  # initial rebase, runs the per-mode agent loop, and is the sole writer of
+  # harness-state/rebase-report.json and the terminal harness status.
+  HARNESS_PHASE=agent
+  export OPENCODE_BIN UPSTREAM_REF
+  export FORKLIFT_MAIN_BRANCH="$MAIN_BRANCH"
+  local harness_py
+  harness_py=$(cd -- "$SCRIPT_DIR" && pwd)/py
+  exec env PYTHONPATH="$harness_py" python3 -m forklift_harness.orchestrate
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then

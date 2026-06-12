@@ -38,10 +38,12 @@ from .post_run_metrics import (
 )
 from .cli_runtime import (
     DEFAULT_TARGET_POLICY,
+    DEFAULT_AGENT_LIFETIME,
     apply_cli_overrides,
     build_container_env,
     chown_artifact,
     resolve_chown_target,
+    resolved_agent_lifetime,
     resolved_effective_timeout_seconds,
     resolved_main_branch,
     resolved_target_policy,
@@ -109,6 +111,10 @@ class Forklift(Command):
         DEFAULT_TARGET_POLICY,
         help="Upstream target policy: 'tip' or 'latest-version' (default: latest-version)",
     )
+    agent_lifetime: str = arg(
+        DEFAULT_AGENT_LIFETIME,
+        help="Agent lifetime: 'conflict' (fresh agent per conflict) or 'rebase' (one session) (default: conflict)",
+    )
     debug: bool = arg(False, short="d", help="Enable debug logging")
     version: bool = arg(False, short="v", help="Print version and exit")
     model: str | None = arg(
@@ -148,6 +154,7 @@ class Forklift(Command):
         operator_identity = self._capture_operator_identity(repo_path)
         main_branch = self._resolved_main_branch()
         target_policy = self._resolved_target_policy()
+        agent_lifetime = self._resolved_agent_lifetime()
         extra_instructions = self._validated_instructions()
         opencode_env = self._prepare_opencode_env()
         chown_uid, chown_gid = self._resolve_chown_target()
@@ -215,7 +222,7 @@ class Forklift(Command):
             run_paths.control_dir,
             run_paths.run_dir / "run-state.json",
             self._build_container_env(
-                container_opencode_env, main_branch, run_paths.run_id
+                container_opencode_env, main_branch, run_paths.run_id, agent_lifetime
             ),
             event_callback=self._log_rebase_event,
         )
@@ -270,7 +277,6 @@ class Forklift(Command):
         self._render_terminal_summary(
             outcome,
             agent_log_path,
-            run_paths.workspace,
             run_paths.harness_state,
         )
         if exit_code != 0:
@@ -486,7 +492,6 @@ class Forklift(Command):
         self,
         outcome: str,
         agent_log_path: Path,
-        workspace: Path,
         harness_state: Path,
     ) -> None:
         """Emit the terminal-end usage summary and completion report exactly once."""
@@ -494,9 +499,7 @@ class Forklift(Command):
         summary = parse_usage_summary(agent_log_path, harness_state=harness_state)
         console = Console()
         render_usage_summary(outcome, summary, console=console)
-        _ = render_completion_report(
-            workspace, harness_state=harness_state, console=console
-        )
+        _ = render_completion_report(harness_state=harness_state, console=console)
 
     def _resolved_exit_code(self, code: object) -> int:
         """Normalize SystemExit payloads so re-raises preserve explicit integer codes."""
@@ -658,12 +661,14 @@ class Forklift(Command):
         env: OpenCodeEnv,
         main_branch: str,
         run_id: str,
+        agent_lifetime: str,
     ) -> dict[str, str]:
         return build_container_env(
             env,
             main_branch,
             run_id,
             forward_tz=self.forward_tz,
+            agent_lifetime=agent_lifetime,
         )
 
     def _apply_cli_overrides(self, env: OpenCodeEnv) -> OpenCodeEnv:
@@ -679,6 +684,9 @@ class Forklift(Command):
 
     def _resolved_target_policy(self) -> str:
         return resolved_target_policy(self.target_policy)
+
+    def _resolved_agent_lifetime(self) -> str:
+        return resolved_agent_lifetime(self.agent_lifetime)
 
     def _resolved_timeout_seconds(self, env_timeout_seconds: int | None) -> int:
         return resolved_effective_timeout_seconds(

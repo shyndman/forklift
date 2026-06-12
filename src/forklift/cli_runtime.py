@@ -13,6 +13,8 @@ from .opencode_env import OpenCodeEnv, SAFE_VALUE_PATTERN
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 DEFAULT_TARGET_POLICY = "latest-version"
 TARGET_POLICY_OPTIONS = frozenset({"tip", "latest-version"})
+DEFAULT_AGENT_LIFETIME = "conflict"
+AGENT_LIFETIME_OPTIONS = frozenset({"conflict", "rebase"})
 HOST_UID_ENV = "FORKLIFT_HOST_UID"
 HOST_GID_ENV = "FORKLIFT_HOST_GID"
 DEFAULT_RUN_TIMEOUT_SECONDS = 1500
@@ -24,12 +26,14 @@ def build_container_env(
     run_id: str,
     *,
     forward_tz: bool,
+    agent_lifetime: str,
 ) -> dict[str, str]:
     """Build environment payload forwarded into the sandbox container."""
 
     container_env = dict(env.as_env())
     container_env["FORKLIFT_MAIN_BRANCH"] = main_branch
     container_env["FORKLIFT_RUN_ID"] = run_id
+    container_env["FORKLIFT_AGENT_LIFETIME"] = agent_lifetime
     host_uid, host_gid = default_host_ids()
     container_env[HOST_UID_ENV] = str(host_uid)
     container_env[HOST_GID_ENV] = str(host_gid)
@@ -46,7 +50,9 @@ def host_timezone_value(*, forward_tz: bool) -> str | None:
         return None
     tz_value = os.environ.get("TZ")
     if not tz_value:
-        logger.warning("--forward-tz enabled but host TZ is unset; skipping TZ forwarding.")
+        logger.warning(
+            "--forward-tz enabled but host TZ is unset; skipping TZ forwarding."
+        )
         return None
     if contains_control_characters(tz_value):
         logger.warning(
@@ -76,7 +82,9 @@ def apply_cli_overrides(
     resolved_model = validated_override(model, env.model, "model")
     resolved_variant = validated_override(variant, env.variant, "variant")
     resolved_agent = validated_override(agent, env.agent, "agent")
-    return replace(env, model=resolved_model, variant=resolved_variant, agent=resolved_agent)
+    return replace(
+        env, model=resolved_model, variant=resolved_variant, agent=resolved_agent
+    )
 
 
 def validated_override(
@@ -185,6 +193,24 @@ def resolved_target_policy(target_policy: str | None) -> str:
     return policy
 
 
+def resolved_agent_lifetime(agent_lifetime: str | None) -> str:
+    """Normalize and validate the agent lifetime mode used by orchestration."""
+
+    lifetime = (agent_lifetime or DEFAULT_AGENT_LIFETIME).strip()
+    if not lifetime:
+        logger.error("--agent-lifetime value must not be empty")
+        raise SystemExit(1)
+    if lifetime not in AGENT_LIFETIME_OPTIONS:
+        valid = ", ".join(sorted(AGENT_LIFETIME_OPTIONS))
+        logger.error(
+            "Invalid --agent-lifetime value %r; expected one of: %s",
+            lifetime,
+            valid,
+        )
+        raise SystemExit(1)
+    return lifetime
+
+
 def resolve_chown_target(spec: str | None) -> tuple[int, int]:
     """Parse `--chown` into UID/GID with host defaults when omitted."""
 
@@ -219,7 +245,9 @@ def parse_id_component(raw: str, label: str) -> int:
     try:
         value = int(raw, 10)
     except ValueError:
-        logger.exception("Invalid %s %r in --chown value; expected integer.", label, raw)
+        logger.exception(
+            "Invalid %s %r in --chown value; expected integer.", label, raw
+        )
         raise SystemExit(1) from None
     if value < 0:
         logger.error(
@@ -235,7 +263,9 @@ def chown_artifact(target: Path, *, label: str, uid: int, gid: int) -> None:
     """Recursively reset ownership on harness artifacts after container execution."""
 
     if not target.exists():
-        logger.debug("%s directory %s missing; skipping ownership reset.", label, target)
+        logger.debug(
+            "%s directory %s missing; skipping ownership reset.", label, target
+        )
         return
 
     logger.info("Reset artifact ownership", label=label, uid=uid, gid=gid)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from io import StringIO
 import subprocess
 import tempfile
@@ -12,10 +13,14 @@ from rich.console import Console
 
 from forklift.cli import Forklift
 from forklift.cli_authorship import OperatorIdentity
+from forklift.cli_post_run import fail_if_stuck
 from forklift.container_runner import ContainerRunResult
 from forklift.git import GitError, ResolvedUpstreamTarget
 from forklift.opencode_env import OpenCodeEnv
-from forklift.post_run_metrics import UsageSummary, render_usage_summary as real_render_usage_summary
+from forklift.post_run_metrics import (
+    UsageSummary,
+    render_usage_summary as real_render_usage_summary,
+)
 from forklift.run_manager import RunPaths
 
 
@@ -132,7 +137,9 @@ class ForkliftPostRunTests(unittest.TestCase):
             self.assertIn("--refs=upstream-main..main", filter_args)
 
             push_calls = [
-                call for call in run_git_mock.call_args_list if call.args[1][0] == "push"
+                call
+                for call in run_git_mock.call_args_list
+                if call.args[1][0] == "push"
             ]
             self.assertEqual(len(push_calls), 1)
             push_args = cast(list[str], push_calls[0].args[1])
@@ -215,7 +222,12 @@ class ForkliftPostRunTests(unittest.TestCase):
             push_index = command_sequence.index(
                 (
                     run_paths.workspace,
-                    ["push", repo_path.resolve().as_uri(), f"main:{publication_branch}", "--force"],
+                    [
+                        "push",
+                        repo_path.resolve().as_uri(),
+                        f"main:{publication_branch}",
+                        "--force",
+                    ],
                 )
             )
             checkout_index = command_sequence.index(
@@ -236,14 +248,30 @@ class ForkliftPostRunTests(unittest.TestCase):
                 text=True,
             )
             _ = subprocess.run(
-                ["git", "-C", str(repo_path), "remote", "add", "origin", "https://example.com/origin.git"],
+                [
+                    "git",
+                    "-C",
+                    str(repo_path),
+                    "remote",
+                    "add",
+                    "origin",
+                    "https://example.com/origin.git",
+                ],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
             )
             _ = subprocess.run(
-                ["git", "-C", str(repo_path), "remote", "add", "upstream", "https://example.com/upstream.git"],
+                [
+                    "git",
+                    "-C",
+                    str(repo_path),
+                    "remote",
+                    "add",
+                    "upstream",
+                    "https://example.com/upstream.git",
+                ],
                 check=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -345,7 +373,13 @@ class ForkliftPostRunTests(unittest.TestCase):
             upstream_lfs_fetch_index = command_sequence.index(
                 (
                     run_paths.workspace,
-                    ["lfs", "fetch", "--all", "forklift-publication-upstream", upstream_sha],
+                    [
+                        "lfs",
+                        "fetch",
+                        "--all",
+                        "forklift-publication-upstream",
+                        upstream_sha,
+                    ],
                 )
             )
             upstream_remote_remove_index = command_sequence.index(
@@ -364,13 +398,23 @@ class ForkliftPostRunTests(unittest.TestCase):
             validation_push_index = command_sequence.index(
                 (
                     run_paths.workspace,
-                    ["push", validation_remote_path.resolve().as_uri(), f"main:{publication_branch}", "--force"],
+                    [
+                        "push",
+                        validation_remote_path.resolve().as_uri(),
+                        f"main:{publication_branch}",
+                        "--force",
+                    ],
                 )
             )
             push_index = command_sequence.index(
                 (
                     run_paths.workspace,
-                    ["push", repo_path.resolve().as_uri(), f"main:{publication_branch}", "--force"],
+                    [
+                        "push",
+                        repo_path.resolve().as_uri(),
+                        f"main:{publication_branch}",
+                        "--force",
+                    ],
                 )
             )
             self.assertLess(origin_remote_add_index, origin_lfs_fetch_index)
@@ -505,10 +549,16 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     Forklift,
                     "_capture_operator_identity",
-                    return_value=OperatorIdentity("Forklift Tests", "tests@example.com"),
+                    return_value=OperatorIdentity(
+                        "Forklift Tests", "tests@example.com"
+                    ),
                 ),
-                patch.object(Forklift, "_prepare_opencode_env", return_value=self._dummy_env()),
-                patch.object(Forklift, "_resolve_chown_target", return_value=(1000, 1000)),
+                patch.object(
+                    Forklift, "_prepare_opencode_env", return_value=self._dummy_env()
+                ),
+                patch.object(
+                    Forklift, "_resolve_chown_target", return_value=(1000, 1000)
+                ),
                 patch.object(Forklift, "_discover_required_remotes", return_value={}),
                 patch.object(Forklift, "_fetch_all", return_value=[]),
                 patch.object(
@@ -521,7 +571,9 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         resolved_tag=None,
                     ),
                 ),
-                patch.object(Forklift, "_is_target_already_integrated", return_value=False),
+                patch.object(
+                    Forklift, "_is_target_already_integrated", return_value=False
+                ),
                 patch.object(Forklift, "_build_container_env", return_value={}),
                 patch.object(Forklift, "_chown_artifact", return_value=None),
                 patch.object(Forklift, "_emit_clientlog_hint", return_value=None),
@@ -548,8 +600,13 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "_post_container_results",
                     side_effect=SystemExit(4),
                 ),
-                patch("forklift.cli.parse_usage_summary", return_value=UsageSummary.unavailable("no usage events found")),
-                patch("forklift.cli.render_usage_summary", side_effect=render_with_capture),
+                patch(
+                    "forklift.cli.parse_usage_summary",
+                    return_value=UsageSummary.unavailable("no usage events found"),
+                ),
+                patch(
+                    "forklift.cli.render_usage_summary", side_effect=render_with_capture
+                ),
                 patch(
                     "forklift.cli.Console",
                     return_value=Console(
@@ -566,6 +623,40 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(ctx.exception.code, 4)
         self.assertEqual(footer_outcomes, ["stuck"])
         self.assertIn("Run complete: stuck", output.getvalue())
+
+
+class FailIfStuckTests(unittest.TestCase):
+    def _write_report(self, harness_state: Path, payload: dict[str, object]) -> None:
+        harness_state.mkdir(parents=True, exist_ok=True)
+        _ = (harness_state / "rebase-report.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+
+    def test_raises_exit_4_when_outcome_stuck(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            harness_state = Path(temp_dir) / "harness-state"
+            self._write_report(
+                harness_state,
+                {"outcome": "stuck", "resolutions": [], "skips": [], "stuck": {}},
+            )
+            with self.assertRaises(SystemExit) as ctx:
+                fail_if_stuck(harness_state)
+        self.assertEqual(ctx.exception.code, 4)
+
+    def test_no_raise_when_outcome_completed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            harness_state = Path(temp_dir) / "harness-state"
+            self._write_report(
+                harness_state,
+                {"outcome": "completed", "resolutions": [], "skips": [], "stuck": None},
+            )
+            fail_if_stuck(harness_state)
+
+    def test_no_raise_when_report_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            harness_state = Path(temp_dir) / "harness-state"
+            harness_state.mkdir()
+            fail_if_stuck(harness_state)
 
 
 if __name__ == "__main__":

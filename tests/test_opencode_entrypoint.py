@@ -9,10 +9,20 @@ import unittest
 from pathlib import Path
 from typing import override
 
-ENTRYPOINT_SCRIPT = Path(__file__).resolve().parents[1] / "docker/kitchen-sink/opencode/entrypoint.sh"
-START_SERVER_SCRIPT = Path(__file__).resolve().parents[1] / "docker/kitchen-sink/opencode/start_server.sh"
-RUNTIME_ENV_SCRIPT = Path(__file__).resolve().parents[1] / "docker/kitchen-sink/harness/includes/runtime_env.sh"
-REBASE_SCRIPT = Path(__file__).resolve().parents[1] / "docker/kitchen-sink/harness/includes/rebase.sh"
+ENTRYPOINT_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "docker/kitchen-sink/opencode/entrypoint.sh"
+)
+START_SERVER_SCRIPT = (
+    Path(__file__).resolve().parents[1] / "docker/kitchen-sink/opencode/start_server.sh"
+)
+RUNTIME_ENV_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "docker/kitchen-sink/harness/includes/runtime_env.sh"
+)
+REBASE_SCRIPT = (
+    Path(__file__).resolve().parents[1]
+    / "docker/kitchen-sink/harness/includes/rebase.sh"
+)
 
 
 class OpenCodeEntrypointTests(unittest.TestCase):
@@ -74,7 +84,7 @@ exit 2
             harness_script,
             f"""#!/usr/bin/env bash
 set -euo pipefail
-printf '%s' "${{OPENCODE_MODEL:-}}" >{shlex.quote(str(self.harness_state / 'forwarded-model.txt'))}
+printf '%s' "${{OPENCODE_MODEL:-}}" >{shlex.quote(str(self.harness_state / "forwarded-model.txt"))}
 exit 23
 """,
         )
@@ -87,9 +97,9 @@ set -euo pipefail
 mkdir -p {shlex.quote(str(self.harness_state))} {shlex.quote(str(self.opencode_state))}
 sleep 60 &
 server_pid=$!
-printf '%s' "$server_pid" >{shlex.quote(str(self.opencode_state / 'server.pid'))}
+printf '%s' "$server_pid" >{shlex.quote(str(self.opencode_state / "server.pid"))}
 printf '%s' "$server_pid" >{shlex.quote(str(self.server_real_pid_file))}
-touch {shlex.quote(str(self.opencode_state / 'server.ready'))}
+touch {shlex.quote(str(self.opencode_state / "server.ready"))}
 exit 0
 """,
         )
@@ -168,9 +178,10 @@ set -euo pipefail
   printf 'CLIENT_LOG=%s\n' "${{CLIENT_LOG:-}}"
   printf 'HARNESS_STATUS_FILE=%s\n' "${{HARNESS_STATUS_FILE:-}}"
   printf 'REBASE_CONTINUE_CHECK_FILE=%s\n' "${{REBASE_CONTINUE_CHECK_FILE:-}}"
-  printf 'REBASE_SKIPPED_COMMITS_FILE=%s\n' "${{REBASE_SKIPPED_COMMITS_FILE:-}}"
-  printf 'REBASE_CONFLICTING_COMMITS_FILE=%s\n' "${{REBASE_CONFLICTING_COMMITS_FILE:-}}"
+  printf 'REBASE_REPORT_FILE=%s\n' "${{REBASE_REPORT_FILE:-}}"
   printf 'FORKLIFT_REBASE_EVENTS_SOCK=%s\n' "${{FORKLIFT_REBASE_EVENTS_SOCK:-}}"
+  printf 'FORKLIFT_REBASE_CONTROL_SOCK=%s\n' "${{FORKLIFT_REBASE_CONTROL_SOCK:-}}"
+  printf 'FORKLIFT_MAIN_BRANCH=%s\n' "${{FORKLIFT_MAIN_BRANCH:-}}"
 }} >{shlex.quote(str(server_env_dump))}
 touch {shlex.quote(str(server_ready_marker))}
 sleep 60
@@ -182,7 +193,9 @@ sleep 60
         _ = config_path.write_text("{}\n", encoding="utf-8")
 
         start_server_copy = self.root / "start_server.sh"
-        _ = start_server_copy.write_text(self._sandboxed_start_server(), encoding="utf-8")
+        _ = start_server_copy.write_text(
+            self._sandboxed_start_server(), encoding="utf-8"
+        )
         start_server_copy.chmod(0o700)
 
         env = {
@@ -190,7 +203,9 @@ sleep 60
             "PATH": f"{self.sandbox_bin}:{os.environ['PATH']}",
             "WORKSPACE_DIR": str(self.workspace),
             "HARNESS_STATE_DIR": str(self.harness_state),
-            "FORKLIFT_REBASE_EVENTS_SOCK": str(self.root / "control/rebase-events.sock"),
+            "FORKLIFT_REBASE_EVENTS_SOCK": str(
+                self.root / "control/rebase-events.sock"
+            ),
             "FAKE_SERVER_READY_MARKER": str(server_ready_marker),
         }
         result = subprocess.run(
@@ -210,24 +225,30 @@ sleep 60
         self.assertEqual(forwarded["REAL_GIT_BIN"], str(fake_git))
         self.assertEqual(forwarded["WORKSPACE_DIR"], str(self.workspace))
         self.assertEqual(forwarded["HARNESS_STATE_DIR"], str(self.harness_state))
-        self.assertEqual(forwarded["CLIENT_LOG"], str(self.harness_state / "opencode-client.log"))
-        self.assertEqual(forwarded["HARNESS_STATUS_FILE"], str(self.harness_state / "harness-status.txt"))
+        self.assertEqual(
+            forwarded["CLIENT_LOG"], str(self.harness_state / "opencode-client.log")
+        )
+        self.assertEqual(
+            forwarded["HARNESS_STATUS_FILE"],
+            str(self.harness_state / "harness-status.txt"),
+        )
         self.assertEqual(
             forwarded["REBASE_CONTINUE_CHECK_FILE"],
             str(self.harness_state / "rebase-continue-check.sh"),
         )
         self.assertEqual(
-            forwarded["REBASE_SKIPPED_COMMITS_FILE"],
-            str(self.harness_state / "rebase-skipped-commits.json"),
-        )
-        self.assertEqual(
-            forwarded["REBASE_CONFLICTING_COMMITS_FILE"],
-            str(self.harness_state / "rebase-conflicting-commits.json"),
+            forwarded["REBASE_REPORT_FILE"],
+            str(self.harness_state / "rebase-report.json"),
         )
         self.assertEqual(
             forwarded["FORKLIFT_REBASE_EVENTS_SOCK"],
             str(self.root / "control/rebase-events.sock"),
         )
+        self.assertEqual(
+            forwarded["FORKLIFT_REBASE_CONTROL_SOCK"],
+            "/run/forklift/rebase-control.sock",
+        )
+        self.assertEqual(forwarded["FORKLIFT_MAIN_BRANCH"], "main")
         self.assertEqual(
             forwarded["PATH"].split(":", 1)[0],
             str(REBASE_SCRIPT.parent / "bin"),
@@ -238,10 +259,20 @@ sleep 60
     def _sandboxed_entrypoint(self) -> str:
         return (
             ENTRYPOINT_SCRIPT.read_text(encoding="utf-8")
-            .replace("/opt/opencode/start_server.sh", str(self.root / "opt/opencode/start_server.sh"))
-            .replace("/opt/forklift/harness/run.sh", str(self.root / "opt/forklift/harness/run.sh"))
-            .replace("/opt/forklift/harness/includes/runtime_env.sh", str(RUNTIME_ENV_SCRIPT))
-            .replace("/home/forklift/.local/share/opencode/log", str(self.opencode_log_dir))
+            .replace(
+                "/opt/opencode/start_server.sh",
+                str(self.root / "opt/opencode/start_server.sh"),
+            )
+            .replace(
+                "/opt/forklift/harness/run.sh",
+                str(self.root / "opt/forklift/harness/run.sh"),
+            )
+            .replace(
+                "/opt/forklift/harness/includes/runtime_env.sh", str(RUNTIME_ENV_SCRIPT)
+            )
+            .replace(
+                "/home/forklift/.local/share/opencode/log", str(self.opencode_log_dir)
+            )
             .replace("/harness-state", str(self.harness_state))
             .replace("/run/opencode", str(self.opencode_state))
             .replace("/workspace", str(self.workspace))
@@ -250,10 +281,18 @@ sleep 60
     def _sandboxed_start_server(self) -> str:
         return (
             START_SERVER_SCRIPT.read_text(encoding="utf-8")
-            .replace("/opt/forklift/harness/includes/runtime_env.sh", str(RUNTIME_ENV_SCRIPT))
+            .replace(
+                "/opt/forklift/harness/includes/runtime_env.sh", str(RUNTIME_ENV_SCRIPT)
+            )
             .replace("/opt/forklift/harness/includes/rebase.sh", str(REBASE_SCRIPT))
-            .replace("/opt/opencode/bin/opencode", str(self.root / "opt/opencode/bin/opencode"))
-            .replace("/opt/opencode/opencode-permissive.json", str(self.root / "opt/opencode/opencode-permissive.json"))
+            .replace(
+                "/opt/opencode/bin/opencode",
+                str(self.root / "opt/opencode/bin/opencode"),
+            )
+            .replace(
+                "/opt/opencode/opencode-permissive.json",
+                str(self.root / "opt/opencode/opencode-permissive.json"),
+            )
             .replace("/harness-state", str(self.harness_state))
             .replace("/run/opencode", str(self.opencode_state))
         )

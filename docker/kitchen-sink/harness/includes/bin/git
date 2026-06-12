@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Thin git shim. During a paused rebase it hands control to the Python mediator,
+# which enforces the mediated rebase vocabulary and round-trips each transition
+# through the orchestrator over the intra-container control socket. The common
+# non-rebase path execs the real git binary directly for native startup speed.
+
 SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=../common.sh
 source "$SCRIPT_DIR/../common.sh"
@@ -8,29 +13,8 @@ source "$SCRIPT_DIR/../common.sh"
 source "$SCRIPT_DIR/../rebase.sh"
 
 if rebase_in_progress; then
-  classify_paused_rebase_command "$@"
-  case "$PAUSED_REBASE_ACTION" in
-    continue)
-      handle_rebase_continue "$@"
-      exit $?
-      ;;
-    skip)
-      handle_rebase_skip "$@"
-      exit $?
-      ;;
-    abort)
-      handle_rebase_abort "$@"
-      exit $?
-      ;;
-    unsupported)
-      fail_unsupported_paused_rebase_command "$@"
-      exit $?
-      ;;
-    "")
-      run_real_git "$@"
-      exit $?
-      ;;
-  esac
+  HARNESS_PY=$(cd -- "$SCRIPT_DIR/../.." && pwd)/py
+  exec env PYTHONPATH="$HARNESS_PY" python3 -m forklift_harness.mediate "$@"
 fi
 
 exec "$REAL_GIT_BIN" "$@"

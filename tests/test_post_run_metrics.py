@@ -28,8 +28,14 @@ class ParseUsageSummaryTests(unittest.TestCase):
     def _write_conflicting_commits(self, root: Path, payload: str) -> Path:
         harness_state = root / "harness-state"
         harness_state.mkdir(exist_ok=True)
-        conflict_path = harness_state / "rebase-conflicting-commits.json"
-        _ = conflict_path.write_text(payload, encoding="utf-8")
+        # Conflicting-commit count now derives from rebase-report.json resolutions.
+        report_path = harness_state / "rebase-report.json"
+        _ = report_path.write_text(
+            '{"outcome":"completed","resolutions":'
+            + payload
+            + ',"skips":[],"stuck":null}',
+            encoding="utf-8",
+        )
         return harness_state
 
     def test_parses_cost_totals_and_final_snapshot(self) -> None:
@@ -39,7 +45,13 @@ class ParseUsageSummaryTests(unittest.TestCase):
                 root,
                 [
                     "2026-03-01T00:00:00Z harness: boot",
-                    json.dumps({"type": "step_start", "timestamp": 1_000, "part": {"cost": 999}}),
+                    json.dumps(
+                        {
+                            "type": "step_start",
+                            "timestamp": 1_000,
+                            "part": {"cost": 999},
+                        }
+                    ),
                     json.dumps(
                         {
                             "type": "tool_use",
@@ -184,7 +196,9 @@ class ParseUsageSummaryTests(unittest.TestCase):
         self.assertFalse(summary.available)
         self.assertEqual(summary.reason_unavailable, "no usage events found")
 
-    def test_falls_back_to_zero_conflicting_commits_when_artifact_missing_or_malformed(self) -> None:
+    def test_falls_back_to_zero_conflicting_commits_when_artifact_missing_or_malformed(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             log_path = self._write_log(
@@ -213,11 +227,52 @@ class ParseUsageSummaryTests(unittest.TestCase):
 
             harness_state = self._write_conflicting_commits(root, "{bad-json\n")
 
-            malformed_summary = parse_usage_summary(log_path, harness_state=harness_state)
+            malformed_summary = parse_usage_summary(
+                log_path, harness_state=harness_state
+            )
 
         self.assertTrue(malformed_summary.available)
         assert malformed_summary.totals is not None
         self.assertEqual(malformed_summary.totals.conflicting_commits, 0)
+
+    def test_conflicting_commit_count_includes_resolutions_and_skips(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            log_path = self._write_log(
+                root,
+                [
+                    json.dumps(
+                        {
+                            "type": "step_finish",
+                            "part": {"cost": 0.2, "tokens": {"total": 99}},
+                        }
+                    )
+                ],
+            )
+            harness_state = root / "harness-state"
+            harness_state.mkdir()
+            _ = (harness_state / "rebase-report.json").write_text(
+                json.dumps(
+                    {
+                        "outcome": "completed",
+                        "resolutions": [
+                            {"sha": "aaa1111", "subject": "Resolve A", "note": "x"},
+                            {"sha": "bbb2222", "subject": "Resolve B", "note": "y"},
+                        ],
+                        "skips": [
+                            {"sha": "ccc3333", "subject": "Drop C", "note": "z"},
+                        ],
+                        "stuck": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            summary = parse_usage_summary(log_path, harness_state=harness_state)
+
+        assert summary.totals is not None
+        # 2 resolved + 1 skipped commit, both of which paused on a conflict.
+        self.assertEqual(summary.totals.conflicting_commits, 3)
 
 
 class RenderUsageSummaryTests(unittest.TestCase):
@@ -374,83 +429,100 @@ class RenderCompletionReportTests(unittest.TestCase):
     def _console(self, buffer: StringIO) -> Console:
         return Console(file=buffer, force_terminal=False, color_system=None, width=110)
 
-    def test_prefers_stuck_report_over_done(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = Path(temp_dir)
-            harness_state = workspace / "harness-state"
-            harness_state.mkdir()
-            _ = (workspace / "DONE.md").write_text("# Done\n\nDone body", encoding="utf-8")
-            _ = (workspace / "STUCK.md").write_text("# Stuck\n\n**Investigate**", encoding="utf-8")
-            _ = (harness_state / "rebase-skipped-commits.json").write_text("[]\n", encoding="utf-8")
+    def _write_report(self, harness_state: Path, payload: dict[str, object]) -> None:
+        harness_state.mkdir(parents=True, exist_ok=True)
+        _ = (harness_state / "rebase-report.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
 
+    def test_stuck_report_renders_reason_and_sections(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            harness_state = Path(temp_dir) / "harness-state"
+            self._write_report(
+                harness_state,
+                {
+                    "outcome": "stuck",
+                    "resolutions": [],
+                    "skips": [],
+                    "stuck": {
+                        "sha": "abc1234",
+                        "subject": "Adopt upstream auth",
+                        "reason": "Investigate manually",
+                    },
+                },
+            )
             rendered = StringIO()
             selected = render_completion_report(
-                workspace,
-                harness_state=harness_state,
-                console=self._console(rendered),
+                harness_state=harness_state, console=self._console(rendered)
             )
 
         assert selected is not None
-        self.assertEqual(selected.name, "STUCK.md")
+        self.assertEqual(selected.name, "rebase-report.json")
         output = rendered.getvalue()
-        self.assertIn("Stuck", output)
-        self.assertIn("Investigate", output)
+        self.assertIn("Rebase Stuck", output)
+        self.assertIn("Investigate manually", output)
+        self.assertIn("Resolved Conflicts", output)
         self.assertIn("Skipped Commits", output)
-        self.assertIn("None", output)
-        self.assertNotIn("Done body", output)
 
-    def test_falls_back_to_done_and_skips_when_missing(self) -> None:
+    def test_completed_report_lists_resolutions_and_skips(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = Path(temp_dir)
-            harness_state = workspace / "harness-state"
-            harness_state.mkdir()
-            _ = (workspace / "DONE.md").write_text("# Done\n\nDone body", encoding="utf-8")
-            _ = (harness_state / "rebase-skipped-commits.json").write_text(
-                json.dumps(
-                    [
-                        {"sha": "abc1234", "subject": "Remove obsolete compatibility shim"},
-                        {"sha": "def5678", "subject": "Regenerate fixtures"},
-                    ]
-                ),
-                encoding="utf-8",
+            harness_state = Path(temp_dir) / "harness-state"
+            self._write_report(
+                harness_state,
+                {
+                    "outcome": "completed",
+                    "resolutions": [
+                        {"sha": "abc1234", "subject": "Merge auth", "note": "kept both"}
+                    ],
+                    "skips": [
+                        {
+                            "sha": "def5678",
+                            "subject": "Regenerate fixtures",
+                            "note": "empty",
+                        }
+                    ],
+                    "stuck": None,
+                },
             )
-
             rendered = StringIO()
             selected = render_completion_report(
-                workspace,
-                harness_state=harness_state,
-                console=self._console(rendered),
+                harness_state=harness_state, console=self._console(rendered)
             )
 
         assert selected is not None
-        self.assertEqual(selected.name, "DONE.md")
         output = rendered.getvalue()
-        self.assertIn("Done body", output)
-        self.assertIn("abc1234 Remove obsolete compatibility shim", output)
+        self.assertIn("abc1234 Merge auth", output)
+        self.assertIn("kept both", output)
         self.assertIn("def5678 Regenerate fixtures", output)
+        self.assertIn("empty", output)
+        self.assertNotIn("Rebase Stuck", output)
 
+    def test_returns_none_when_report_missing(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = Path(temp_dir)
-            harness_state = workspace / "harness-state"
+            harness_state = Path(temp_dir) / "harness-state"
             harness_state.mkdir()
             rendered = StringIO()
             selected = render_completion_report(
-                workspace,
-                harness_state=harness_state,
-                console=self._console(rendered),
+                harness_state=harness_state, console=self._console(rendered)
             )
 
         self.assertIsNone(selected)
         self.assertEqual(rendered.getvalue(), "")
 
-    def test_report_renders_after_metrics_with_markdown_output(self) -> None:
+    def test_report_renders_after_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            workspace = Path(temp_dir)
-            harness_state = workspace / "harness-state"
-            harness_state.mkdir()
-            _ = (workspace / "DONE.md").write_text("# Final report\n\n**All done**", encoding="utf-8")
-            _ = (harness_state / "rebase-skipped-commits.json").write_text("[]\n", encoding="utf-8")
-
+            harness_state = Path(temp_dir) / "harness-state"
+            self._write_report(
+                harness_state,
+                {
+                    "outcome": "completed",
+                    "resolutions": [
+                        {"sha": "abc1234", "subject": "Merge auth", "note": "kept both"}
+                    ],
+                    "skips": [],
+                    "stuck": None,
+                },
+            )
             rendered = StringIO()
             console = self._console(rendered)
             summary = UsageSummary.from_totals(
@@ -468,13 +540,11 @@ class RenderCompletionReportTests(unittest.TestCase):
                 )
             )
             render_usage_summary("success", summary, console=console)
-            _ = render_completion_report(workspace, harness_state=harness_state, console=console)
+            _ = render_completion_report(harness_state=harness_state, console=console)
 
         output = rendered.getvalue()
-        self.assertLess(output.index("Grand total"), output.index("Final report"))
-        self.assertIn("All done", output)
-        self.assertIn("Skipped Commits", output)
-        self.assertNotIn("**All done**", output)
+        self.assertLess(output.index("Grand total"), output.index("Merge auth"))
+        self.assertIn("Resolved Conflicts", output)
         self.assertNotIn("INFO", output)
         self.assertNotIn("WARNING", output)
 

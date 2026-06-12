@@ -21,6 +21,7 @@ from forklift.cli_runtime import (
     HOST_UID_ENV,
     build_container_env,
     resolve_chown_target,
+    resolved_agent_lifetime,
     resolved_effective_timeout_seconds,
     resolved_timeout_seconds,
     resolved_target_policy,
@@ -28,7 +29,10 @@ from forklift.cli_runtime import (
 from forklift.container_runner import ContainerRunResult, RebaseEvent
 from forklift.git import ResolvedUpstreamTarget
 from forklift.opencode_env import OpenCodeEnv
-from forklift.post_run_metrics import UsageSummary, render_usage_summary as real_render_usage_summary
+from forklift.post_run_metrics import (
+    UsageSummary,
+    render_usage_summary as real_render_usage_summary,
+)
 from forklift.run_manager import RunPaths
 
 
@@ -64,10 +68,12 @@ class CliRuntimeHelperTests(unittest.TestCase):
                 "main",
                 "run-123",
                 forward_tz=True,
+                agent_lifetime="conflict",
             )
 
         self.assertEqual(container_env["FORKLIFT_MAIN_BRANCH"], "main")
         self.assertEqual(container_env["FORKLIFT_RUN_ID"], "run-123")
+        self.assertEqual(container_env["FORKLIFT_AGENT_LIFETIME"], "conflict")
         self.assertEqual(container_env[HOST_UID_ENV], "321")
         self.assertEqual(container_env[HOST_GID_ENV], "654")
         self.assertEqual(container_env["TZ"], "America/Vancouver")
@@ -75,6 +81,16 @@ class CliRuntimeHelperTests(unittest.TestCase):
     def test_resolved_target_policy_defaults_to_latest_version(self) -> None:
         self.assertEqual(resolved_target_policy(None), DEFAULT_TARGET_POLICY)
         self.assertEqual(DEFAULT_TARGET_POLICY, "latest-version")
+
+    def test_resolved_agent_lifetime_defaults_to_conflict(self) -> None:
+        self.assertEqual(resolved_agent_lifetime(None), "conflict")
+
+    def test_resolved_agent_lifetime_accepts_rebase(self) -> None:
+        self.assertEqual(resolved_agent_lifetime("rebase"), "rebase")
+
+    def test_resolved_agent_lifetime_rejects_unknown(self) -> None:
+        with self.assertRaises(SystemExit):
+            _ = resolved_agent_lifetime("forever")
 
     def test_forklift_defaults_target_policy_to_latest_version(self) -> None:
         command = Forklift.parse([])
@@ -250,7 +266,9 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             forklift.timeout_seconds = timeout_seconds
             forklift.instruction = list(instructions or [])
 
-            post_run_patch = patch.object(Forklift, "_post_container_results", return_value=None)
+            post_run_patch = patch.object(
+                Forklift, "_post_container_results", return_value=None
+            )
             if post_run_side_effect is not None:
                 post_run_patch = patch.object(
                     Forklift,
@@ -262,34 +280,51 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             if monitor_logger_after_footer:
                 logger_patchers = [
                     patch("forklift.cli.logger.info", side_effect=log_event("info")),
-                    patch("forklift.cli.logger.warning", side_effect=log_event("warning")),
+                    patch(
+                        "forklift.cli.logger.warning", side_effect=log_event("warning")
+                    ),
                     patch("forklift.cli.logger.error", side_effect=log_event("error")),
-                    patch("forklift.cli.logger.exception", side_effect=log_event("exception")),
+                    patch(
+                        "forklift.cli.logger.exception",
+                        side_effect=log_event("exception"),
+                    ),
                 ]
 
             with ExitStack() as stack:
-                _ = stack.enter_context(patch.object(Forklift, "_configure_logging", return_value=None))
+                _ = stack.enter_context(
+                    patch.object(Forklift, "_configure_logging", return_value=None)
+                )
                 _ = stack.enter_context(
                     patch.object(
                         Forklift,
                         "_capture_operator_identity",
-                        return_value=OperatorIdentity("Forklift Tests", "tests@example.com"),
+                        return_value=OperatorIdentity(
+                            "Forklift Tests", "tests@example.com"
+                        ),
                     )
                 )
                 _ = stack.enter_context(
                     patch.object(
                         Forklift,
                         "_prepare_opencode_env",
-                        return_value=self._dummy_env(timeout_seconds=env_timeout_seconds),
+                        return_value=self._dummy_env(
+                            timeout_seconds=env_timeout_seconds
+                        ),
                     )
                 )
                 _ = stack.enter_context(
-                    patch.object(Forklift, "_resolve_chown_target", return_value=(1000, 1000))
+                    patch.object(
+                        Forklift, "_resolve_chown_target", return_value=(1000, 1000)
+                    )
                 )
                 _ = stack.enter_context(
-                    patch.object(Forklift, "_discover_required_remotes", return_value={})
+                    patch.object(
+                        Forklift, "_discover_required_remotes", return_value={}
+                    )
                 )
-                _ = stack.enter_context(patch.object(Forklift, "_fetch_all", return_value=[]))
+                _ = stack.enter_context(
+                    patch.object(Forklift, "_fetch_all", return_value=[])
+                )
                 _ = stack.enter_context(
                     patch.object(
                         Forklift,
@@ -303,7 +338,9 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 _ = stack.enter_context(
-                    patch.object(Forklift, "_is_target_already_integrated", return_value=False)
+                    patch.object(
+                        Forklift, "_is_target_already_integrated", return_value=False
+                    )
                 )
                 build_container_env_mock = stack.enter_context(
                     patch.object(Forklift, "_build_container_env", return_value={})
@@ -326,7 +363,9 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         return_value=run_paths,
                     )
                 )
-                container_runner_cls = stack.enter_context(patch("forklift.cli.ContainerRunner"))
+                container_runner_cls = stack.enter_context(
+                    patch("forklift.cli.ContainerRunner")
+                )
                 effective_timeout = (
                     timeout_seconds
                     if timeout_seconds is not None
@@ -346,7 +385,10 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     )
                 )
                 _ = stack.enter_context(
-                    patch("forklift.cli.render_usage_summary", side_effect=render_with_marker)
+                    patch(
+                        "forklift.cli.render_usage_summary",
+                        side_effect=render_with_marker,
+                    )
                 )
                 _ = stack.enter_context(
                     patch(
@@ -372,7 +414,9 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         else {}
                     )
                     if build_container_env_mock.call_args is not None:
-                        env_arg = cast(object, build_container_env_mock.call_args.args[0])
+                        env_arg = cast(
+                            object, build_container_env_mock.call_args.args[0]
+                        )
                         if isinstance(env_arg, OpenCodeEnv):
                             constructor_kwargs["build_env_timeout_seconds"] = (
                                 env_arg.timeout_seconds
@@ -392,7 +436,9 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             if build_container_env_mock.call_args is not None:
                 env_arg = cast(object, build_container_env_mock.call_args.args[0])
                 if isinstance(env_arg, OpenCodeEnv):
-                    constructor_kwargs["build_env_timeout_seconds"] = env_arg.timeout_seconds
+                    constructor_kwargs["build_env_timeout_seconds"] = (
+                        env_arg.timeout_seconds
+                    )
             return footer_output.getvalue(), None, logger_events, constructor_kwargs
 
     def _exit_code(self, code: object) -> int:
@@ -484,7 +530,9 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             DEFAULT_RUN_TIMEOUT_SECONDS,
         )
 
-    async def test_whitespace_only_instruction_fails_before_run_preparation(self) -> None:
+    async def test_whitespace_only_instruction_fails_before_run_preparation(
+        self,
+    ) -> None:
         _, exit_code, _, constructor_kwargs = await self._run_cli(
             container_result=ContainerRunResult(
                 exit_code=0,
@@ -681,7 +729,9 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(exit_code)
         self.assertFalse(any(message.startswith("Rebase ") for _, message in captured))
-        self.assertFalse(any(message.startswith("Conflict ") for _, message in captured))
+        self.assertFalse(
+            any(message.startswith("Conflict ") for _, message in captured)
+        )
 
 
 if __name__ == "__main__":

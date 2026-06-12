@@ -26,13 +26,15 @@ def post_container_results(
     ],
     log_rewrite_summary_fn: Callable[[Path, RewriteResult | None], None],
     current_branch_fn: Callable[[Path], str] = current_branch,
-    ensure_upstream_merged_fn: Callable[[Path, str, str], None] = ensure_upstream_merged,
+    ensure_upstream_merged_fn: Callable[
+        [Path, str, str], None
+    ] = ensure_upstream_merged,
 ) -> None:
     """Run post-container verification, rewrite/publication, and summary logging."""
 
     metadata = load_run_metadata(run_paths.run_dir)
     workspace = run_paths.workspace
-    fail_if_stuck(workspace)
+    fail_if_stuck(run_paths.harness_state)
 
     metadata_branch = cast(str | None, metadata.get("main_branch"))
     target_branch = metadata_branch or configured_branch or current_branch_fn(workspace)
@@ -67,16 +69,33 @@ def post_container_results(
     log_rewrite_summary_fn(repo_path, rewrite_result)
 
 
-def fail_if_stuck(workspace: Path) -> None:
-    """Abort post-run verification when the workspace produced `STUCK.md`."""
+def fail_if_stuck(harness_state: Path) -> None:
+    """Abort post-run verification when the rebase report records a stuck outcome."""
 
-    stuck_file = workspace / "STUCK.md"
-    if not stuck_file.exists():
+    report_path = harness_state / "rebase-report.json"
+    try:
+        raw = report_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        logger.warning("Unable to read rebase report", path=report_path, error=str(exc))
+        return
+
+    try:
+        payload = cast(object, json.loads(raw))
+    except json.JSONDecodeError as exc:
+        logger.warning("Malformed rebase report", path=report_path, error=str(exc))
+        return
+
+    if not isinstance(payload, dict):
+        return
+    outcome = cast(dict[str, object], payload).get("outcome")
+    if outcome != "stuck":
         return
 
     logger.warning(
-        "STUCK.md detected at %s; skipping verification and local publication.",
-        stuck_file,
+        "Rebase report records a stuck outcome at %s; skipping verification and local publication.",
+        report_path,
     )
     raise SystemExit(STUCK_EXIT_CODE)
 

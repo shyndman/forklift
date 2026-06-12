@@ -1,8 +1,20 @@
 #!/usr/bin/env bash
 # Fork context parsing and instruction rendering helpers for the harness runtime.
 
-# Keep this guidance stable so the API contract with the merge agent remains predictable.
+# Mode-aware merge-agent guidance. The orchestrator selects the lifetime via
+# FORKLIFT_AGENT_LIFETIME: `conflict` scopes each agent to a single paused
+# conflict; `rebase` drives the whole paused rebase in one session. Both modes
+# round-trip every transition through the wrapper and never author report files.
 default_instructions() {
+  if [[ "${FORKLIFT_AGENT_LIFETIME:-conflict}" == "rebase" ]]; then
+    rebase_mode_instructions
+  else
+    conflict_mode_instructions
+  fi
+}
+
+# Shared environment preamble used by both lifetime modes.
+instruction_environment_preamble() {
   local upstream_sha upstream_date main_sha branch_name upstream_ref helper_branch
   branch_name="$MAIN_BRANCH"
   upstream_ref="$UPSTREAM_REF"
@@ -28,33 +40,80 @@ upstream $upstream_ref branch and the fork's $branch_name branch.
 |- Forklift already started \`git rebase $upstream_ref\`. You are only here because it paused.
 |- Do not attempt to run tests or build the code; focus on finishing the paused rebase.
 
+<system_reminder>
+In the context of this rebase, "ours" refers to the upstream project, and "theirs" refers to the fork that you help manage.
+</system_reminder>
+TXT
+}
+
+# Shared conflict-resolution policy used by both lifetime modes.
+instruction_resolution_policy() {
+  local upstream_ref branch_name
+  upstream_ref="$UPSTREAM_REF"
+  branch_name="$MAIN_BRANCH"
+  cat <<TXT
+Your goal is to preserve the functionality of both $upstream_ref and $branch_name.
+Refer to the FORK.md if supplied to understand intentional fork customizations worth
+preserving.
+Exception: if upstream is introducing a feature that substantially overlaps one the
+fork already maintains, prefer upstream's implementation and drop the fork's duplicate,
+even when both could be kept. "Close enough" is acceptable here — adopting upstream
+removes that feature from the fork's future maintenance burden. This is the only case
+where you favor one side over merging; everywhere else, integrate both sides.
+This applies only to functional overlap. Stylistic differences — visuals, branding,
+wording, flavor (e.g. a custom welcome screen) — are never "close enough": the fork's
+version is deliberate, so always preserve it over upstream's.
+TXT
+}
+
+# Per-conflict lifetime: resolve exactly the current paused conflict, then continue.
+conflict_mode_instructions() {
+  local branch_name
+  branch_name="$MAIN_BRANCH"
+  instruction_environment_preamble
+  cat <<TXT
+
+== Task ==
+A fresh agent handles each conflict, so resolve ONLY the single conflict the
+rebase is currently paused on. Do not try to drive the rebase to completion —
+Forklift advances to the next conflict (with a new agent) after you continue.
+
+1. Inspect the current paused conflict on the local \`$branch_name\` branch only.
+$(instruction_resolution_policy)
+2. Resolve the conflict and stage the resolved files.
+3. Finish this conflict with exactly one of:
+   - \`git rebase --continue --resolution-note "<what changed & why>"\` once resolved.
+   - \`git rebase --skip --resolution-note "<why this commit is dropped>"\` only when the
+     commit is genuinely empty/redundant and dropping it is the truthful outcome.
+   - \`git rebase --abort --reason "<what blocked progress and what a human must do>"\`
+     if this conflict cannot be resolved while preserving both sides.
+   The note/reason is mandatory; Forklift records it to summarize the rebase.
+TXT
+}
+
+# Whole-rebase lifetime: one session drives every conflict to completion.
+rebase_mode_instructions() {
+  local branch_name upstream_ref
+  branch_name="$MAIN_BRANCH"
+  upstream_ref="$UPSTREAM_REF"
+  instruction_environment_preamble
+  cat <<TXT
+
 == Task ==
 1. Inspect the current paused rebase on the local \`$branch_name\` branch only.
    No other branches need attention.
-2. Resolve any conflicts. Your goal is to preserve the functionality of both $upstream_ref and $branch_name. If this seems impossible, write a STUCK.md as described below.
-   Refer to the FORK.md if supplied to understand intentional fork customizations worth
-   preserving.
-   Exception: if upstream is introducing a feature that substantially overlaps one the
-   fork already maintains, prefer upstream's implementation and drop the fork's duplicate,
-   even when both could be kept. "Close enough" is acceptable here — adopting upstream
-   removes that feature from the fork's future maintenance burden. This is the only case
-   where you favor one side over merging; everywhere else, integrate both sides.
-   This applies only to functional overlap. Stylistic differences — visuals, branding,
-   wording, flavor (e.g. a custom welcome screen) — are never "close enough": the fork's
-   version is deliberate, so always preserve it over upstream's.
-3. Continue the rebase with \`git rebase --continue\` until it is complete. If a commit becomes mechanically empty, use \`git rebase --skip\` only when that is the truthful outcome.
-4. Verify the rebase is finished and no rebase is still in progress. Do not create any extra final commit after the rebase completes.
-
-== If you get stuck ==
-Write STUCK.md at the root of $WORKSPACE_DIR describing what you tried, what
-failed, and what a human would need to do to finish.
-
-== When done ==
-Write DONE.md at the root of $WORKSPACE_DIR summarizing the decisions you made:
-- Which conflicts you encountered and how you resolved them
-- What fork customizations you identified and preserved
-- What upstream changes you accepted and why
-- Any commits you skipped and why
+2. Resolve any conflicts.
+$(instruction_resolution_policy)
+3. Finish each paused commit with exactly one of:
+   - \`git rebase --continue --resolution-note "<what changed & why>"\` once resolved.
+   - \`git rebase --skip --resolution-note "<why this commit is dropped>"\` only when a
+     commit is genuinely mechanically empty and that is the truthful outcome.
+   - \`git rebase --abort --reason "<what blocked progress and what a human must do>"\`
+     if you cannot finish while preserving both $upstream_ref and $branch_name.
+   The note/reason is mandatory on every transition; Forklift records it and there is
+   no report file to author.
+4. Repeat until the rebase is complete. Verify no rebase is still in progress and do
+   not create any extra final commit after the rebase completes.
 TXT
 }
 
@@ -398,12 +457,4 @@ write_instructions() {
     printf '(none provided)\n' | tee -a "$INSTRUCTIONS_FILE"
     printf 'No FORK.md context provided.\n' >"$FORK_CONTEXT_FILE"
   fi
-}
-
-build_agent_payload() {
-  AGENT_PAYLOAD=$(
-    cat "$INSTRUCTIONS_FILE"
-    printf '\n\n'
-    cat "$FORK_CONTEXT_FILE" || printf ''
-  )
 }
