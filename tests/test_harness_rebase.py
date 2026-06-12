@@ -147,6 +147,7 @@ def _config(
         events_sock=events_sock,
         control_sock=control_sock or str(harness_state / "control.sock"),
         agent_lifetime=agent_lifetime,
+        conflict_index_snapshot=harness_state / "conflict-index",
     )
 
 
@@ -239,6 +240,21 @@ def test_classify_sanitizes_control_characters_and_whitespace() -> None:
         ["rebase", "--continue", "--resolution-note", "  a\nb\x01c  "]
     )
     assert cmd.resolution_note == "abc"
+
+
+def test_classify_reset_conflict() -> None:
+    cmd = classify_paused_rebase_command(["reset-conflict"])
+    assert cmd.action == "reset"
+
+
+def test_classify_reset_conflict_rejects_config_override() -> None:
+    cmd = classify_paused_rebase_command(["-c", "core.pager=cat", "reset-conflict"])
+    assert cmd.action == "unsupported"
+
+
+def test_classify_reset_conflict_rejects_extra_recognized_token() -> None:
+    cmd = classify_paused_rebase_command(["reset-conflict", "rebase"])
+    assert cmd.action == "unsupported"
 
 
 # --------------------------------------------------------------------------- #
@@ -351,6 +367,7 @@ def _mediate_env(config: HarnessConfig) -> dict[str, str]:
         "CLIENT_LOG": str(config.client_log),
         "FORKLIFT_REBASE_CONTROL_SOCK": config.control_sock,
         "FORKLIFT_AGENT_LIFETIME": config.agent_lifetime,
+        "FORKLIFT_CONFLICT_INDEX_SNAPSHOT": str(config.conflict_index_snapshot),
         "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
     }
 
@@ -427,6 +444,110 @@ def test_mediate_continue_blocks_on_tracked_mutation(
     )
     assert code == 1
     assert (workspace / ".git" / "rebase-merge").is_dir()
+
+
+def test_mediate_reset_conflict_restores_original_state(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    _make_conflicting_repo(workspace, 1)
+    _start_rebase(workspace)
+    config = _config(workspace, tmp_path / "state")
+    state = RebaseState(config)
+
+    # Capture the snapshot exactly as the harness would at the pause boundary.
+    state.emit_paused_events()
+    assert config.conflict_index_snapshot.is_file()
+
+    pristine = (workspace / "a0.txt").read_text(encoding="utf-8")
+    assert "<<<<<<<" in pristine
+
+    # Botch the resolution and stage it, collapsing the unmerged stages to stage 0.
+    _ = (workspace / "a0.txt").write_text("garbage\n", encoding="utf-8")
+    _ = _git(workspace, "add", "a0.txt")
+    assert _git(workspace, "ls-files", "-u").stdout.strip() == ""
+
+    # reset-conflict is a non-transition: no control listener is wired, so exit 0
+    # proves it never contacted the control socket.
+    code = _run_mediate(config, ["reset-conflict"], monkeypatch)
+    assert code == 0
+
+    # The rebase state dir is untouched and the conflict is restored verbatim.
+    assert (workspace / ".git" / "rebase-merge").is_dir()
+    restored = (workspace / "a0.txt").read_text(encoding="utf-8")
+    assert "<<<<<<<" in restored
+    unmerged = _git(workspace, "diff", "--name-only", "--diff-filter=U").stdout
+    assert "a0.txt" in unmerged
+    stages = _git(workspace, "ls-files", "-u").stdout.strip().splitlines()
+    assert len(stages) == 3
+
+
+def test_mediate_reset_conflict_without_snapshot_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    _make_conflicting_repo(workspace, 1)
+    _start_rebase(workspace)
+    config = _config(workspace, tmp_path / "state")
+    # No emit_paused_events, so no snapshot file exists yet.
+    code = _run_mediate(config, ["reset-conflict"], monkeypatch)
+    assert code == 1
+    # Failing to restore must not damage the in-progress rebase.
+    assert (workspace / ".git" / "rebase-merge").is_dir()
+
+
+def test_mediate_reset_conflict_rejects_stale_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "ws"
+    _make_conflicting_repo(workspace, 1)
+    _start_rebase(workspace)
+    config = _config(workspace, tmp_path / "state")
+    state = RebaseState(config)
+
+    state.emit_paused_events()
+    meta = config.conflict_index_snapshot.parent / (
+        config.conflict_index_snapshot.name + ".meta"
+    )
+    assert meta.is_file()
+    # Simulate a snapshot left over from a different paused step.
+    _ = meta.write_text("9/9:deadbeefdeadbeefdeadbeefdeadbeef", encoding="utf-8")
+
+    # Botch the resolution so we can prove the stale snapshot is NOT applied.
+    _ = (workspace / "a0.txt").write_text("garbage\n", encoding="utf-8")
+    _ = _git(workspace, "add", "a0.txt")
+
+    code = _run_mediate(config, ["reset-conflict"], monkeypatch)
+    assert code == 1
+
+    # The mismatched snapshot must not overwrite the tree, and the rebase is intact.
+    assert (workspace / ".git" / "rebase-merge").is_dir()
+    assert (workspace / "a0.txt").read_text(encoding="utf-8") == "garbage\n"
+
+
+def test_snapshot_conflict_index_discards_stale_on_unidentifiable_capture(
+    tmp_path: Path,
+) -> None:
+    # No rebase in progress, so the step identity is unavailable.
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    config = _config(workspace, tmp_path / "state")
+    state = RebaseState(config)
+
+    # Seed a stale snapshot + identity sidecar from an earlier conflict.
+    config.conflict_index_snapshot.parent.mkdir(parents=True, exist_ok=True)
+    _ = config.conflict_index_snapshot.write_bytes(b"stale-index")
+    meta = config.conflict_index_snapshot.parent / (
+        config.conflict_index_snapshot.name + ".meta"
+    )
+    _ = meta.write_text("3/5:cafebabe", encoding="utf-8")
+
+    state.snapshot_conflict_index()
+
+    # An unidentifiable capture must wipe the stale snapshot so a later reset cannot
+    # restore another step's index.
+    assert not config.conflict_index_snapshot.exists()
+    assert not meta.exists()
 
 
 def test_continue_check_command_text_strips_writer_preamble(

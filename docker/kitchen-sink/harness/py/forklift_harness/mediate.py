@@ -9,6 +9,10 @@ the intra-container control socket and blocks for the orchestrator's directive.
 A continue-check failure returns control to the agent in-session (no socket
 contact). Only a successful advance reports + blocks, letting the orchestrator
 choose reply-and-continue (rebase mode) or kill-and-relaunch (conflict mode).
+
+`git reset-conflict` is a non-transition recovery verb: it restores the current
+paused step to git's original conflicted state and returns control to the agent
+in-session, never contacting the control socket.
 """
 
 from __future__ import annotations
@@ -53,7 +57,8 @@ def _fail_unsupported(state: RebaseState, args: list[str]) -> int:
         + "Resolve conflicts, stage the resolved files, then use one of:\n"
         + f'  git rebase --continue {RESOLUTION_NOTE_FLAG} "<what changed & why>"\n'
         + f'  git rebase --skip {RESOLUTION_NOTE_FLAG} "<why this commit is dropped>"\n'
-        + f'  git rebase --abort {REASON_FLAG} "<what blocked progress>"\n',
+        + f'  git rebase --abort {REASON_FLAG} "<what blocked progress>"\n'
+        + "  git reset-conflict   (restore this conflict to its original state and start over)\n",
         file=sys.stderr,
         flush=True,
     )
@@ -295,6 +300,31 @@ def _passthrough(state: RebaseState, args: tuple[str, ...]) -> int:
     return result.returncode
 
 
+def _handle_reset(state: RebaseState) -> int:
+    """Restore the current paused step to its original conflicted state.
+
+    This is a non-transition: it returns control to the agent in-session without
+    contacting the control socket or reporting to the orchestrator.
+    """
+
+    state.emit_phase("rebase", "stdout", "Intercepted git reset-conflict")
+    outcome = state.reset_current_conflict()
+    if not outcome.ok:
+        state.emit_phase(
+            "rebase", "stderr", f"reset-conflict failed: {outcome.message}"
+        )
+        print(f"git reset-conflict: {outcome.message}", file=sys.stderr, flush=True)
+        return 1
+    state.emit_phase("rebase", "stdout", "Reset current conflict to its original state")
+    print(
+        "Current conflict reset to its original state. Re-resolve the conflicted\n"
+        + "files, stage them, then run "
+        + f'git rebase --continue {RESOLUTION_NOTE_FLAG} "<what changed & why>".',
+        flush=True,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = list(argv) if argv is not None else sys.argv[1:]
     config = HarnessConfig.from_env()
@@ -312,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_abort(state, config, command.reason)
     if command.action == "passthrough":
         return _passthrough(state, command.original_args)
+    if command.action == "reset":
+        return _handle_reset(state)
     return _fail_unsupported(state, args)
 
 

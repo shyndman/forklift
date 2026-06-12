@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -32,6 +33,14 @@ ALLOWED_PAUSED_COMMANDS = frozenset(
 # socket instead.
 RESOLUTION_NOTE_FLAG = "--resolution-note"
 REASON_FLAG = "--reason"
+
+# Standalone mediated verb that restores the current paused step to git's original
+# conflicted state. Not git-native; the mediator handles it without invoking rebase.
+RESET_CONFLICT_COMMAND = "reset-conflict"
+
+# Filesystem path where the pristine conflict index is snapshotted at each pause
+# so `git reset-conflict` can restore the step after the agent has mutated it.
+DEFAULT_CONFLICT_INDEX_SNAPSHOT = "/run/forklift/conflict-index"
 
 # Upper bound on the note/reason length forwarded over the control socket.
 MAX_NOTE_LENGTH = 4000
@@ -64,6 +73,7 @@ class HarnessConfig:
     git_user_name: str = "Forklift Agent"
     git_user_email: str = "forklift@github.com"
     git_editor: str = "true"
+    conflict_index_snapshot: Path = Path(DEFAULT_CONFLICT_INDEX_SNAPSHOT)
 
     @classmethod
     def from_env(cls) -> HarnessConfig:
@@ -104,6 +114,11 @@ class HarnessConfig:
                 "FORKLIFT_GIT_USER_EMAIL", "forklift@github.com"
             ),
             git_editor=os.environ.get("FORKLIFT_GIT_EDITOR", "true"),
+            conflict_index_snapshot=Path(
+                os.environ.get(
+                    "FORKLIFT_CONFLICT_INDEX_SNAPSHOT", DEFAULT_CONFLICT_INDEX_SNAPSHOT
+                )
+            ),
         )
 
 
@@ -128,10 +143,18 @@ class ContinueCheckResult:
 
 
 @dataclass(frozen=True)
+class ResetOutcome:
+    """Outcome of a `git reset-conflict` restore of the current paused step."""
+
+    ok: bool
+    message: str
+
+
+@dataclass(frozen=True)
 class PausedCommand:
     """Structured classification of a git command issued during a paused rebase."""
 
-    action: str  # continue | skip | abort | passthrough | unsupported
+    action: str  # continue | skip | abort | passthrough | unsupported | reset
     resolution_note: str | None
     reason: str | None
     original_args: tuple[str, ...]
@@ -211,7 +234,11 @@ def classify_paused_rebase_command(args: list[str]) -> PausedCommand:
             reason = arg[len(REASON_FLAG) + 1 :]
         elif arg in ("--continue", "--skip", "--abort"):
             normalized.append(arg)
-        elif arg == "rebase" or arg in ALLOWED_PAUSED_COMMANDS:
+        elif (
+            arg == "rebase"
+            or arg == RESET_CONFLICT_COMMAND
+            or arg in ALLOWED_PAUSED_COMMANDS
+        ):
             normalized.append(arg)
         index += 1
 
@@ -225,6 +252,11 @@ def classify_paused_rebase_command(args: list[str]) -> PausedCommand:
     command_name = normalized[0] if normalized else ""
     if not command_name:
         return PausedCommand("unsupported", note, reason_text, original)
+
+    if command_name == RESET_CONFLICT_COMMAND:
+        if has_config_override or len(normalized) != 1:
+            return PausedCommand("unsupported", note, reason_text, original)
+        return PausedCommand("reset", note, reason_text, original)
 
     if command_name != "rebase":
         if command_name in ALLOWED_PAUSED_COMMANDS:
@@ -503,8 +535,13 @@ class RebaseState:
         )
 
     def emit_paused_events(self) -> None:
-        """Emit the progress + conflict events for a freshly paused rebase."""
+        """Emit the progress + conflict events for a freshly paused rebase.
 
+        Also captures a pristine byte copy of the conflict index first, so a later
+        `git reset-conflict` can restore this step after the agent has mutated it.
+        """
+
+        self.snapshot_conflict_index()
         self.emit_event_from_snapshot("progress")
         self.emit_event_from_snapshot("conflict")
 
@@ -524,6 +561,109 @@ class RebaseState:
         self.emit_complete_event(total if total > 0 else self.count_rebase_commits())
 
     # ----- shared actions -------------------------------------------------
+
+    def _snapshot_meta_path(self) -> Path:
+        """Sidecar path recording which paused step the snapshot belongs to."""
+
+        snapshot = self.config.conflict_index_snapshot
+        return snapshot.parent / f"{snapshot.name}.meta"
+
+    def _current_step_identity(self) -> str | None:
+        """Signature identifying the paused step a snapshot would belong to.
+
+        Built from REBASE_HEAD (the commit being applied) plus the step counters, so
+        a snapshot captured at one conflict can never be mistaken for another. Returns
+        None when no resolvable progress exists.
+        """
+
+        progress = self.read_progress()
+        if progress is None or not progress.sha:
+            return None
+        return f"{progress.step}/{progress.total}:{progress.sha}"
+
+    def _read_snapshot_identity(self) -> str | None:
+        """Return the step identity recorded alongside the snapshot, or None."""
+
+        try:
+            return self._snapshot_meta_path().read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+
+    def _discard_snapshot(self) -> None:
+        """Remove the snapshot and its identity sidecar, ignoring missing files."""
+
+        for path in (self.config.conflict_index_snapshot, self._snapshot_meta_path()):
+            try:
+                path.unlink()
+            except OSError:
+                pass
+
+    def snapshot_conflict_index(self) -> None:
+        """Capture a pristine byte copy of `.git/index` at the current pause.
+
+        Stamped with the current step identity so `git reset-conflict` can prove the
+        snapshot belongs to the conflict in front of the agent before restoring it.
+        Best-effort: once the agent runs `git add`, the unmerged stages collapse and
+        cannot be reconstructed, so this byte snapshot is the only `add`-proof way to
+        restore the conflicted step later. A failed (or unidentifiable) capture
+        discards any prior snapshot so a later reset fails closed rather than
+        restoring a stale step's index. Failures must not break the rebase.
+        """
+
+        identity = self._current_step_identity()
+        if identity is None:
+            self._discard_snapshot()
+            self.emit_phase(
+                "rebase",
+                "stderr",
+                "Unable to snapshot conflict index: step identity unavailable",
+            )
+            return
+
+        src = self.config.workspace_dir / ".git" / "index"
+        dest = self.config.conflict_index_snapshot
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            _ = shutil.copyfile(src, dest)
+            _ = self._snapshot_meta_path().write_text(identity, encoding="utf-8")
+        except OSError as exc:
+            self._discard_snapshot()
+            self.emit_phase(
+                "rebase", "stderr", f"Unable to snapshot conflict index: {exc}"
+            )
+
+    def reset_current_conflict(self) -> ResetOutcome:
+        """Restore the current paused step to git's original conflicted state.
+
+        Restores the snapshotted pristine index and repaints the working tree from
+        its merge stages, discarding the agent's in-progress resolution. Tracked-only:
+        untracked files the agent created are left in place. The snapshot's recorded
+        step identity must match the current conflict, or the restore is refused so a
+        stale snapshot can never overwrite the tree with another commit's stages.
+        """
+
+        if not self.rebase_in_progress():
+            return ResetOutcome(False, "no rebase is in progress")
+        snapshot = self.config.conflict_index_snapshot
+        if not snapshot.is_file():
+            return ResetOutcome(
+                False, "no snapshot of the original conflict was captured"
+            )
+        expected = self._current_step_identity()
+        if expected is None or self._read_snapshot_identity() != expected:
+            return ResetOutcome(
+                False, "the captured snapshot does not match the current conflict"
+            )
+        index_path = self.config.workspace_dir / ".git" / "index"
+        try:
+            _ = shutil.copyfile(snapshot, index_path)
+        except OSError as exc:
+            return ResetOutcome(False, f"could not restore the conflict index: {exc}")
+        result = self.run_real_git("checkout", "-m", "--", ".")
+        if result.returncode != 0:
+            return ResetOutcome(False, f"git checkout failed: {result.stderr.strip()}")
+        self.emit_event_from_snapshot("reset")
+        return ResetOutcome(True, "")
 
     def auto_skip_clean_empty_stop(self) -> int:
         """Auto-skip a clean (mechanically empty) rebase stop via the real git binary.

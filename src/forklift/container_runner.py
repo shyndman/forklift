@@ -33,7 +33,16 @@ REBASE_EVENTS_SOCKET_ENV = "FORKLIFT_REBASE_EVENTS_SOCK"
 REBASE_EVENT_VERSION = 1
 MAX_UNIX_SOCKET_PATH_BYTES = 107
 KNOWN_REBASE_EVENTS = frozenset(
-    {"progress", "conflict", "continue", "skip", "auto_skip", "complete", "abort"}
+    {
+        "progress",
+        "conflict",
+        "continue",
+        "skip",
+        "auto_skip",
+        "complete",
+        "abort",
+        "reset",
+    }
 )
 
 

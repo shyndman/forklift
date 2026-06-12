@@ -11,6 +11,7 @@ default_instructions() {
   else
     conflict_mode_instructions
   fi
+  instruction_system_reminder
 }
 
 # Shared environment preamble used by both lifetime modes.
@@ -39,6 +40,12 @@ upstream $upstream_ref branch and the fork's $branch_name branch.
 |- Use git to inspect history, branches, and conflicts
 |- Forklift already started \`git rebase $upstream_ref\`. You are only here because it paused.
 |- Do not attempt to run tests or build the code; focus on finishing the paused rebase.
+TXT
+}
+
+# Trailing ours/theirs reminder, emitted last so it is the final thing the agent reads.
+instruction_system_reminder() {
+  cat <<TXT
 
 <system_reminder>
 In the context of this rebase, "ours" refers to the upstream project, and "theirs" refers to the fork that you help manage.
@@ -81,6 +88,8 @@ Forklift advances to the next conflict (with a new agent) after you continue.
 1. Inspect the current paused conflict on the local \`$branch_name\` branch only.
 $(instruction_resolution_policy)
 2. Resolve the conflict and stage the resolved files.
+   **IF RESOLVING GOES WRONG**, run \`git reset-conflict\` to restore this conflict to
+   git's original paused state and start over (no abort, no progress lost).
 3. Finish this conflict with exactly one of:
    - \`git rebase --continue --resolution-note "<what changed & why>"\` once resolved.
    - \`git rebase --skip --resolution-note "<why this commit is dropped>"\` only when the
@@ -103,6 +112,8 @@ rebase_mode_instructions() {
 1. Inspect the current paused rebase on the local \`$branch_name\` branch only.
    No other branches need attention.
 2. Resolve any conflicts.
+   **IF RESOLVING GOES WRONG**, run \`git reset-conflict\` to restore this conflict to
+   git's original paused state and start over (no abort, no progress lost).
 $(instruction_resolution_policy)
 3. Finish each paused commit with exactly one of:
    - \`git rebase --continue --resolution-note "<what changed & why>"\` once resolved.

@@ -32,6 +32,7 @@ class RebaseEventProtocolTests(unittest.TestCase):
             "auto_skip",
             "complete",
             "abort",
+            "reset",
         }
         self.assertEqual(emitted, set(container_runner.KNOWN_REBASE_EVENTS))
 
