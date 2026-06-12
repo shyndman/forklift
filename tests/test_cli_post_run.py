@@ -527,6 +527,9 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             repo = root / "repo"
             repo.mkdir(parents=True, exist_ok=True)
             run_paths = self._run_paths(root)
+            _ = (run_paths.harness_state / "harness-status.txt").write_text(
+                "status=completed\n", encoding="utf-8"
+            )
             output = StringIO()
             footer_outcomes: list[str] = []
 

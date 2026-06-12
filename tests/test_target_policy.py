@@ -300,6 +300,11 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(Forklift, "_build_container_env", return_value={}),
                 patch.object(Forklift, "_chown_artifact", return_value=None),
                 patch.object(Forklift, "_post_container_results", return_value=None),
+                patch.object(
+                    Forklift,
+                    "_require_successful_harness_completion",
+                    return_value=None,
+                ),
                 patch(
                     "forklift.cli.RunDirectoryManager.cleanup_expired_runs",
                     return_value=None,
@@ -332,7 +337,7 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             print_mock.assert_called_once_with("boxed output", flush=True)
 
-    async def test_failed_container_logs_setup_details_before_exit(self) -> None:
+    async def test_failed_container_exits_with_container_code(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             repo = root / "repo"
@@ -340,10 +345,6 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
             _ = self._init_repo(repo)
 
             run_paths = self._run_paths(root)
-            _ = (run_paths.harness_state / "setup.log").write_text(
-                "== Setup Command ==\nbun install\n== Setup Output ==\nerror\n",
-                encoding="utf-8",
-            )
             forklift = self._build_forklift(repo)
 
             with (
@@ -388,25 +389,19 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch(
                     "forklift.cli.ContainerRunner.run",
                     return_value=ContainerRunResult(
-                        exit_code=1,
+                        exit_code=137,
                         timed_out=False,
                         stdout="",
                         stderr="",
                         container_name="forklift-test",
                     ),
                 ),
-                patch.object(
-                    Forklift,
-                    "_log_setup_failure_details",
-                    return_value=None,
-                ) as setup_log_mock,
             ):
                 with self.assertRaises(SystemExit) as ctx:
                     await forklift.run()
 
-            self.assertEqual(ctx.exception.code, 1)
+            self.assertEqual(ctx.exception.code, 137)
             cleanup_mock.assert_called_once()
-            setup_log_mock.assert_called_once_with(run_paths.harness_state)
 
 
 if __name__ == "__main__":
