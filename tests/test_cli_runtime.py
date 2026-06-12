@@ -13,6 +13,16 @@ from typing import cast
 from rich.console import Console
 
 from forklift.cli import Forklift, HARNESS_STATUS_FILE_NAME, parse_forklift_args
+from forklift.cli import exit_code_for, outcome_label
+from forklift.errors import (
+    ContainerExitError,
+    ContainerTimeoutError,
+    HarnessIncompleteError,
+    PublishError,
+    RebaseStuckError,
+    SetupError,
+    UpstreamNotMergedError,
+)
 from forklift.cli_authorship import OperatorIdentity
 from forklift.cli_runtime import (
     DEFAULT_TARGET_POLICY,
@@ -732,6 +742,22 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(
             any(message.startswith("Conflict ") for _, message in captured)
         )
+
+
+class ExitCodeMappingTests(unittest.TestCase):
+    def test_exit_code_for_each_error(self) -> None:
+        self.assertEqual(exit_code_for(ContainerTimeoutError()), 2)
+        self.assertEqual(exit_code_for(UpstreamNotMergedError()), 3)
+        self.assertEqual(exit_code_for(RebaseStuckError()), 4)
+        self.assertEqual(exit_code_for(ContainerExitError(137)), 137)
+        self.assertEqual(exit_code_for(SetupError()), 1)
+        self.assertEqual(exit_code_for(HarnessIncompleteError()), 1)
+        self.assertEqual(exit_code_for(PublishError()), 1)
+
+    def test_outcome_label_for_each_error(self) -> None:
+        self.assertEqual(outcome_label(ContainerTimeoutError()), "timed out")
+        self.assertEqual(outcome_label(RebaseStuckError()), "stuck")
+        self.assertEqual(outcome_label(ContainerExitError(5)), "failure")
 
 
 if __name__ == "__main__":

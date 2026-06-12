@@ -1,25 +1,35 @@
 from __future__ import annotations
 
+import logging
+import sys
 from collections.abc import Sequence
 from dataclasses import replace
-import logging
 from importlib import metadata
 from pathlib import Path
 from shlex import quote as shell_quote
-import sys
 from typing import override
 
+import structlog
 from clypi import Command, arg, boxed
 from clypi._cli import arg_parser
-import structlog
-from rich.traceback import install as install_rich_traceback
+from libsh.logs import get_logger, setup_logging_from_env
 from rich.console import Console
+from rich.traceback import install as install_rich_traceback
 
+from .changelog import Changelog
 from .cli_authorship import (
     AGENT_EMAIL as AUTHORSHIP_AGENT_EMAIL,
+)
+from .cli_authorship import (
     AGENT_NAME as AUTHORSHIP_AGENT_NAME,
+)
+from .cli_authorship import (
     FILTER_REPO_INSTALL_HELP as AUTHORSHIP_FILTER_REPO_INSTALL_HELP,
+)
+from .cli_authorship import (
     STASH_MESSAGE as AUTHORSHIP_STASH_MESSAGE,
+)
+from .cli_authorship import (
     OperatorIdentity,
     RewriteResult,
     assert_no_agent_commits,
@@ -28,17 +38,11 @@ from .cli_authorship import (
     workspace_has_changes,
 )
 from .cli_post_run import (
-    STUCK_EXIT_CODE as POST_RUN_STUCK_EXIT_CODE,
     post_container_results,
 )
-from .post_run_metrics import (
-    parse_usage_summary,
-    render_completion_report,
-    render_usage_summary,
-)
 from .cli_runtime import (
-    DEFAULT_TARGET_POLICY,
     DEFAULT_AGENT_LIFETIME,
+    DEFAULT_TARGET_POLICY,
     apply_cli_overrides,
     build_container_env,
     chown_artifact,
@@ -48,11 +52,19 @@ from .cli_runtime import (
     resolved_main_branch,
     resolved_target_policy,
 )
-from .changelog import Changelog
-from .first_command import First
-from .files_command import Files
 from .clientlog import Clientlog
 from .container_runner import ContainerRunner, RebaseEvent
+from .errors import (
+    ContainerExitError,
+    ContainerTimeoutError,
+    ForkliftError,
+    HarnessIncompleteError,
+    RebaseStuckError,
+    SetupError,
+    UpstreamNotMergedError,
+)
+from .files_command import Files
+from .first_command import First
 from .git import (
     GitError,
     GitFetchResult,
@@ -67,13 +79,17 @@ from .git import (
     resolve_upstream_target,
     run_git,
 )
-from libsh.logs import setup_logging_from_env, get_logger
 from .logs import build_renderer
 from .opencode_env import (
     DEFAULT_ENV_PATH,
     OpenCodeEnv,
     OpenCodeEnvError,
     load_opencode_env,
+)
+from .post_run_metrics import (
+    parse_usage_summary,
+    render_completion_report,
+    render_usage_summary,
 )
 from .run_manager import RunDirectoryManager, RunPaths
 
@@ -84,7 +100,6 @@ AGENT_NAME = AUTHORSHIP_AGENT_NAME
 AGENT_EMAIL = AUTHORSHIP_AGENT_EMAIL
 STASH_MESSAGE = AUTHORSHIP_STASH_MESSAGE
 FILTER_REPO_INSTALL_HELP = AUTHORSHIP_FILTER_REPO_INSTALL_HELP
-STUCK_EXIT_CODE = POST_RUN_STUCK_EXIT_CODE
 HARNESS_STATUS_FILE_NAME = "harness-status.txt"
 CLIENT_LOG_TAIL_LINES = 120
 CLIENTLOG_HINT_TITLE = "Client log tail command"
@@ -97,6 +112,34 @@ def _default_instruction_list() -> list[str]:
     """Provide a strongly typed default for repeatable CLI instruction blocks."""
 
     return []
+
+
+def exit_code_for(err: ForkliftError) -> int:
+    """Map a domain run-lifecycle failure to the process exit code (CLI-owned)."""
+
+    match err:
+        case ContainerTimeoutError():
+            return 2
+        case UpstreamNotMergedError():
+            return 3
+        case RebaseStuckError():
+            return 4
+        case ContainerExitError():
+            return err.container_exit_code
+        case _:
+            return 1
+
+
+def outcome_label(err: ForkliftError) -> str:
+    """Map a domain run-lifecycle failure to the terminal-footer outcome label."""
+
+    match err:
+        case ContainerTimeoutError():
+            return "timed out"
+        case RebaseStuckError():
+            return "stuck"
+        case _:
+            return "failure"
 
 
 class Forklift(Command):
@@ -151,134 +194,142 @@ class Forklift(Command):
         run_manager = RunDirectoryManager()
         _ = run_manager.cleanup_expired_runs()
 
-        operator_identity = self._capture_operator_identity(repo_path)
-        main_branch = self._resolved_main_branch()
-        target_policy = self._resolved_target_policy()
-        agent_lifetime = self._resolved_agent_lifetime()
-        extra_instructions = self._validated_instructions()
-        opencode_env = self._prepare_opencode_env()
-        chown_uid, chown_gid = self._resolve_chown_target()
-
-        remotes = self._discover_required_remotes(repo_path)
-        fetch_results = self._fetch_all(repo_path, remotes)
-        for result in fetch_results:
-            if result.output:
-                logger.info("Fetch output", remote=result.name, output=result.output)
-            else:
-                logger.info("Fetch output", remote=result.name, status="up to date")
-        logger.info("Remote discovery and fetch complete.")
-
-        selected_target = self._resolve_upstream_target(
-            repo_path,
-            main_branch=main_branch,
-            target_policy=target_policy,
-        )
-        logger.info(
-            "Resolved upstream target",
-            target_policy=selected_target.policy,
-            target_ref=selected_target.target_ref,
-            target_sha=selected_target.target_sha,
-            target_tag=selected_target.resolved_tag,
-        )
-
-        if self._is_target_already_integrated(
-            repo_path,
-            target_sha=selected_target.target_sha,
-            main_branch=main_branch,
-        ):
-            logger.info(
-                "Selected upstream target already integrated; skipping container run",
-                target_policy=selected_target.policy,
-                target_sha=selected_target.target_sha,
-                target_ref=selected_target.target_ref,
-            )
-            return
-
-        run_paths = run_manager.prepare(
-            repo_path,
-            main_branch=main_branch,
-            selected_upstream_sha=selected_target.target_sha,
-            extra_metadata=self._metadata_overrides(operator_identity, selected_target),
-            extra_instructions=extra_instructions,
-        )
-        _ = structlog.contextvars.bind_contextvars(run=run_paths.run_id)
-        logger.info(
-            "Run directory ready",
-            run_dir=run_paths.run_dir,
-            workspace=run_paths.workspace,
-            harness_state=run_paths.harness_state,
-            opencode_logs=run_paths.opencode_logs,
-            control_dir=run_paths.control_dir,
-        )
-        self._emit_clientlog_hint(run_paths.run_dir.name)
-
-        timeout_seconds = self._resolved_timeout_seconds(opencode_env.timeout_seconds)
-        container_opencode_env = replace(opencode_env, timeout_seconds=timeout_seconds)
-        container_runner = ContainerRunner(timeout_seconds=timeout_seconds)
-        container_result = container_runner.run(
-            run_paths.workspace,
-            run_paths.harness_state,
-            run_paths.opencode_logs,
-            run_paths.control_dir,
-            run_paths.run_dir / "run-state.json",
-            self._build_container_env(
-                container_opencode_env, main_branch, run_paths.run_id, agent_lifetime
-            ),
-            event_callback=self._log_rebase_event,
-        )
-
-        agent_log_path = run_paths.harness_state / "opencode-client.log"
-        if agent_log_path.exists():
-            logger.info("Agent log transcript available", path=agent_log_path)
-        else:
-            logger.warning(
-                "Agent log transcript missing; harness may not have emitted logs.",
-                path=agent_log_path,
-            )
-
-        self._chown_artifact(
-            run_paths.harness_state, "harness-state", chown_uid, chown_gid
-        )
-        self._chown_artifact(
-            run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid
-        )
-
+        run_paths: RunPaths | None = None
+        agent_log_path: Path | None = None
         outcome = "success"
         exit_code = 0
         try:
+            operator_identity = self._capture_operator_identity(repo_path)
+            main_branch = self._resolved_main_branch()
+            target_policy = self._resolved_target_policy()
+            agent_lifetime = self._resolved_agent_lifetime()
+            extra_instructions = self._validated_instructions()
+            opencode_env = self._prepare_opencode_env()
+            chown_uid, chown_gid = self._resolve_chown_target()
+
+            remotes = self._discover_required_remotes(repo_path)
+            fetch_results = self._fetch_all(repo_path, remotes)
+            for result in fetch_results:
+                if result.output:
+                    logger.info(
+                        "Fetch output", remote=result.name, output=result.output
+                    )
+                else:
+                    logger.info("Fetch output", remote=result.name, status="up to date")
+            logger.info("Remote discovery and fetch complete.")
+
+            selected_target = self._resolve_upstream_target(
+                repo_path,
+                main_branch=main_branch,
+                target_policy=target_policy,
+            )
+            logger.info(
+                "Resolved upstream target",
+                target_policy=selected_target.policy,
+                target_ref=selected_target.target_ref,
+                target_sha=selected_target.target_sha,
+                target_tag=selected_target.resolved_tag,
+            )
+
+            if self._is_target_already_integrated(
+                repo_path,
+                target_sha=selected_target.target_sha,
+                main_branch=main_branch,
+            ):
+                logger.info(
+                    "Selected upstream target already integrated; skipping container run",
+                    target_policy=selected_target.policy,
+                    target_sha=selected_target.target_sha,
+                    target_ref=selected_target.target_ref,
+                )
+                return
+
+            run_paths = run_manager.prepare(
+                repo_path,
+                main_branch=main_branch,
+                selected_upstream_sha=selected_target.target_sha,
+                extra_metadata=self._metadata_overrides(
+                    operator_identity, selected_target
+                ),
+                extra_instructions=extra_instructions,
+            )
+            _ = structlog.contextvars.bind_contextvars(run=run_paths.run_id)
+            logger.info(
+                "Run directory ready",
+                run_dir=run_paths.run_dir,
+                workspace=run_paths.workspace,
+                harness_state=run_paths.harness_state,
+                opencode_logs=run_paths.opencode_logs,
+                control_dir=run_paths.control_dir,
+            )
+            self._emit_clientlog_hint(run_paths.run_dir.name)
+
+            timeout_seconds = self._resolved_timeout_seconds(
+                opencode_env.timeout_seconds
+            )
+            container_opencode_env = replace(
+                opencode_env, timeout_seconds=timeout_seconds
+            )
+            container_runner = ContainerRunner(timeout_seconds=timeout_seconds)
+            container_result = container_runner.run(
+                run_paths.workspace,
+                run_paths.harness_state,
+                run_paths.opencode_logs,
+                run_paths.control_dir,
+                run_paths.run_dir / "run-state.json",
+                self._build_container_env(
+                    container_opencode_env,
+                    main_branch,
+                    run_paths.run_id,
+                    agent_lifetime,
+                ),
+                event_callback=self._log_rebase_event,
+            )
+
+            agent_log_path = run_paths.harness_state / "opencode-client.log"
+            if agent_log_path.exists():
+                logger.info("Agent log transcript available", path=agent_log_path)
+            else:
+                logger.warning(
+                    "Agent log transcript missing; harness may not have emitted logs.",
+                    path=agent_log_path,
+                )
+
+            self._chown_artifact(
+                run_paths.harness_state, "harness-state", chown_uid, chown_gid
+            )
+            self._chown_artifact(
+                run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid
+            )
+
             if container_result.timed_out:
                 logger.error(
                     "Container timed out",
                     container=container_result.container_name,
                     timeout_seconds=container_runner.timeout_seconds,
                 )
-                outcome = "timed out"
-                exit_code = 2
-            elif container_result.exit_code != 0:
+                raise ContainerTimeoutError()
+            if container_result.exit_code != 0:
                 logger.error(
                     "Container %s exited with code %s",
                     container_result.container_name,
                     container_result.exit_code,
                 )
-                outcome = "failure"
-                exit_code = container_result.exit_code
-            else:
-                self._require_successful_harness_completion(run_paths.harness_state)
-                logger.info("Container run completed successfully.")
-                self._post_container_results(repo_path, run_paths, main_branch)
-        except SystemExit as exc:
-            if exc.code == STUCK_EXIT_CODE:
-                outcome = "stuck"
-                exit_code = STUCK_EXIT_CODE
-            else:
-                outcome = "failure"
-                exit_code = self._resolved_exit_code(exc.code)
+                raise ContainerExitError(container_result.exit_code)
 
-        self._render_terminal_summary(
-            outcome,
-            agent_log_path,
-            run_paths.harness_state,
-        )
+            self._require_successful_harness_completion(run_paths.harness_state)
+            logger.info("Container run completed successfully.")
+            self._post_container_results(repo_path, run_paths, main_branch)
+        except ForkliftError as err:
+            outcome = outcome_label(err)
+            exit_code = exit_code_for(err)
+
+        if run_paths is not None and agent_log_path is not None:
+            self._render_terminal_summary(
+                outcome,
+                agent_log_path,
+                run_paths.harness_state,
+            )
         if exit_code != 0:
             raise SystemExit(exit_code)
 
@@ -373,13 +424,13 @@ class Forklift(Command):
                 'Unable to read git user.name in %s; configure it via `git config --global user.name "Your Name"`.',
                 repo_path,
             )
-            raise SystemExit(1) from exc
+            raise SetupError("git user.name unreadable") from exc
         if not name:
             logger.error(
                 'git user.name is empty in %s; set it via `git config --global user.name "Your Name"`.',
                 repo_path,
             )
-            raise SystemExit(1)
+            raise SetupError("git user.name empty")
 
         try:
             email = run_git(repo_path, ["config", "--get", "user.email"]).strip()
@@ -388,13 +439,13 @@ class Forklift(Command):
                 "Unable to read git user.email in %s; configure it via `git config --global user.email you@example.com`.",
                 repo_path,
             )
-            raise SystemExit(1) from exc
+            raise SetupError("git user.email unreadable") from exc
         if not email:
             logger.error(
                 "git user.email is empty in %s; set it via `git config --global user.email you@example.com`.",
                 repo_path,
             )
-            raise SystemExit(1)
+            raise SetupError("git user.email empty")
 
         logger.info("Captured operator identity", name=name, email=email)
         return OperatorIdentity(name=name, email=email)
@@ -429,7 +480,7 @@ class Forklift(Command):
             )
         except GitError as exc:
             logger.exception("Failed to resolve upstream target: %s", exc)
-            raise SystemExit(1) from exc
+            raise SetupError("upstream target resolution failed") from exc
 
     def _is_target_already_integrated(
         self,
@@ -449,14 +500,14 @@ class Forklift(Command):
                 main_branch,
                 exc,
             )
-            raise SystemExit(1) from exc
+            raise SetupError("ancestry check failed") from exc
 
     def _discover_required_remotes(self, repo_path: Path) -> dict[str, GitRemote]:
         try:
             remotes = ensure_required_remotes(repo_path)
         except GitError as exc:
             logger.exception("%s", exc)
-            raise SystemExit(1) from exc
+            raise SetupError("remote discovery failed") from exc
         for remote in remotes.values():
             logger.info("Detected remote", name=remote.name, fetch_url=remote.fetch_url)
         return remotes
@@ -470,7 +521,7 @@ class Forklift(Command):
             return fetch_remotes(repo_path, remotes)
         except GitError as exc:
             logger.exception("%s", exc)
-            raise SystemExit(1) from exc
+            raise SetupError("remote fetch failed") from exc
 
     def _post_container_results(
         self,
@@ -500,15 +551,6 @@ class Forklift(Command):
         console = Console()
         render_usage_summary(outcome, summary, console=console)
         _ = render_completion_report(harness_state=harness_state, console=console)
-
-    def _resolved_exit_code(self, code: object) -> int:
-        """Normalize SystemExit payloads so re-raises preserve explicit integer codes."""
-
-        if isinstance(code, bool):
-            return 1
-        if isinstance(code, int):
-            return code
-        return 1
 
     def _log_client_failure_details(self, harness_state: Path) -> None:
         """Emit the agent client log tail so harness failures are visible in host logs."""
@@ -566,7 +608,7 @@ class Forklift(Command):
             message=status.get("message"),
         )
         self._log_client_failure_details(harness_state)
-        raise SystemExit(1)
+        raise HarnessIncompleteError("harness did not report successful completion")
 
     def _read_harness_status(self, status_path: Path) -> dict[str, str]:
         """Parse the harness completion marker written inside harness-state."""
@@ -646,7 +688,7 @@ class Forklift(Command):
                 DEFAULT_ENV_PATH,
                 exc,
             )
-            raise SystemExit(1) from exc
+            raise SetupError("OpenCode env load failed") from exc
         logger.info("Loaded OpenCode env", path=DEFAULT_ENV_PATH)
         logger.debug(
             "Forwarding OpenCode configuration: model=%s variant=%s agent=%s",

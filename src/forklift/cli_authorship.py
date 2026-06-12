@@ -9,6 +9,7 @@ from typing import Callable, cast
 import structlog
 from structlog.stdlib import BoundLogger
 
+from .errors import PublishError
 from .git import (
     GitError,
     GitRemote,
@@ -287,7 +288,7 @@ def validate_filter_repo(
     except GitError as exc:
         logger.exception("git filter-repo not available: %s", exc)
         logger.error(FILTER_REPO_INSTALL_HELP)
-        raise SystemExit(1) from exc
+        raise PublishError("git filter-repo not available") from exc
     if version:
         logger.info("git filter-repo detected", version=version)
 
@@ -327,7 +328,7 @@ def assert_no_agent_commits(
             AGENT_EMAIL,
             sample,
         )
-        raise SystemExit(1)
+        raise PublishError("authorship rewrite incomplete")
 
 
 def pop_stash(
@@ -456,7 +457,7 @@ def rewrite_and_publish_local(
                 upstream_anchor[:12],
                 post_rewrite_upstream[:12],
             )
-            raise SystemExit(1)
+            raise PublishError("rewrite boundary violation")
 
         publication_branch = build_publication_branch(metadata, target_branch)
         publish_to_local(
@@ -491,7 +492,7 @@ def rewrite_and_publish_local(
                 STASH_MESSAGE,
                 workspace,
             )
-        raise SystemExit(1) from exc
+        raise PublishError("local rewrite/publish failed") from exc
 
 
 def log_rewrite_summary(repo_path: Path, result: RewriteResult | None) -> None:

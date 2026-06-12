@@ -15,6 +15,7 @@ from forklift.cli import Forklift
 from forklift.cli_authorship import OperatorIdentity
 from forklift.cli_post_run import fail_if_stuck
 from forklift.container_runner import ContainerRunResult
+from forklift.errors import RebaseStuckError
 from forklift.git import GitError, ResolvedUpstreamTarget
 from forklift.opencode_env import OpenCodeEnv
 from forklift.post_run_metrics import (
@@ -601,7 +602,7 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     Forklift,
                     "_post_container_results",
-                    side_effect=SystemExit(4),
+                    side_effect=RebaseStuckError(),
                 ),
                 patch(
                     "forklift.cli.parse_usage_summary",
@@ -642,9 +643,8 @@ class FailIfStuckTests(unittest.TestCase):
                 harness_state,
                 {"outcome": "stuck", "resolutions": [], "skips": [], "stuck": {}},
             )
-            with self.assertRaises(SystemExit) as ctx:
+            with self.assertRaises(RebaseStuckError):
                 fail_if_stuck(harness_state)
-        self.assertEqual(ctx.exception.code, 4)
 
     def test_no_raise_when_outcome_completed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

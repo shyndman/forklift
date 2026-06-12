@@ -8,12 +8,11 @@ import structlog
 from structlog.stdlib import BoundLogger
 
 from .cli_authorship import RewriteResult
+from .errors import RebaseStuckError, UpstreamNotMergedError
 from .git import GitError, current_branch, ensure_upstream_merged
 from .run_manager import RunPaths
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
-
-STUCK_EXIT_CODE = 4
 
 
 def post_container_results(
@@ -57,7 +56,7 @@ def post_container_results(
             logger.info("Verified %s is ancestor of %s", upstream_ref, target_branch)
     except GitError as exc:
         logger.exception("Upstream verification failed: %s", exc)
-        raise SystemExit(3) from exc
+        raise UpstreamNotMergedError("upstream target not merged into branch") from exc
 
     rewrite_result = rewrite_and_publish_local_fn(
         repo_path,
@@ -97,7 +96,7 @@ def fail_if_stuck(harness_state: Path) -> None:
         "Rebase report records a stuck outcome at %s; skipping verification and local publication.",
         report_path,
     )
-    raise SystemExit(STUCK_EXIT_CODE)
+    raise RebaseStuckError("rebase report records a stuck outcome")
 
 
 def load_run_metadata(run_dir: Path) -> dict[str, object]:
