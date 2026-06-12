@@ -26,6 +26,8 @@ build-backend = "uv_build"
 
 [tool.basedpyright]
 typeCheckingMode = "recommended"
+extraPaths = ["docker/kitchen-sink/harness/py"]
+reportExplicitAny = "error"
 
 [tool.uv.sources]
 genai-prices = { git = "https://github.com/pydantic/genai-prices", subdirectory = "packages/python/" }
