@@ -60,7 +60,7 @@ UPSTREAM_NARRATIVE_SYSTEM_PROMPT = (
     "## Key Change Arcs\n\n"
     "The evidence intentionally excludes fork-side conflict analysis. "
     "Do not infer or describe what the fork changed, what the fork intended, or why the fork might conflict. "
-    "In \"## Key Change Arcs\", use an abstraction ladder for each arc:\n"
+    'In "## Key Change Arcs", use an abstraction ladder for each arc:\n'
     "1) Define the arc in plain language.\n"
     "2) Explain it at a conceptual level before technical details.\n"
     "3) Bias toward several paragraphs when evidence supports it.\n"
@@ -83,16 +83,16 @@ CONFLICT_REVIEW_SYSTEM_PROMPT = (
     "Return markdown with exactly these headings in order:\n"
     "## Conflict Pair Evaluations\n"
     "## Risk and Review Notes\n\n"
-    "Do not write \"## Summary\" or \"## Key Change Arcs\".\n"
-    "In \"## Conflict Pair Evaluations\", create one subsection per conflict path from the evidence, and include these labels in each subsection:\n"
+    'Do not write "## Summary" or "## Key Change Arcs".\n'
+    'In "## Conflict Pair Evaluations", create one subsection per conflict path from the evidence, and include these labels in each subsection:\n'
     "- Fork-side intent\n"
     "- Upstream-side intent\n"
     "- Conceptual relationship\n"
     "- Why this is or is not a conceptual conflict\n"
     "- Merge considerations\n"
     "Describe each side as a feature or behavior, not as a raw evidence dump.\n"
-    "Write \"Upstream-side intent\" as a short paragraph, not a single sentence fragment, whenever evidence supports it.\n"
-    "If deterministic signals for a path are too sparse to explain exact behavior, explicitly write \"insufficient evidence\" and avoid unsupported claims.\n"
+    'Write "Upstream-side intent" as a short paragraph, not a single sentence fragment, whenever evidence supports it.\n'
+    'If deterministic signals for a path are too sparse to explain exact behavior, explicitly write "insufficient evidence" and avoid unsupported claims.\n'
     "Do not restate churn counts, commit sample lists, hunk headers, or truncation metadata in the final markdown unless needed to explain uncertainty.\n"
     "If you mention repo-local jargon or a feature name, immediately explain what it does in plain English.\n"
     "Do not leave unexplained labels such as internal action names, prompt names, or command names.\n"
@@ -146,7 +146,11 @@ def _build_json_prompt(
 ) -> str:
     """Serialize deterministic evidence into the JSON prompt wrapper shared by both agents."""
 
-    payload_dict = asdict(payload) if isinstance(payload, UpstreamNarrativeEvidence) else asdict(payload)
+    payload_dict = (
+        asdict(payload)
+        if isinstance(payload, UpstreamNarrativeEvidence)
+        else asdict(payload)
+    )
     formatted = json.dumps(payload_dict, indent=2, sort_keys=True)
     return f"{intro}\nEvidence JSON:\n```json\n{formatted}\n```"
 

@@ -140,7 +140,9 @@ def resolve_upstream_target(
     if policy == "latest-version":
         return _resolve_latest_version_target(repo_path)
 
-    raise GitError(f"Unsupported upstream target policy {policy!r}; expected one of: tip, latest-version")
+    raise GitError(
+        f"Unsupported upstream target policy {policy!r}; expected one of: tip, latest-version"
+    )
 
 
 def is_ancestor(repo_path: Path, ancestor_ref: str, descendant_ref: str) -> bool:
@@ -220,7 +222,9 @@ def _resolve_latest_version_target(repo_path: Path) -> ResolvedUpstreamTarget:
     selected_entries = version_groups[selected_version]
     selected_shas = {sha for _tag, sha in selected_entries}
     if len(selected_shas) != 1:
-        details = ", ".join(f"{tag}={sha[:12]}" for tag, sha in sorted(selected_entries))
+        details = ", ".join(
+            f"{tag}={sha[:12]}" for tag, sha in sorted(selected_entries)
+        )
         formatted_version = ".".join(str(part) for part in selected_version)
         raise GitError(
             f"Ambiguous version tags for {formatted_version}: {details}. Latest-version policy requires a single target commit."

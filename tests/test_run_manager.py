@@ -61,7 +61,9 @@ class RunManagerForkContextTests(unittest.TestCase):
 
             OverlayRunDirectoryManager().overlay_fork_context(source_repo, workspace)
 
-            self.assertEqual((workspace / "FORK.md").read_text(encoding="utf-8"), expected)
+            self.assertEqual(
+                (workspace / "FORK.md").read_text(encoding="utf-8"), expected
+            )
 
     def test_overlay_falls_back_to_agents_fork_md(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -76,7 +78,9 @@ class RunManagerForkContextTests(unittest.TestCase):
 
             OverlayRunDirectoryManager().overlay_fork_context(source_repo, workspace)
 
-            self.assertEqual((workspace / "FORK.md").read_text(encoding="utf-8"), expected)
+            self.assertEqual(
+                (workspace / "FORK.md").read_text(encoding="utf-8"), expected
+            )
 
     def test_overlay_prefers_repo_root_fork_md_over_agents_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -88,7 +92,9 @@ class RunManagerForkContextTests(unittest.TestCase):
             workspace.mkdir()
             agents_dir.mkdir()
             _ = (source_repo / "FORK.md").write_text("root context\n", encoding="utf-8")
-            _ = (agents_dir / "FORK.md").write_text("agents context\n", encoding="utf-8")
+            _ = (agents_dir / "FORK.md").write_text(
+                "agents context\n", encoding="utf-8"
+            )
 
             OverlayRunDirectoryManager().overlay_fork_context(source_repo, workspace)
 
@@ -104,7 +110,9 @@ class RunManagerForkContextTests(unittest.TestCase):
             source_repo.mkdir()
             manager = PrepareRunDirectoryManager(runs_root=root / "runs")
 
-            with patch("forklift.run_manager.os.chown", return_value=None) as chown_mock:
+            with patch(
+                "forklift.run_manager.os.chown", return_value=None
+            ) as chown_mock:
                 run_paths = manager.prepare(source_repo)
 
             self.assertEqual(run_paths.control_dir, run_paths.run_dir / "control")
@@ -120,7 +128,9 @@ class RunManagerForkContextTests(unittest.TestCase):
             self.assertIn(run_paths.harness_state, chowned_paths)
             self.assertIn(run_paths.opencode_logs, chowned_paths)
 
-    def test_prepare_persists_extra_run_instructions_for_harness_and_metadata(self) -> None:
+    def test_prepare_persists_extra_run_instructions_for_harness_and_metadata(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             source_repo = root / "source"
@@ -151,7 +161,9 @@ class RunManagerForkContextTests(unittest.TestCase):
 
             metadata = cast(
                 dict[str, object],
-                json.loads((run_paths.run_dir / "metadata.json").read_text(encoding="utf-8")),
+                json.loads(
+                    (run_paths.run_dir / "metadata.json").read_text(encoding="utf-8")
+                ),
             )
             self.assertEqual(
                 metadata["extra_instructions"],

@@ -342,7 +342,9 @@ def parse_edge_from_tokens(tokens: Sequence[Token]) -> EdgeParseResult | None:
 
     return {
         "nodes": node_tokens,
-        "edge": create_edge(from_node["id"], to_node["id"], connection_type, edge_label),
+        "edge": create_edge(
+            from_node["id"], to_node["id"], connection_type, edge_label
+        ),
     }
 
 
@@ -379,7 +381,10 @@ def parse_mermaid(input_text: str) -> Result[MermaidAst, str]:
         for node_data in edge_result["nodes"]:
             if node_data["id"] in processed_nodes:
                 continue
-            ast = add_node(ast, create_node(node_data["id"], node_data["label"], node_data["shape"]))
+            ast = add_node(
+                ast,
+                create_node(node_data["id"], node_data["label"], node_data["shape"]),
+            )
             processed_nodes.add(node_data["id"])
 
         edge = edge_result["edge"]

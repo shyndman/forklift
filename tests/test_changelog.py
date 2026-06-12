@@ -70,7 +70,10 @@ from forklift.cli import Forklift
 from forklift.cli_runtime import DEFAULT_TARGET_POLICY
 from forklift.git import ResolvedUpstreamTarget
 from forklift.opencode_env import OpenCodeEnv
-from forklift.changelog_renderer import render_changelog_markdown, render_changelog_terminal
+from forklift.changelog_renderer import (
+    render_changelog_markdown,
+    render_changelog_terminal,
+)
 from forklift.post_run_metrics import UsageSummary
 
 
@@ -153,7 +156,9 @@ class ChangelogForkMetadataTests(unittest.TestCase):
 
         self.assertEqual(excludes, ["generated/**"])
 
-    def test_load_exclusions_prefers_repo_root_fork_md_over_agents_fallback(self) -> None:
+    def test_load_exclusions_prefers_repo_root_fork_md_over_agents_fallback(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
             agents_dir = repo / ".agents"
@@ -278,9 +283,9 @@ class ChangelogModelTests(unittest.TestCase):
         serialized = asdict(evidence)
         self.assertIn("conflict_side_comparisons", serialized)
         self.assertEqual(
-            serialized["conflict_side_comparisons"][0]["fork_side"]["commit_samples"][0][
-                "short_sha"
-            ],
+            serialized["conflict_side_comparisons"][0]["fork_side"]["commit_samples"][
+                0
+            ]["short_sha"],
             "abc1234",
         )
 
@@ -331,10 +336,14 @@ class ChangelogLlmTests(unittest.TestCase):
                     path="src/conflict.py",
                     conflict_count=2,
                     fork_side=ConflictSideEvidence(
-                        commit_samples=[CommitSample(short_sha="abc1234", subject="fork")]
+                        commit_samples=[
+                            CommitSample(short_sha="abc1234", subject="fork")
+                        ]
                     ),
                     upstream_side=ConflictSideEvidence(
-                        commit_samples=[CommitSample(short_sha="def5678", subject="upstream")]
+                        commit_samples=[
+                            CommitSample(short_sha="def5678", subject="upstream")
+                        ]
                     ),
                 )
             ],
@@ -398,14 +407,21 @@ class ChangelogLlmTests(unittest.TestCase):
             self.assertNotIn("GEMINI_API_KEY", os.environ)
             self.assertIn("## Key Change Arcs", captured["system_prompt"])
             self.assertNotIn("## Conflict Pair Evaluations", captured["system_prompt"])
-            self.assertIn("Do not infer or describe what the fork changed", captured["system_prompt"])
+            self.assertIn(
+                "Do not infer or describe what the fork changed",
+                captured["system_prompt"],
+            )
             self.assertIn("Use only this evidence.", captured["prompt"])
             self.assertIn("Evidence JSON", captured["prompt"])
             self.assertNotIn("conflict_side_comparisons", captured["prompt"])
             self.assertNotIn("fork_side", captured["prompt"])
 
-        self.assertEqual(output.sections.summary_markdown, "Normalized model name works.")
-        self.assertEqual(output.sections.key_change_arcs_markdown, "Upstream arc description.")
+        self.assertEqual(
+            output.sections.summary_markdown, "Normalized model name works."
+        )
+        self.assertEqual(
+            output.sections.key_change_arcs_markdown, "Upstream arc description."
+        )
         self.assertEqual(output.usage.input_tokens, 120)
         self.assertEqual(output.usage.total_tokens, 165)
         self.assertEqual(output.estimated_cost, Decimal("0.0001875"))
@@ -456,14 +472,20 @@ class ChangelogLlmTests(unittest.TestCase):
         self.assertIn("## Conflict Pair Evaluations", captured["system_prompt"])
         self.assertIn("Fork-side intent", captured["system_prompt"])
         self.assertIn("insufficient evidence", captured["system_prompt"])
-        self.assertIn('Do not write "## Summary" or "## Key Change Arcs"', captured["system_prompt"])
+        self.assertIn(
+            'Do not write "## Summary" or "## Key Change Arcs"',
+            captured["system_prompt"],
+        )
         self.assertIn("conflict_side_comparisons", captured["prompt"])
         self.assertIn("fork_side", captured["prompt"])
         self.assertEqual(
             output.sections.conflict_pair_evaluations_markdown,
             "### `src/conflict.py`\n- Fork-side intent: Adjust fork behavior.\n- Upstream-side intent: Adjust upstream behavior.",
         )
-        self.assertEqual(output.sections.risk_and_review_notes_markdown, "- Review parser edge cases.")
+        self.assertEqual(
+            output.sections.risk_and_review_notes_markdown,
+            "- Review parser edge cases.",
+        )
 
     def test_build_upstream_prompt_excludes_conflict_side_payloads(self) -> None:
         prompt = build_upstream_narrative_prompt(self._sample_upstream_evidence())
@@ -526,13 +548,26 @@ class ChangelogLlmTests(unittest.TestCase):
     def test_upstream_prompt_contract_bans_conflict_sections(self) -> None:
         self.assertIn("## Summary", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
         self.assertIn("## Key Change Arcs", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
-        self.assertNotIn("## Conflict Pair Evaluations", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
-        self.assertIn("Do not infer or describe what the fork changed", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertNotIn(
+            "## Conflict Pair Evaluations", UPSTREAM_NARRATIVE_SYSTEM_PROMPT
+        )
+        self.assertIn(
+            "Do not infer or describe what the fork changed",
+            UPSTREAM_NARRATIVE_SYSTEM_PROMPT,
+        )
         self.assertIn("operator-facing detail", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
-        self.assertIn("commands, flags, config keys, files, or UI surfaces", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn(
+            "commands, flags, config keys, files, or UI surfaces",
+            UPSTREAM_NARRATIVE_SYSTEM_PROMPT,
+        )
         self.assertIn("call out defaults", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
-        self.assertIn("prefer paragraph prose over terse bullets", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
-        self.assertIn("Do not drift into reviewer guidance", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn(
+            "prefer paragraph prose over terse bullets",
+            UPSTREAM_NARRATIVE_SYSTEM_PROMPT,
+        )
+        self.assertIn(
+            "Do not drift into reviewer guidance", UPSTREAM_NARRATIVE_SYSTEM_PROMPT
+        )
 
     def test_conflict_prompt_contract_requires_intent_labels_and_evidence_wording(
         self,
@@ -544,12 +579,14 @@ class ChangelogLlmTests(unittest.TestCase):
             'Write "Upstream-side intent" as a short paragraph',
             CONFLICT_REVIEW_SYSTEM_PROMPT,
         )
-        self.assertIn("Do not write \"## Summary\"", CONFLICT_REVIEW_SYSTEM_PROMPT)
+        self.assertIn('Do not write "## Summary"', CONFLICT_REVIEW_SYSTEM_PROMPT)
 
     def test_both_prompts_require_plain_english_feature_explanations(self) -> None:
         self.assertIn("plain English", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
         self.assertIn("plain English", CONFLICT_REVIEW_SYSTEM_PROMPT)
-        self.assertIn("Do not leave unexplained labels", UPSTREAM_NARRATIVE_SYSTEM_PROMPT)
+        self.assertIn(
+            "Do not leave unexplained labels", UPSTREAM_NARRATIVE_SYSTEM_PROMPT
+        )
         self.assertIn("Do not leave unexplained labels", CONFLICT_REVIEW_SYSTEM_PROMPT)
 
     def test_generate_conflict_review_allows_missing_cost_lookup(self) -> None:
@@ -587,13 +624,17 @@ class ChangelogLlmTests(unittest.TestCase):
                 patch("forklift.changelog_llm.Agent", FakeAgent),
                 patch("forklift.changelog_llm.logger.warning") as warning_mock,
             ):
-                output = asyncio.run(generate_conflict_review(self._sample_evidence(), env))
+                output = asyncio.run(
+                    generate_conflict_review(self._sample_evidence(), env)
+                )
 
         self.assertEqual(
             output.sections.conflict_pair_evaluations_markdown,
             "insufficient evidence",
         )
-        self.assertEqual(output.sections.risk_and_review_notes_markdown, "Review carefully.")
+        self.assertEqual(
+            output.sections.risk_and_review_notes_markdown, "Review carefully."
+        )
         self.assertIsNone(output.estimated_cost)
         warning_mock.assert_called_once_with(
             "Unable to estimate changelog model cost",
@@ -631,14 +672,20 @@ class ChangelogRendererTests(unittest.TestCase):
         _, kwargs = console.print.call_args
         self.assertEqual(kwargs["width"], 110)
 
-    def test_render_markdown_includes_metric_comparison_and_exclusion_summary(self) -> None:
+    def test_render_markdown_includes_metric_comparison_and_exclusion_summary(
+        self,
+    ) -> None:
         evidence = EvidenceBundle(
             base_sha="1234567890abcdef1234567890abcdef12345678",
             main_branch="main",
             upstream_ref="upstream/main",
             conflicts=[ConflictHotspot(path="src/conflict.py", conflict_count=2)],
-            baseline_diff_summary=DiffSummary(files_changed=204, insertions=16628, deletions=4526),
-            filtered_diff_summary=DiffSummary(files_changed=57, insertions=1140, deletions=390),
+            baseline_diff_summary=DiffSummary(
+                files_changed=204, insertions=16628, deletions=4526
+            ),
+            filtered_diff_summary=DiffSummary(
+                files_changed=57, insertions=1140, deletions=390
+            ),
             active_exclusion_rules=["data/big-snapshot.json", "!data/keep.json"],
             excluded_file_count=147,
             diff_summary=DiffSummary(files_changed=57, insertions=1140, deletions=390),
@@ -651,7 +698,9 @@ class ChangelogRendererTests(unittest.TestCase):
                     conflict_count=2,
                     fork_side=ConflictSideEvidence(
                         commit_samples=[
-                            CommitSample(short_sha="abc1234", subject="Adjust conflict flow")
+                            CommitSample(
+                                short_sha="abc1234", subject="Adjust conflict flow"
+                            )
                         ],
                         insertions=7,
                         deletions=3,
@@ -677,15 +726,21 @@ class ChangelogRendererTests(unittest.TestCase):
         self.assertIn("| Metric | All Files | Excluding Patterns | Delta |", markdown)
         self.assertIn("| Files changed | 204 | 57 | -147 |", markdown)
         self.assertIn("## Summary\nNarrative summary", markdown)
-        self.assertIn("## Conflict Pair Evaluations\nConflict evaluation body", markdown)
+        self.assertIn(
+            "## Conflict Pair Evaluations\nConflict evaluation body", markdown
+        )
         self.assertIn("### Exclusion Rules", markdown)
         self.assertIn("- `data/big-snapshot.json`", markdown)
         self.assertIn("- Matched files in baseline diff: 147", markdown)
         self.assertNotIn("## Conflict Side Comparisons", markdown)
         self.assertNotIn("Commit samples truncation", markdown)
-        self.assertNotIn("Warning: additional evidence exists beyond configured limits.", markdown)
+        self.assertNotIn(
+            "Warning: additional evidence exists beyond configured limits.", markdown
+        )
 
-    def test_render_markdown_omits_conflict_side_section_when_comparisons_absent(self) -> None:
+    def test_render_markdown_omits_conflict_side_section_when_comparisons_absent(
+        self,
+    ) -> None:
         evidence = EvidenceBundle(
             base_sha="1234567890abcdef1234567890abcdef12345678",
             main_branch="main",
@@ -723,7 +778,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
                 target_policy="latest-version",
             )
 
-        run_git_mock.assert_called_once_with(Path("."), ["rev-parse", "--verify", "main"])
+        run_git_mock.assert_called_once_with(
+            Path("."), ["rev-parse", "--verify", "main"]
+        )
         target_mock.assert_called_once_with(
             Path("."),
             main_branch="main",
@@ -732,14 +789,20 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(branch, "main")
         self.assertEqual(upstream_ref, "v2.0.0")
 
-    def test_build_upstream_narrative_evidence_excludes_conflict_side_payloads(self) -> None:
+    def test_build_upstream_narrative_evidence_excludes_conflict_side_payloads(
+        self,
+    ) -> None:
         evidence = EvidenceBundle(
             base_sha="1234567890abcdef1234567890abcdef12345678",
             main_branch="main",
             upstream_ref="upstream/main",
             conflicts=[ConflictHotspot(path="src/conflict.py", conflict_count=2)],
-            baseline_diff_summary=DiffSummary(files_changed=4, insertions=20, deletions=5),
-            filtered_diff_summary=DiffSummary(files_changed=2, insertions=7, deletions=3),
+            baseline_diff_summary=DiffSummary(
+                files_changed=4, insertions=20, deletions=5
+            ),
+            filtered_diff_summary=DiffSummary(
+                files_changed=2, insertions=7, deletions=3
+            ),
             active_exclusion_rules=["generated/**"],
             excluded_file_count=2,
             diff_summary=DiffSummary(files_changed=2, insertions=7, deletions=3),
@@ -749,10 +812,14 @@ class ChangelogAnalysisTests(unittest.TestCase):
                     path="src/conflict.py",
                     conflict_count=2,
                     fork_side=ConflictSideEvidence(
-                        commit_samples=[CommitSample(short_sha="abc1234", subject="fork")]
+                        commit_samples=[
+                            CommitSample(short_sha="abc1234", subject="fork")
+                        ]
                     ),
                     upstream_side=ConflictSideEvidence(
-                        commit_samples=[CommitSample(short_sha="def5678", subject="upstream")]
+                        commit_samples=[
+                            CommitSample(short_sha="def5678", subject="upstream")
+                        ]
                     ),
                 )
             ],
@@ -875,10 +942,14 @@ class ChangelogAnalysisTests(unittest.TestCase):
             ["@@ -1,2 +1,3 @@ def run():", "@@ -10 +11 @@ class X:"],
         )
 
-        churn = compute_side_local_churn(lines("5\t2\tsrc/app.py", "-\t-\tbinary/blob.dat"))
+        churn = compute_side_local_churn(
+            lines("5\t2\tsrc/app.py", "-\t-\tbinary/blob.dat")
+        )
         self.assertEqual(churn, (5, 2))
 
-    def test_collect_conflict_side_evidence_applies_caps_and_sets_truncation(self) -> None:
+    def test_collect_conflict_side_evidence_applies_caps_and_sets_truncation(
+        self,
+    ) -> None:
         self.assertGreater(DEFAULT_SIDE_COMMIT_SAMPLE_CAP, 0)
         self.assertGreater(DEFAULT_SIDE_HUNK_HEADER_CAP, 0)
 
@@ -911,7 +982,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(side.commit_samples_truncation, TruncationMetadata(1, 3, 1))
         self.assertEqual(side.hunk_headers_truncation, TruncationMetadata(1, 2, 1))
 
-    def test_build_conflict_side_comparisons_preserves_order_and_sparse_sides(self) -> None:
+    def test_build_conflict_side_comparisons_preserves_order_and_sparse_sides(
+        self,
+    ) -> None:
         hotspots = [
             ConflictHotspot(path="b.py", conflict_count=5),
             ConflictHotspot(path="a.py", conflict_count=5),
@@ -928,7 +1001,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
             if side_ref == "upstream/main" and conflict_path == "c.py":
                 return ConflictSideEvidence()
             return ConflictSideEvidence(
-                commit_samples=[CommitSample(short_sha=f"{conflict_path}-1", subject=side_ref)],
+                commit_samples=[
+                    CommitSample(short_sha=f"{conflict_path}-1", subject=side_ref)
+                ],
                 insertions=1,
                 deletions=0,
                 hunk_headers=["@@ -1 +1 @@"],
@@ -956,7 +1031,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
 
     def test_filter_changed_files_counts_excluded_rows(self) -> None:
         changed = [
-            ChangedFileStat(path="generated/skip.json", added=10, removed=0, status="M"),
+            ChangedFileStat(
+                path="generated/skip.json", added=10, removed=0, status="M"
+            ),
             ChangedFileStat(path="generated/keep.json", added=3, removed=1, status="M"),
             ChangedFileStat(path="src/app.py", added=1, removed=1, status="M"),
         ]
@@ -967,7 +1044,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
         )
 
         self.assertEqual(excluded_count, 1)
-        self.assertEqual([item.path for item in filtered], ["generated/keep.json", "src/app.py"])
+        self.assertEqual(
+            [item.path for item in filtered], ["generated/keep.json", "src/app.py"]
+        )
 
     def test_build_evidence_bundle_fetches_remotes_and_truncates_top_files(
         self,
@@ -1024,7 +1103,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(evidence.excluded_file_count, 0)
         self.assertEqual(evidence.conflict_side_comparisons, [])
 
-    def test_build_evidence_bundle_uses_selected_upstream_target_for_analysis(self) -> None:
+    def test_build_evidence_bundle_uses_selected_upstream_target_for_analysis(
+        self,
+    ) -> None:
         with (
             patch(
                 "forklift.changelog_analysis.ensure_supported_git_version",
@@ -1078,7 +1159,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(kwargs["upstream_ref"], "v1.2.3")
         self.assertEqual(evidence.upstream_ref, "v1.2.3")
 
-    def test_build_evidence_bundle_applies_exclusion_rules_to_metrics_and_hotspots(self) -> None:
+    def test_build_evidence_bundle_applies_exclusion_rules_to_metrics_and_hotspots(
+        self,
+    ) -> None:
         changed_files = [
             ChangedFileStat(path="data/big.json", added=100, removed=20, status="M"),
             ChangedFileStat(path="src/app.py", added=5, removed=1, status="M"),
@@ -1105,7 +1188,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
                 "forklift.changelog_analysis.resolve_analysis_refs",
                 return_value=("main", "upstream/main"),
             ),
-            patch("forklift.changelog_analysis.compute_merge_base", return_value="abc123"),
+            patch(
+                "forklift.changelog_analysis.compute_merge_base", return_value="abc123"
+            ),
             patch(
                 "forklift.changelog_analysis.run_merge_tree",
                 return_value=MergeTreeResult(exit_code=1, output="treeoid"),
@@ -1135,7 +1220,9 @@ class ChangelogAnalysisTests(unittest.TestCase):
         self.assertEqual(evidence.baseline_diff_summary.files_changed, 2)
         self.assertEqual(evidence.filtered_diff_summary.files_changed, 1)
         self.assertEqual(evidence.excluded_file_count, 1)
-        self.assertEqual([item.path for item in evidence.top_changed_files], ["src/app.py"])
+        self.assertEqual(
+            [item.path for item in evidence.top_changed_files], ["src/app.py"]
+        )
         self.assertEqual([item.path for item in evidence.conflicts], ["src/app.py"])
         self.assertEqual(
             [item.path for item in evidence.conflict_side_comparisons],
@@ -1281,7 +1368,9 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(usage_summary.totals.total_cost, Decimal("0.0004000"))
         self.assertIsNone(usage_summary.post_table_notice)
 
-    async def test_missing_pricing_still_renders_changelog_and_carries_notice(self) -> None:
+    async def test_missing_pricing_still_renders_changelog_and_carries_notice(
+        self,
+    ) -> None:
         command = Changelog(main_branch="main")
         captured: dict[str, object] = {}
 
@@ -1362,7 +1451,9 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             CHANGELOG_PRICING_UNAVAILABLE_NOTICE,
         )
 
-    async def test_upstream_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
+    async def test_upstream_llm_failure_exits_nonzero_without_fallback_render(
+        self,
+    ) -> None:
         command = Changelog(main_branch="main")
 
         with (
@@ -1393,7 +1484,9 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
         render_mock.assert_not_called()
         usage_mock.assert_not_called()
 
-    async def test_conflict_llm_failure_exits_nonzero_without_fallback_render(self) -> None:
+    async def test_conflict_llm_failure_exits_nonzero_without_fallback_render(
+        self,
+    ) -> None:
         command = Changelog(main_branch="main")
 
         with (

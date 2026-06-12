@@ -125,5 +125,7 @@ class EvidenceBundle:
     excluded_file_count: int = 0
     diff_summary: DiffSummary = field(default_factory=DiffSummary)
     top_changed_files: list[ChangedFileStat] = field(default_factory=list)
-    conflict_side_comparisons: list[ConflictSideComparison] = field(default_factory=list)
+    conflict_side_comparisons: list[ConflictSideComparison] = field(
+        default_factory=list
+    )
     important_notes: list[str] = field(default_factory=list)

@@ -17,7 +17,9 @@ def resolve_run_dir(run_id: str, *, runs_root: Path) -> Path:
 
     run_dir = (runs_root / run_id).expanduser().resolve()
     if not run_dir.exists():
-        raise SystemExit(f"clientlog error: run directory '{run_id}' not found at {run_dir}.")
+        raise SystemExit(
+            f"clientlog error: run directory '{run_id}' not found at {run_dir}."
+        )
     return run_dir
 
 
@@ -62,7 +64,9 @@ def follow_stream(
         nonlocal interrupted
         interrupted = True
 
-    previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
+    previous_handlers = {
+        sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)
+    }
     for sig in previous_handlers:
         _ = signal.signal(sig, signal_handler)
 

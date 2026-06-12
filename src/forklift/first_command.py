@@ -5,7 +5,11 @@ from typing import override
 
 from clypi import Command, arg
 
-from .changelog_analysis import ChangelogAnalysisError, compute_merge_base, resolve_analysis_refs
+from .changelog_analysis import (
+    ChangelogAnalysisError,
+    compute_merge_base,
+    resolve_analysis_refs,
+)
 from .git import GitError, run_git
 
 
@@ -25,7 +29,11 @@ class First(Command):
         try:
             branch, upstream_ref = resolve_analysis_refs(repo_path, self.main_branch)
             base_sha = compute_merge_base(repo_path, branch, upstream_ref)
-            print(find_first_divergent_commit(repo_path, revision_range=f"{base_sha}..{branch}"))
+            print(
+                find_first_divergent_commit(
+                    repo_path, revision_range=f"{base_sha}..{branch}"
+                )
+            )
         except ChangelogAnalysisError as exc:
             raise SystemExit(f"first error: {exc}") from exc
 

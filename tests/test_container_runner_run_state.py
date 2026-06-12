@@ -156,7 +156,9 @@ class ContainerRunnerRunStateTests(unittest.TestCase):
                     )
 
             popen_mock.assert_not_called()
-            self.assertEqual(update_state.call_args_list[-1].kwargs.get("status"), "failed")
+            self.assertEqual(
+                update_state.call_args_list[-1].kwargs.get("status"), "failed"
+            )
 
     def test_dispatches_valid_rebase_events_to_callback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -220,7 +222,7 @@ class ContainerRunnerRunStateTests(unittest.TestCase):
             process = EventEmittingProcess(
                 socket_path,
                 [
-                    b'not-json\n',
+                    b"not-json\n",
                     b'{"v":2,"event":"progress","step":5,"total":31}\n',
                     b'{"v":1,"event":"mystery","step":5,"total":31}\n',
                 ],
@@ -244,7 +246,9 @@ class ContainerRunnerRunStateTests(unittest.TestCase):
                     event_callback=lambda _event: self.fail("unexpected callback"),
                 )
 
-            warning_messages = [cast(str, call.args[0]) for call in warning_mock.call_args_list]
+            warning_messages = [
+                cast(str, call.args[0]) for call in warning_mock.call_args_list
+            ]
             self.assertIn("Ignoring malformed rebase event payload", warning_messages)
             self.assertIn("Ignoring unknown rebase event version", warning_messages)
             self.assertIn("Ignoring unknown rebase event type", warning_messages)

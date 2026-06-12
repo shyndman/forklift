@@ -115,7 +115,9 @@ class RunDirectoryManager:
                 shutil.rmtree(run_dir)
             except FileNotFoundError:
                 skipped += 1
-                logger.debug("Run directory disappeared during cleanup", run_dir=run_dir)
+                logger.debug(
+                    "Run directory disappeared during cleanup", run_dir=run_dir
+                )
                 continue
             except OSError as exc:
                 failed += 1
@@ -304,7 +306,9 @@ class RunDirectoryManager:
         if fork_file is None:
             logger.debug(
                 "No FORK.md found",
-                searched_paths=[str(source_repo / path) for path in FORK_CONTEXT_CANDIDATES],
+                searched_paths=[
+                    str(source_repo / path) for path in FORK_CONTEXT_CANDIDATES
+                ],
             )
             return
         destination = workspace / "FORK.md"

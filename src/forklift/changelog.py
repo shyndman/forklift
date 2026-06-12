@@ -210,7 +210,9 @@ def _consume_rebase_front_matter(front_lines: list[str], start: int) -> int:
                 shell_lines.append(candidate[2:])
             else:
                 shell_lines.append(candidate)
-        consumed = _consume_shell_string_front_matter(shell_lines, 0, key="continue_check")
+        consumed = _consume_shell_string_front_matter(
+            shell_lines, 0, key="continue_check"
+        )
         local_idx += consumed
 
     if not continue_check_seen:
@@ -449,10 +451,12 @@ class Changelog(Command):
             raise SystemExit(1) from exc
 
         wall_clock_ms = int((time.perf_counter() - started_at) * 1000)
-        combined_usage = combine_run_usages([
-            upstream_result.usage,
-            conflict_result.usage,
-        ])
+        combined_usage = combine_run_usages(
+            [
+                upstream_result.usage,
+                conflict_result.usage,
+            ]
+        )
         usage_summary = build_changelog_usage_summary(
             combined_usage,
             wall_clock_ms,

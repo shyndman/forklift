@@ -71,7 +71,9 @@ class TargetPolicyGitIntegrationTests(unittest.TestCase):
         _ = self._run_git(repo, ["config", "user.email", "tests@example.com"])
         _ = self._run_git(repo, ["remote", "add", "upstream", str(repo)])
 
-    def _commit_file(self, repo: Path, relative_path: str, content: str, message: str) -> str:
+    def _commit_file(
+        self, repo: Path, relative_path: str, content: str, message: str
+    ) -> str:
         """Create one commit and return the resulting HEAD SHA."""
 
         target = repo / relative_path
@@ -133,7 +135,9 @@ class TargetPolicyGitIntegrationTests(unittest.TestCase):
                     policy="latest-version",
                 )
 
-    def test_latest_version_rejects_when_only_prerelease_or_build_tags_exist(self) -> None:
+    def test_latest_version_rejects_when_only_prerelease_or_build_tags_exist(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir)
             self._init_repo(repo)
@@ -216,10 +220,16 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     Forklift,
                     "_capture_operator_identity",
-                    return_value=OperatorIdentity("Forklift Tests", "tests@example.com"),
+                    return_value=OperatorIdentity(
+                        "Forklift Tests", "tests@example.com"
+                    ),
                 ),
-                patch.object(Forklift, "_prepare_opencode_env", return_value=self._dummy_env()),
-                patch.object(Forklift, "_resolve_chown_target", return_value=(1000, 1000)),
+                patch.object(
+                    Forklift, "_prepare_opencode_env", return_value=self._dummy_env()
+                ),
+                patch.object(
+                    Forklift, "_resolve_chown_target", return_value=(1000, 1000)
+                ),
                 patch.object(Forklift, "_discover_required_remotes", return_value={}),
                 patch.object(Forklift, "_fetch_all", return_value=[]),
                 patch.object(
@@ -265,10 +275,16 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     Forklift,
                     "_capture_operator_identity",
-                    return_value=OperatorIdentity("Forklift Tests", "tests@example.com"),
+                    return_value=OperatorIdentity(
+                        "Forklift Tests", "tests@example.com"
+                    ),
                 ),
-                patch.object(Forklift, "_prepare_opencode_env", return_value=self._dummy_env()),
-                patch.object(Forklift, "_resolve_chown_target", return_value=(1000, 1000)),
+                patch.object(
+                    Forklift, "_prepare_opencode_env", return_value=self._dummy_env()
+                ),
+                patch.object(
+                    Forklift, "_resolve_chown_target", return_value=(1000, 1000)
+                ),
                 patch.object(Forklift, "_discover_required_remotes", return_value={}),
                 patch.object(Forklift, "_fetch_all", return_value=[]),
                 patch.object(
@@ -334,13 +350,21 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(
                     Forklift,
                     "_capture_operator_identity",
-                    return_value=OperatorIdentity("Forklift Tests", "tests@example.com"),
+                    return_value=OperatorIdentity(
+                        "Forklift Tests", "tests@example.com"
+                    ),
                 ),
-                patch.object(Forklift, "_prepare_opencode_env", return_value=self._dummy_env()),
-                patch.object(Forklift, "_resolve_chown_target", return_value=(1000, 1000)),
+                patch.object(
+                    Forklift, "_prepare_opencode_env", return_value=self._dummy_env()
+                ),
+                patch.object(
+                    Forklift, "_resolve_chown_target", return_value=(1000, 1000)
+                ),
                 patch.object(Forklift, "_discover_required_remotes", return_value={}),
                 patch.object(Forklift, "_fetch_all", return_value=[]),
-                patch.object(Forklift, "_is_target_already_integrated", return_value=False),
+                patch.object(
+                    Forklift, "_is_target_already_integrated", return_value=False
+                ),
                 patch.object(
                     Forklift,
                     "_resolve_upstream_target",

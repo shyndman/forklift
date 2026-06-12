@@ -64,7 +64,9 @@ class FilesCliParsingTests(unittest.TestCase):
 
 
 class CurrentPathParserTests(unittest.TestCase):
-    def test_parse_name_status_entries_uses_current_paths_for_add_rename_copy(self) -> None:
+    def test_parse_name_status_entries_uses_current_paths_for_add_rename_copy(
+        self,
+    ) -> None:
         entries = parse_name_status_entries_output(
             lines(
                 "A\talpha.py",
@@ -145,7 +147,9 @@ class FilesCommandTests(unittest.TestCase):
             asyncio.run(command.run())
         return stdout_capture.getvalue(), stderr_capture.getvalue()
 
-    def test_files_lists_alphabetized_fork_only_paths_and_ignores_working_tree(self) -> None:
+    def test_files_lists_alphabetized_fork_only_paths_and_ignores_working_tree(
+        self,
+    ) -> None:
         repo, temp_dir = self._init_repo()
         try:
             self._write(repo, "README.md", "base\n")
@@ -178,7 +182,9 @@ class FilesCommandTests(unittest.TestCase):
         self.assertEqual(stdout, "alpha.txt\nzeta.txt\n")
         self.assertEqual(stderr, "")
 
-    def test_files_hash_reports_first_current_path_commit_for_rename_and_copy(self) -> None:
+    def test_files_hash_reports_first_current_path_commit_for_rename_and_copy(
+        self,
+    ) -> None:
         repo, temp_dir = self._init_repo()
         try:
             self._write(repo, "src/base.py", "base\n")
@@ -189,7 +195,9 @@ class FilesCommandTests(unittest.TestCase):
             _ = (repo / "src/old.py").rename(repo / "fork-new.py")
             rename_short_sha = self._commit_all(repo, "rename old path")
 
-            self._write(repo, "fork-copy.py", (repo / "src/base.py").read_text(encoding="utf-8"))
+            self._write(
+                repo, "fork-copy.py", (repo / "src/base.py").read_text(encoding="utf-8")
+            )
             copy_short_sha = self._commit_all(repo, "copy base path")
 
             self._write(repo, "fork-new.py", "old plus tweak\n")

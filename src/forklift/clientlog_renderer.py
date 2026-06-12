@@ -69,7 +69,9 @@ class TranscriptRenderer:
         for event in events:
             output_lines.extend(self._render_compact_event(event))
             if event.message_id:
-                step_state = follow_state.steps.setdefault(event.message_id, FollowStepState())
+                step_state = follow_state.steps.setdefault(
+                    event.message_id, FollowStepState()
+                )
                 step_state.emitted_events += 1
                 if event.event_type == "step_finish":
                     step_state.finished = True
@@ -139,7 +141,9 @@ class TranscriptRenderer:
 
         return lines
 
-    def _render_compact_generic_event(self, event_type: str, relative_ms: int) -> list[str]:
+    def _render_compact_generic_event(
+        self, event_type: str, relative_ms: int
+    ) -> list[str]:
         """Keep unknown JSON events visible without dumping raw payloads."""
 
         prefix = paint(format_relative(relative_ms), "subtle")

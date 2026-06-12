@@ -9,7 +9,14 @@ from typing import Callable, cast
 import structlog
 from structlog.stdlib import BoundLogger
 
-from .git import GitError, GitRemote, current_branch, discover_remotes, ensure_upstream_merged, run_git
+from .git import (
+    GitError,
+    GitRemote,
+    current_branch,
+    discover_remotes,
+    ensure_upstream_merged,
+    run_git,
+)
 from .run_manager import RunPaths
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
@@ -226,7 +233,12 @@ def validate_lfs_publication_push(
         _ = run_git_cmd(workspace, ["init", "--bare", str(validation_remote_path)])
         validation_output = run_git_cmd(
             workspace,
-            ["push", validation_remote, f"{source_branch}:{publication_branch}", "--force"],
+            [
+                "push",
+                validation_remote,
+                f"{source_branch}:{publication_branch}",
+                "--force",
+            ],
         )
     finally:
         shutil.rmtree(validation_remote_path, ignore_errors=True)
@@ -348,7 +360,9 @@ def rewrite_and_publish_local(
     *,
     run_git_cmd: Callable[[Path, list[str]], str] = run_git,
     current_branch_fn: Callable[[Path], str] = current_branch,
-    ensure_upstream_merged_fn: Callable[[Path, str, str], None] = ensure_upstream_merged,
+    ensure_upstream_merged_fn: Callable[
+        [Path, str, str], None
+    ] = ensure_upstream_merged,
     workspace_has_changes_fn: Callable[[Path], bool] = workspace_has_changes,
     discover_remotes_fn: Callable[[Path], dict[str, GitRemote]] = discover_remotes,
 ) -> RewriteResult | None:
@@ -432,7 +446,9 @@ def rewrite_and_publish_local(
         assert_no_agent_commits(workspace, rewrite_range, run_git_cmd=run_git_cmd)
 
         ensure_upstream_merged_fn(workspace, upstream_ref, target_branch)
-        post_rewrite_upstream = run_git_cmd(workspace, ["rev-parse", upstream_ref]).strip()
+        post_rewrite_upstream = run_git_cmd(
+            workspace, ["rev-parse", upstream_ref]
+        ).strip()
         if post_rewrite_upstream != upstream_anchor:
             logger.error(
                 "Rewrite boundary violation: %s moved from %s to %s.",
@@ -519,7 +535,9 @@ def log_rewrite_summary(repo_path: Path, result: RewriteResult | None) -> None:
             result.branch,
             result.publication_branch,
         )
-        logger.info("No GitHub push performed; publish manually after review if desired.")
+        logger.info(
+            "No GitHub push performed; publish manually after review if desired."
+        )
     if result.stash_created:
         if result.stash_conflicts:
             logger.warning(

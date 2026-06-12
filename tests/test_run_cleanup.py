@@ -29,9 +29,15 @@ class RunCleanupTests(unittest.TestCase):
             boundary_dir.mkdir()
             recent_dir.mkdir()
 
-            self._set_directory_mtime(expired_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS - 1)
-            self._set_directory_mtime(boundary_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS)
-            self._set_directory_mtime(recent_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS + 3600)
+            self._set_directory_mtime(
+                expired_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS - 1
+            )
+            self._set_directory_mtime(
+                boundary_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS
+            )
+            self._set_directory_mtime(
+                recent_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS + 3600
+            )
 
             result = manager.cleanup_expired_runs(now=now)
 
@@ -54,8 +60,12 @@ class RunCleanupTests(unittest.TestCase):
             deletable_dir = runs_root / "project_20260225_130000"
             failing_dir.mkdir()
             deletable_dir.mkdir()
-            self._set_directory_mtime(failing_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS - 1)
-            self._set_directory_mtime(deletable_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS - 1)
+            self._set_directory_mtime(
+                failing_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS - 1
+            )
+            self._set_directory_mtime(
+                deletable_dir, now_epoch - RUN_RETENTION_WINDOW_SECONDS - 1
+            )
 
             original_rmtree = stdlib_shutil.rmtree
 

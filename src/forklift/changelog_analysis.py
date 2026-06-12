@@ -20,7 +20,13 @@ from .changelog_models import (
     UpstreamNarrativeEvidence,
 )
 from .cli_runtime import resolved_main_branch
-from .git import GitError, ensure_required_remotes, fetch_remotes, resolve_upstream_target, run_git
+from .git import (
+    GitError,
+    ensure_required_remotes,
+    fetch_remotes,
+    resolve_upstream_target,
+    run_git,
+)
 
 MIN_GIT_VERSION = (2, 38, 0)
 DEFAULT_TOP_CHANGED_FILES = 30
@@ -286,7 +292,9 @@ def parse_numstat_output(numstat_output: str) -> dict[str, tuple[int, int]]:
     return parsed
 
 
-def parse_name_status_entries_output(name_status_output: str) -> list[CurrentPathChange]:
+def parse_name_status_entries_output(
+    name_status_output: str,
+) -> list[CurrentPathChange]:
     """Parse git diff --name-status rows into ordered current-path change entries."""
 
     parsed: list[CurrentPathChange] = []
@@ -461,7 +469,9 @@ def apply_cap_with_truncation[T](
     shown = items[:bounded_cap]
     if len(items) <= bounded_cap:
         return shown, None
-    return shown, TruncationMetadata(shown=len(shown), total=len(items), cap=bounded_cap)
+    return shown, TruncationMetadata(
+        shown=len(shown), total=len(items), cap=bounded_cap
+    )
 
 
 def collect_conflict_side_evidence(
@@ -528,7 +538,9 @@ def build_conflict_side_comparisons(
 ) -> list[ConflictSideComparison]:
     """Build ordered fork-vs-upstream evidence pairs for each predicted conflict path."""
 
-    ordered_hotspots = sorted(hotspots, key=lambda item: (-item.conflict_count, item.path))
+    ordered_hotspots = sorted(
+        hotspots, key=lambda item: (-item.conflict_count, item.path)
+    )
     comparisons: list[ConflictSideComparison] = []
     for hotspot in ordered_hotspots:
         comparisons.append(

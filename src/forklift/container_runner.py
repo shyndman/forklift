@@ -137,7 +137,9 @@ class ContainerRunner:
                 finished_at=utc_now_iso8601(),
                 exit_code=-1,
             )
-            self._stop_rebase_event_listener(listener, listener_thread, stop_event, socket_path)
+            self._stop_rebase_event_listener(
+                listener, listener_thread, stop_event, socket_path
+            )
             raise
 
         self._safe_update_run_state(
@@ -166,7 +168,9 @@ class ContainerRunner:
             stdout = stdout_partial or ""
             stderr = stderr_partial or ""
         finally:
-            self._stop_rebase_event_listener(listener, listener_thread, stop_event, socket_path)
+            self._stop_rebase_event_listener(
+                listener, listener_thread, stop_event, socket_path
+            )
 
         exit_code = process.returncode or 0
         final_status = (
@@ -292,7 +296,9 @@ class ContainerRunner:
                 break
 
             with connection:
-                self._read_rebase_event_connection(connection, stop_event, event_callback)
+                self._read_rebase_event_connection(
+                    connection, stop_event, event_callback
+                )
 
     def _read_rebase_event_connection(
         self,
