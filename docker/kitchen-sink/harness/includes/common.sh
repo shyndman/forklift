@@ -2,7 +2,13 @@
 # Shared logging and failure helpers for the harness runtime.
 
 log_client() {
-  printf '%s %s\n' "$(date --iso-8601=seconds)" "$1" >>"$CLIENT_LOG"
+  local stamp
+  stamp="$(date --iso-8601=ns)"
+  # date emits 9 fractional digits with a locale-dependent separator; normalize
+  # to a dot and chop nanoseconds down to milliseconds for the clientlog parser.
+  stamp="${stamp/,/.}"
+  [[ "$stamp" =~ ^(.*\.[0-9]{3})[0-9]*(.*)$ ]] && stamp="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
+  printf '%s %s\n' "$stamp" "$1" >>"$CLIENT_LOG"
 }
 
 log_client_block() {
