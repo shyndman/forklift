@@ -1,4 +1,0 @@
-Run directory: /home/shyndman/forklift/runs/forklift_20260215_191611
-
-Need help
-Conflicts remain
