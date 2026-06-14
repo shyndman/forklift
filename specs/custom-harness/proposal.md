@@ -1,0 +1,35 @@
+## Why
+
+Forklift runs its conflict-resolution agent by launching OpenCode (`opencode serve` + `opencode run --attach`) inside the sandbox and mediating git at the binary level so a paused rebase stays under harness control. OpenCode is an opaque, independently-evolving binary: it runs its own internal git (per-step workspace snapshots — `git --git-dir <snapshot> --work-tree /workspace write-tree`, `git init`, `git config`) that the harness never asked for. During a paused rebase the git shim mediates *every* git call, so these snapshot invocations are classified `unsupported`, rejected with exit 1, and flooded into the client log — 181 of 883 lines (~20%) in the most recent run — while OpenCode's snapshot feature silently fails closed the whole time. The root coupling is that we intercept git globally to compensate for not owning the agent loop, which leaves us hostage to OpenCode's private git usage changing underneath us on any update.
+
+We replace OpenCode with an in-process [Pydantic AI](https://ai.pydantic.dev/) agent built on [pydantic-ai-harness](https://github.com/pydantic/pydantic-ai-harness) capabilities. Owning the loop in-process means the only git that ever runs is git the agent deliberately invokes — no opaque background source remains — and mediation can move from "intercept the git binary" to a Python layer we control, with the binary shim demoted to a defensive backstop.
+
+## What Changes
+
+- **BREAKING**: Remove OpenCode entirely from the sandbox — `opencode serve`, `opencode run --attach`, `docker/kitchen-sink/opencode/start_server.sh`, and the server/client split. The agent becomes an in-process Pydantic AI agent (`pydantic-ai==1.99.0`, already a dependency) wired with pydantic-ai-harness capabilities: `filesystem`, `shell`, tool search, and code mode (Monty sandbox).
+- Mediate git **in-process** via a custom toolset layered above the harness `ShellToolset`, exposing our own `run_command` that parses the command (via `bashlex`), detects git invocations, and routes them through the existing Python mediation logic; non-git commands delegate to the harness `run_command`. Disable the background-process tools (`start_command`/`check_command`/`stop_command`) — only synchronous `run_command` is mediated.
+- Introduce the **target-repo discriminator** as the rule for what gets mediated: a git invocation is mediated only when it resolves to the workspace repository carrying the live paused rebase; git targeting any other repository (test temp repos, tooling git-dirs) passes through unmediated, mutating verbs included. The target repo is resolved from argv only (cwd, `-C`, `--git-dir`, `--work-tree`); any `GIT_*` environment variable present is rejected (fail closed). This same rule retroactively eliminates the OpenCode snapshot spam, since those calls targeted a non-workspace git-dir.
+- Collapse the intra-container control socket (`FORKLIFT_REBASE_CONTROL_SOCK`) into direct function calls now that the agent loop and orchestrator share a process; retire `control.py` and the report/wait protocol. The container→host events socket (`FORKLIFT_REBASE_EVENTS_SOCK`) is unchanged.
+- Replace log-parsing telemetry with direct structured logging. Retire `clientlog_renderer.py` and `post_run_metrics.py` (and their tests): agent steps/tool-calls/transitions emit structlog events at the call sites under the existing `run=<id>` correlator, and run metrics come from Pydantic AI's `result.usage()` priced by `genai-prices` (already a dependency).
+- Demote the git binary shim to a **backstop** that catches grandchild git (tests, builds, continue-checks) escaping the in-process layer: it enforces the same target-repo rule and refuses non-vocabulary git on the workspace repo while passing everything else through.
+
+What does **not** change: the mediated rebase vocabulary (`git rebase --continue/--skip/--abort --resolution-note/--reason`, `git reset-conflict`), single-conflict-per-session, the frozen continue-check, resolution-note capture, container isolation, the `forklift` user, the setup flow, and FORK.md context handling.
+
+## Scope
+
+### New Capabilities
+- `pydantic-ai-agent`: The in-process Pydantic AI agent that replaces OpenCode — model/provider wiring, capability set (filesystem, shell, tool search, code mode), the agent run loop, fresh-session-per-conflict lifecycle, and structured logging of steps/tool-calls/usage.
+- `in-process-git-mediation`: The custom `run_command` toolset that parses commands with `bashlex`, applies the target-repo discriminator and `GIT_*`-env rejection, mediates workspace-repo rebase transitions through reused Python logic, and delegates everything else.
+
+### Modified Capabilities
+- `imperative-rebase-management` (and `cross-container-rebase-events`): Rebase transitions are driven in-process rather than over the control socket; the git binary shim is demoted to a backstop. The mediated vocabulary, continue-check, and single-conflict-per-session semantics are preserved; the control socket and its protocol are removed.
+- `clientlog-viewer` / `post-run-metrics-summary`: The OpenCode event-JSON stream they parse no longer exists; telemetry is emitted directly as structlog events and metrics are read from `result.usage()`. The parsing modules retire.
+- `agent-sandbox-run`: The sandbox no longer boots an OpenCode server; `start_server.sh` is removed and `entrypoint.sh` drops its server-management half (readiness/PID markers, health gate, `/run/opencode`, `OPENCODE_SERVER_*`).
+
+## Impact
+
+- **Removed**: `docker/kitchen-sink/opencode/` (entrypoint/server scripts, permissive config), `docker/kitchen-sink/harness/py/forklift_harness/control.py`, `src/forklift/clientlog_renderer.py`, `src/forklift/post_run_metrics.py`, and the OpenCode-shaped server half of `docker/kitchen-sink/opencode/entrypoint.sh`.
+- **Modified**: `docker/kitchen-sink/harness/py/forklift_harness/mediate.py` and `orchestrate.py` (in-process mediation + agent loop, no socket), `rebase_state.py` (target-repo resolution, `GIT_*` rejection; classification/progress/continue-check/reset-conflict logic reused), `docker/kitchen-sink/harness/includes/bin/git` and `run.sh`/`entrypoint.sh` (backstop role, agent launch), `src/forklift/cli.py`/`container_runner.py` (metrics from usage, logging), `docker/kitchen-sink/Dockerfile` (drop OpenCode, add Pydantic AI agent + Monty), `pyproject.toml`/`uv.lock`.
+- **Dependencies**: add `pydantic-ai-harness` (with the code-mode/Monty extra) and `bashlex`; `pydantic-ai` and `genai-prices` already present. Remove OpenCode install from the image.
+- **Tests**: rebase-mediation tests retarget the in-process path; `clientlog`/`post_run_metrics` tests retire; new coverage for the target-repo discriminator, `GIT_*` rejection, `bashlex` parse-failure (fail-closed during paused rebase), and the fresh-session-per-conflict lifecycle.
+- **Self-hosting note**: Forklift forking Forklift is a first-class case — its own test suite spawns real git in temp repos and even drives the mediator — so the target-repo discriminator must be correct out of the gate, not deferred.
