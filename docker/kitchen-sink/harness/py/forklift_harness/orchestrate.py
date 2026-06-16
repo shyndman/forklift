@@ -1,90 +1,63 @@
-"""Mode-aware rebase + agent orchestrator launched from `run.sh`.
+"""Mode-aware rebase + in-process agent orchestrator launched from `run.sh`.
 
 The orchestrator runs as `forklift`, drives the initial rebase itself (auto-skipping
-clean empty stops), then enters an agent loop when the rebase pauses on a real
-conflict. It binds the intra-container control socket and, per reported transition,
-applies the only lifetime branch:
+clean empty stops), then runs the in-process Pydantic AI agent when the rebase pauses
+on a real conflict. There is no OpenCode subprocess and no intra-container control
+socket: the agent loop and the transition handling share this process, so the two
+lifetime modes are control flow (design Decision 5):
 
-  * rebase mode   -> reply `proceed`; the same agent session resolves the next conflict.
-  * conflict mode -> kill the agent process group and relaunch a fresh session for
-                     the now-current pause, feeding prior resolution notes forward.
+  * rebase mode   -> a transition returns the next-conflict state as the tool result
+                     and the SAME ``agent.iter`` session resolves the next conflict.
+  * conflict mode -> a transition sets ``deps.transition_done``; the driver breaks,
+                     and the loop starts a fresh session for the now-current pause,
+                     feeding prior resolution notes forward.
 
-It is the sole writer of `harness-state/rebase-report.json`; no agent authors
-`DONE.md`/`STUCK.md` anymore. Stuck runs still exit 0 with `harness-status=completed`
+It is the sole writer of `harness-state/rebase-report.json` and `usage.json`; no agent
+authors `DONE.md`/`STUCK.md`. Stuck runs still exit 0 with `harness-status=completed`
 so the host owns the exit-4 decision from the report.
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
-import signal
-import socket
-import subprocess
 import time
-from dataclasses import dataclass, field
 from pathlib import Path
 
-from .control import PROCEED, ControlListener, Directive, TransitionReport
+from pydantic_ai import Agent
+from pydantic_ai.usage import RunUsage
+
+from .agent import build_agent, resolve_model
+from .agent_deps import AgentDeps, RunReport, drive_until_transition
+from .logging_setup import configure_logging
 from .rebase_state import HarnessConfig, RebaseState
 
-DEFAULT_OPENCODE_BIN = "/opt/opencode/bin/opencode"
-CONTROL_RECV_TIMEOUT_SECONDS = 30.0
-
-
-@dataclass(frozen=True)
-class _TransitionOutcome:
-    """Result of handling one transition: a terminal exit code or a relaunch signal."""
-
-    terminal: int | None
-    relaunch: bool
-
-
-@dataclass
-class RunReport:
-    """Accumulated rebase outcome written to `rebase-report.json`."""
-
-    resolutions: list[dict[str, str]] = field(default_factory=list)
-    skips: list[dict[str, str]] = field(default_factory=list)
-    stuck: dict[str, str] | None = None
-
-    def record(self, report: TransitionReport) -> None:
-        if report.action == "continue":
-            self.resolutions.append(
-                {"sha": report.sha, "subject": report.subject, "note": report.note}
-            )
-        elif report.action == "skip":
-            self.skips.append(
-                {"sha": report.sha, "subject": report.subject, "note": report.note}
-            )
-        elif report.action == "abort":
-            self.stuck = {
-                "sha": report.sha,
-                "subject": report.subject,
-                "reason": report.note,
-            }
-
-    def to_payload(self, outcome: str) -> dict[str, object]:
-        return {
-            "outcome": outcome,
-            "resolutions": self.resolutions,
-            "skips": self.skips,
-            "stuck": self.stuck,
-        }
+# Default wall-clock budget for the whole agent phase (overridable via env). The
+# container watchdog and the host timeout are the ultimate backstops.
+DEFAULT_AGENT_TIMEOUT_SECONDS = 600
 
 
 class Orchestrator:
-    """Drives the rebase and the per-mode agent lifecycle."""
+    """Drives the rebase and the in-process per-mode agent lifecycle."""
 
-    def __init__(self, config: HarnessConfig, state: RebaseState) -> None:
+    def __init__(
+        self,
+        config: HarnessConfig,
+        state: RebaseState,
+        agent: Agent[AgentDeps, str],
+        model_id: str,
+    ) -> None:
         self.config: HarnessConfig = config
         self.state: RebaseState = state
+        self.agent: Agent[AgentDeps, str] = agent
+        self.model_id: str = model_id
         self.report: RunReport = RunReport()
-        self.opencode_timeout: int = _env_int("OPENCODE_TIMEOUT", 600)
-        self.server_port: int = _env_int("OPENCODE_SERVER_PORT", 4096)
-        self.opencode_bin: str = os.environ.get("OPENCODE_BIN", DEFAULT_OPENCODE_BIN)
-        self.model: str = os.environ.get("OPENCODE_MODEL", "")
-        self.variant: str = os.environ.get("OPENCODE_VARIANT", "")
+        self.deps: AgentDeps = AgentDeps(state=state, config=config, report=self.report)
+        self.total_usage: RunUsage = RunUsage()
+        self.agent_timeout: int = _env_int(
+            "FORKLIFT_AGENT_TIMEOUT", DEFAULT_AGENT_TIMEOUT_SECONDS
+        )
 
     # ----- status + report writers ---------------------------------------
 
@@ -112,8 +85,31 @@ class Orchestrator:
                 "agent", "stderr", f"Unable to write rebase report: {exc}"
             )
 
+    def _write_usage(self) -> None:
+        """Write aggregated token usage + model id for the host to price exactly."""
+
+        usage_path = self.config.harness_state_dir / "usage.json"
+        usage = self.total_usage
+        payload: dict[str, object] = {
+            "model": self.model_id,
+            "input_tokens": usage.input_tokens,
+            "output_tokens": usage.output_tokens,
+            "cache_read_tokens": usage.cache_read_tokens,
+            "cache_write_tokens": usage.cache_write_tokens,
+            "total_tokens": usage.total_tokens,
+            "requests": usage.requests,
+            "tool_calls": usage.tool_calls,
+        }
+        try:
+            _ = usage_path.write_text(
+                json.dumps(payload, indent=2) + "\n", encoding="utf-8"
+            )
+        except OSError as exc:
+            self.state.emit_phase("agent", "stderr", f"Unable to write usage: {exc}")
+
     def finalize_completed(self) -> int:
         self._write_report("completed")
+        self._write_usage()
         self._write_harness_status(
             "completed", "agent", "Rebase completed successfully"
         )
@@ -122,6 +118,7 @@ class Orchestrator:
 
     def finalize_stuck(self) -> int:
         self._write_report("stuck")
+        self._write_usage()
         self._write_harness_status(
             "completed", "agent", "Rebase aborted; see rebase-report.json"
         )
@@ -129,11 +126,22 @@ class Orchestrator:
         return 0
 
     def finalize_timeout(self) -> int:
+        if self.report.stuck is None:
+            identity = self.state.rebase_head_identity()
+            sha, subject = identity if identity is not None else ("", "")
+            self.report.record_abort(
+                sha,
+                subject,
+                f"Agent timed out after {self.agent_timeout}s without completing the rebase",
+            )
+        self._write_report("stuck")
+        self._write_usage()
         self._write_harness_status("failed", "agent", "Agent timed out")
         self.state.emit_phase("agent", "stderr", "Agent timed out")
         return 2
 
     def finalize_failed(self, message: str) -> int:
+        self._write_usage()
         self._write_harness_status("failed", "agent", message)
         self.state.emit_phase("agent", "stderr", message)
         return 1
@@ -210,7 +218,7 @@ class Orchestrator:
             return ""
 
     def build_payload(self) -> str:
-        """Compose the agent prompt, appending prior notes in conflict mode."""
+        """Compose the agent run prompt from instructions + fork context."""
 
         instructions = self._read_file(
             Path(
@@ -229,183 +237,61 @@ class Orchestrator:
             )
         )
         payload = f"{instructions}\n\n{fork_context}"
-
-        if self.config.agent_lifetime == "conflict" and (
-            self.report.resolutions or self.report.skips
-        ):
-            payload += "\n\n" + self._continuity_section()
         return payload
-
-    def _continuity_section(self) -> str:
-        lines = [
-            "== Prior conflicts in this rebase ==",
-            "Earlier conflicts were resolved by previous agents. For context only:",
-        ]
-        for entry in self.report.resolutions:
-            lines.append(
-                f"- resolved {entry['sha']} {entry['subject']}: {entry['note']}"
-            )
-        for entry in self.report.skips:
-            lines.append(
-                f"- skipped {entry['sha']} {entry['subject']}: {entry['note']}"
-            )
-        return "\n".join(lines)
-
-    # ----- opencode process management -----------------------------------
-
-    def _opencode_command(self, payload: str, remaining: int) -> list[str]:
-        command = [
-            "timeout",
-            str(remaining),
-            self.opencode_bin,
-            "run",
-            "--attach",
-            f"http://127.0.0.1:{self.server_port}",
-            "--log-level",
-            "DEBUG",
-            "--format",
-            "json",
-            "--dir",
-            str(self.config.workspace_dir),
-        ]
-        if self.model:
-            command += ["--model", self.model]
-        command += ["--variant", self.variant, payload]
-        return command
-
-    def launch_opencode(self, payload: str, remaining: int) -> subprocess.Popen[bytes]:
-        command = self._opencode_command(payload, remaining)
-        self.state.log_client(
-            f"Launching OpenCode client (model={self.model or '(default)'} "
-            + f"variant={self.variant} remaining={remaining}s)"
-        )
-        log_handle = self.config.client_log.open("ab")
-        return subprocess.Popen(
-            command,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-
-    def _kill_process_group(self, proc: subprocess.Popen[bytes]) -> None:
-        if proc.poll() is not None:
-            return
-        try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            try:
-                proc.kill()
-            except OSError:
-                pass
-        try:
-            _ = proc.wait(timeout=10)
-        except subprocess.TimeoutExpired:
-            pass
 
     # ----- agent loop -----------------------------------------------------
 
-    def run_agent_loop(self) -> int:
-        with ControlListener(self.config.control_sock) as listener:
-            deadline = time.monotonic() + self.opencode_timeout
-            proc: subprocess.Popen[bytes] | None = None
-            try:
-                while True:
-                    remaining = int(deadline - time.monotonic())
-                    if remaining <= 0:
-                        if proc is not None:
-                            self._kill_process_group(proc)
-                        return self.finalize_timeout()
+    async def run_agent_loop(self) -> int:
+        """Run the agent until the rebase completes, aborts, or the budget elapses.
 
-                    if proc is None:
-                        proc = self.launch_opencode(self.build_payload(), remaining)
-
-                    conn = listener.accept()
-                    if conn is None:
-                        if proc.poll() is not None:
-                            outcome = self._handle_agent_exit()
-                            if outcome is not None:
-                                return outcome
-                            # Rebase still in progress and agent gone: fail closed.
-                            return self.finalize_failed(
-                                "Agent exited without completing the rebase"
-                            )
-                        continue
-
-                    outcome = self._handle_transition(listener, conn, proc)
-                    if outcome.terminal is not None:
-                        self.wait_for_exit(proc)
-                        return outcome.terminal
-                    if outcome.relaunch:
-                        # Conflict mode already killed the agent group; relaunch fresh.
-                        proc = None
-            finally:
-                if proc is not None:
-                    self._kill_process_group(proc)
-
-    def _handle_agent_exit(self) -> int | None:
-        """Resolve an agent process that exited without a terminal report."""
-
-        if not self.state.rebase_in_progress():
-            return self.finalize_completed()
-        return None
-
-    def _handle_transition(
-        self,
-        listener: ControlListener,
-        connection: socket.socket,
-        proc: subprocess.Popen[bytes],
-    ) -> _TransitionOutcome:
-        """Process one transition report and apply the single lifetime branch.
-
-        Returns a terminal exit code (completed/abort) or a relaunch signal. For a
-        conflict-mode advance the agent process group is killed *before* the
-        connection closes, so the blocked mediator dies without surfacing a
-        misleading failure to the agent.
+        Each iteration runs one ``agent.iter`` session via the end-run driver. A
+        terminal transition (complete/abort) sets ``deps.terminal``; a conflict-mode
+        advance sets ``deps.transition_done`` and the loop relaunches a fresh session;
+        a session that ends with the rebase still paused is a failure (the agent gave
+        up). rebase mode never flips ``transition_done`` on a plain advance, so its
+        single session runs until the rebase finishes.
         """
 
-        report = listener.recv_report(connection, timeout=CONTROL_RECV_TIMEOUT_SECONDS)
-        if report is None:
-            connection.close()
-            return _TransitionOutcome(terminal=None, relaunch=False)
-
-        self.report.record(report)
-        self._log_transition(report)
-
-        if report.action == "abort":
-            listener.reply(connection, Directive(PROCEED))
-            connection.close()
-            return _TransitionOutcome(terminal=self.finalize_stuck(), relaunch=False)
-        if report.completed:
-            listener.reply(connection, Directive(PROCEED))
-            connection.close()
-            return _TransitionOutcome(
-                terminal=self.finalize_completed(), relaunch=False
-            )
-
-        if self.config.agent_lifetime == "rebase":
-            listener.reply(connection, Directive(PROCEED))
-            connection.close()
-            return _TransitionOutcome(terminal=None, relaunch=False)
-
-        # Conflict mode: kill the agent group (reaping the blocked mediator) before
-        # closing the connection, then relaunch a fresh session for the next pause.
-        self._kill_process_group(proc)
-        connection.close()
-        return _TransitionOutcome(terminal=None, relaunch=True)
-
-    def _log_transition(self, report: TransitionReport) -> None:
-        self.state.emit_phase(
-            "agent",
-            "stdout",
-            f"Transition {report.action} {report.sha} {report.subject} "
-            + f"(completed={report.completed})",
-        )
-
-    def wait_for_exit(self, proc: subprocess.Popen[bytes]) -> None:
+        deadline = time.monotonic() + self.agent_timeout
         try:
-            _ = proc.wait(timeout=30)
-        except subprocess.TimeoutExpired:
-            self._kill_process_group(proc)
+            while True:
+                if not self.state.rebase_in_progress():
+                    return self.finalize_completed()
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return self.finalize_timeout()
+
+                payload = self.build_payload()
+                try:
+                    usage = await asyncio.wait_for(
+                        drive_until_transition(self.agent, payload, self.deps),
+                        timeout=remaining,
+                    )
+                except asyncio.TimeoutError:
+                    self.total_usage = self.total_usage + self.deps.session_usage
+                    return self.finalize_timeout()
+                self.total_usage = self.total_usage + usage
+
+                if self.deps.terminal is not None:
+                    if self.report.stuck is not None:
+                        return self.finalize_stuck()
+                    return self.finalize_completed()
+
+                if not self.state.rebase_in_progress():
+                    return self.finalize_completed()
+
+                if self.deps.transition_done:
+                    # Conflict-mode advance: relaunch a fresh session.
+                    continue
+
+                # The session ended with the rebase still paused and no transition:
+                # the agent gave up. Fail closed.
+                return self.finalize_failed(
+                    "Agent session ended without completing the rebase"
+                )
+        finally:
+            self._write_usage()
 
 
 def _env_int(name: str, default: int) -> int:
@@ -419,16 +305,22 @@ def _env_int(name: str, default: int) -> int:
 
 
 def main() -> int:
+    configure_logging()
     config = HarnessConfig.from_env()
     state = RebaseState(config)
-    orchestrator = Orchestrator(config, state)
+    model = resolve_model()
+    model_id = (
+        model if isinstance(model, str) else getattr(model, "model_name", str(model))
+    )
+    agent = build_agent(model=model)
+    orchestrator = Orchestrator(config, state, agent, model_id)
 
-    result = orchestrator.run_initial_rebase()
-    if result == "completed":
+    outcome = orchestrator.run_initial_rebase()
+    if outcome == "completed":
         return orchestrator.finalize_completed()
-    if result == "failed":
-        return orchestrator.finalize_failed("Initial rebase failed before agent launch")
-    return orchestrator.run_agent_loop()
+    if outcome == "failed":
+        return orchestrator.finalize_failed("Initial rebase failed")
+    return asyncio.run(orchestrator.run_agent_loop())
 
 
 if __name__ == "__main__":

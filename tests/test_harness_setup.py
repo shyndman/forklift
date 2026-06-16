@@ -1,84 +1,15 @@
 from __future__ import annotations
 
-import json
 import os
-import socket
 import subprocess
 import tempfile
-import threading
-import time
 import unittest
 from pathlib import Path
-from typing import cast, override
+from typing import override
 
 HARNESS_SCRIPT = (
     Path(__file__).resolve().parents[1] / "docker/kitchen-sink/harness/run.sh"
 )
-
-
-class RebaseEventServer:
-    socket_path: Path
-    events: list[dict[str, object]]
-    _listener: socket.socket | None
-    _stop: threading.Event
-    _thread: threading.Thread
-
-    def __init__(self, socket_path: Path) -> None:
-        self.socket_path = socket_path
-        self.events = []
-        self._listener = None
-        self._stop = threading.Event()
-        self._thread = threading.Thread(target=self._serve, daemon=True)
-
-    def __enter__(self) -> RebaseEventServer:
-        self.socket_path.parent.mkdir(parents=True, exist_ok=True)
-        self._listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        self._listener.settimeout(0.2)
-        self._listener.bind(str(self.socket_path))
-        self._listener.listen()
-        self._thread.start()
-        return self
-
-    def __exit__(self, _exc_type: object, _exc: object, _tb: object) -> None:
-        self._stop.set()
-        if self._listener is not None:
-            self._listener.close()
-        self._thread.join(timeout=1)
-        try:
-            self.socket_path.unlink()
-        except FileNotFoundError:
-            pass
-
-    def wait_for_event_count(self, expected: int) -> None:
-        deadline = time.time() + 1
-        while len(self.events) < expected and time.time() < deadline:
-            time.sleep(0.01)
-
-    def _serve(self) -> None:
-        assert self._listener is not None
-        while not self._stop.is_set():
-            try:
-                accepted = cast(tuple[socket.socket, object], self._listener.accept())
-                connection = accepted[0]
-            except socket.timeout:
-                continue
-            except OSError:
-                if self._stop.is_set():
-                    break
-                raise
-
-            with connection:
-                chunks: list[bytes] = []
-                while True:
-                    chunk = connection.recv(4096)
-                    if not chunk:
-                        break
-                    chunks.append(chunk)
-                for line in b"".join(chunks).decode("utf-8").splitlines():
-                    if line.strip():
-                        payload_obj = cast(object, json.loads(line))
-                        if isinstance(payload_obj, dict):
-                            self.events.append(cast(dict[str, object], payload_obj))
 
 
 class HarnessSetupTests(unittest.TestCase):
@@ -111,14 +42,12 @@ INSTRUCTIONS_FILE="$HARNESS_STATE_DIR/instructions.txt"
 FORK_CONTEXT_FILE="$HARNESS_STATE_DIR/fork-context.md"
 EXTRA_RUN_INSTRUCTIONS_FILE="$HARNESS_STATE_DIR/extra-run-instructions.md"
 SETUP_LOG="$HARNESS_STATE_DIR/setup.log"
-CLIENT_LOG="$HARNESS_STATE_DIR/opencode-client.log"
 HARNESS_STATUS_FILE="$HARNESS_STATE_DIR/harness-status.txt"
 REBASE_CONTINUE_CHECK_FILE="$HARNESS_STATE_DIR/rebase-continue-check.sh"
 REBASE_SKIPPED_COMMITS_FILE="$HARNESS_STATE_DIR/rebase-skipped-commits.json"
 REBASE_CONFLICTING_COMMITS_FILE="$HARNESS_STATE_DIR/rebase-conflicting-commits.json"
-export WORKSPACE_DIR HARNESS_STATE_DIR INSTRUCTIONS_FILE FORK_CONTEXT_FILE EXTRA_RUN_INSTRUCTIONS_FILE SETUP_LOG CLIENT_LOG HARNESS_STATUS_FILE
+export WORKSPACE_DIR HARNESS_STATE_DIR INSTRUCTIONS_FILE FORK_CONTEXT_FILE EXTRA_RUN_INSTRUCTIONS_FILE SETUP_LOG HARNESS_STATUS_FILE
 export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING_COMMITS_FILE
-: >"$CLIENT_LOG"
 : >"$SETUP_LOG"
 {commands}
 """
@@ -352,9 +281,6 @@ export REBASE_CONTINUE_CHECK_FILE REBASE_SKIPPED_COMMITS_FILE REBASE_CONFLICTING
         _ = subprocess.run(
             ["git", "commit", "-m", "base"], cwd=self.workspace, check=True
         )
-
-    def _event_socket_path(self) -> Path:
-        return self.root / "control" / "rebase-events.sock"
 
     def _init_clean_empty_rebase_stop(
         self, *, dirty: bool = False
@@ -644,15 +570,17 @@ run_setup_command
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
-        self.assertIn("setup-stdout", result.stdout)
-        self.assertIn("setup-stderr", result.stderr)
         self.assertIn("setup-stdout", setup_log)
         self.assertIn("setup-stderr", setup_log)
-        client_log = (self.harness_state / "opencode-client.log").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("[setup] setup-stdout", client_log)
-        self.assertIn("[setup] setup-stderr", client_log)
+        self.assertIn("[setup] setup-stdout", result.stdout)
+        self.assertIn("[setup] setup-stderr", result.stderr)
+        # Each setup line is tagged exactly once on its own stream: no double
+        # prefix, and stderr is not cross-routed onto stdout.
+        self.assertNotIn("[setup] [setup]", result.stdout)
+        self.assertNotIn("[setup] [setup]", result.stderr)
+        self.assertEqual(result.stdout.count("setup-stdout"), 1)
+        self.assertNotIn("setup-stderr", result.stdout)
+        self.assertEqual(result.stderr.count("setup-stderr"), 1)
 
     def test_configure_git_lfs_filters_installs_global_filters_when_available(
         self,
@@ -691,11 +619,8 @@ configure_git_lfs_filters
             commands_log.read_text(encoding="utf-8").splitlines(),
             ["lfs install --skip-repo", "lfs version"],
         )
-        client_log = (self.harness_state / "opencode-client.log").read_text(
-            encoding="utf-8"
-        )
-        self.assertIn("Configuring Git LFS filters", client_log)
-        self.assertIn("git-lfs=git-lfs/9.9.9", client_log)
+        self.assertIn("Configuring Git LFS filters", result.stdout)
+        self.assertIn("git-lfs=git-lfs/9.9.9", result.stdout)
 
     def test_parse_fork_context_fails_closed_on_malformed_front_matter(self) -> None:
         _ = (self.workspace / "FORK.md").write_text(
@@ -803,14 +728,11 @@ fi
 
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         setup_log = (self.harness_state / "setup.log").read_text(encoding="utf-8")
-        client_log = (self.harness_state / "opencode-client.log").read_text(
-            encoding="utf-8"
-        )
         self.assertIn("Tracked Changes After Setup", setup_log)
         self.assertIn("tracked.txt", setup_log)
         self.assertIn("Tracked Changes After Setup", result.stderr)
-        self.assertIn("Tracked Changes After Setup", client_log)
-        self.assertIn("tracked.txt", client_log)
+        self.assertIn("Tracked Changes After Setup", result.stdout)
+        self.assertIn("tracked.txt", result.stdout)
 
     def test_front_matter_is_stripped_from_agent_visible_artifacts(self) -> None:
         self._init_workspace_repo()

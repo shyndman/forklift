@@ -1,6 +1,5 @@
 # syntax=docker/dockerfile:1.6
 FROM ubuntu:24.04
-ARG OPENCODE_VERSION=1.2.6
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
@@ -10,8 +9,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     N_PREFIX=/opt/n \
     BUN_INSTALL=/opt/bun \
     PYENV_ROOT=/opt/pyenv \
-    OPENCODE_HOME=/opt/opencode \
-    PATH=/opt/pyenv/shims:/opt/pyenv/bin:$N_PREFIX/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:$OPENCODE_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+    PATH=/opt/forklift/venv/bin:/opt/pyenv/shims:/opt/pyenv/bin:$N_PREFIX/bin:$BUN_INSTALL/bin:$CARGO_HOME/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 RUN --mount=type=cache,target=/var/lib/apt/lists,id=forklift-apt-lists,sharing=locked \
     --mount=type=cache,target=/var/cache/apt,id=forklift-apt-cache,sharing=locked \
@@ -55,10 +53,8 @@ RUN curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR=/usr/local/b
 
 # Prepare forklift user and writable tool directories ahead of installs
 RUN if id -u ubuntu >/dev/null 2>&1; then userdel -r ubuntu || true; fi && \
-    if ! getent group opencode >/dev/null 2>&1; then groupadd --system opencode; fi && \
     if ! id -u forklift >/dev/null 2>&1; then useradd -m -u 1000 -U forklift; fi && \
-    usermod -aG opencode forklift && \
-    install -d -o forklift -g forklift /opt/forklift /opt/forklift/harness /run/forklift "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX" "$PYENV_ROOT" /var/cache/forklift-installers /home/forklift/.npm /home/forklift/.local/state /home/forklift/.local/share/opencode/log && \
+    install -d -o forklift -g forklift /opt/forklift /opt/forklift/harness /run/forklift "$CARGO_HOME" "$RUSTUP_HOME" "$BUN_INSTALL" "$N_PREFIX" "$PYENV_ROOT" /var/cache/forklift-installers /home/forklift/.npm /home/forklift/.local/state && \
     chown -R forklift:forklift /home/forklift/.local
 
 USER forklift
@@ -94,22 +90,7 @@ RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-install
 # Install PyEnv
 RUN git clone https://github.com/pyenv/pyenv.git "$PYENV_ROOT"
 
-# Install OpenCode CLI via official installer
 USER root
-RUN --mount=type=cache,target=/var/cache/forklift-installers,id=forklift-installers,sharing=locked,uid=1000,gid=1000 \
-    set -euxo pipefail && \
-    INSTALLER_DIR=/var/cache/forklift-installers && \
-    install -d "$INSTALLER_DIR" && \
-    INSTALLER="$INSTALLER_DIR/opencode-install.sh" && \
-    if [ ! -f "$INSTALLER" ]; then \
-        curl -fsSL https://opencode.ai/install -o "$INSTALLER"; \
-    fi && \
-    chmod +x "$INSTALLER" && \
-    "$INSTALLER" --no-modify-path --version "$OPENCODE_VERSION" && \
-    install -d "$OPENCODE_HOME/bin" && \
-    mv /root/.opencode/bin/opencode "$OPENCODE_HOME/bin/opencode" && \
-    chmod 755 "$OPENCODE_HOME/bin/opencode" && \
-    rm -rf /root/.opencode
 
 
 # Profile setup for pyenv + cargo + bun + n
@@ -128,16 +109,20 @@ EOF
 COPY harness/ /opt/forklift/harness/
 RUN chown -R root:root /opt/forklift/harness && \
     chmod -R go-w /opt/forklift/harness && \
-    chmod +x /opt/forklift/harness/run.sh /opt/forklift/harness/includes/bin/git
+    chmod +x /opt/forklift/harness/run.sh /opt/forklift/harness/entrypoint.sh /opt/forklift/harness/includes/bin/git
 
-COPY opencode/start_server.sh /opt/opencode/start_server.sh
-COPY opencode/entrypoint.sh /opt/opencode/entrypoint.sh
-COPY opencode/opencode-permissive.json /opt/opencode/opencode-permissive.json
-RUN chmod 700 /opt/opencode/start_server.sh /opt/opencode/entrypoint.sh && \
-    chown root:root /opt/opencode/start_server.sh /opt/opencode/entrypoint.sh && \
-    chmod 644 /opt/opencode/opencode-permissive.json && \
-    chown root:root /opt/opencode/opencode-permissive.json
+# Build the in-container Python venv with the in-process harness package + deps.
+# Install the base interpreter into a world-readable dir (the default uv cache lives
+# under root's home, which the unprivileged forklift user cannot traverse/execute).
+ENV UV_PYTHON_INSTALL_DIR=/opt/forklift/python
+# Silence uv's progress spinners so build and live setup logs stay line-oriented.
+ENV UV_NO_PROGRESS=1
+RUN uv python install 3.13 && \
+    uv venv --python 3.13 /opt/forklift/venv && \
+    VIRTUAL_ENV=/opt/forklift/venv uv pip install /opt/forklift/harness/py && \
+    chmod -R a+rX /opt/forklift/python /opt/forklift/venv
+
 
 WORKDIR /workspace
 
-ENTRYPOINT ["/opt/opencode/entrypoint.sh"]
+ENTRYPOINT ["/opt/forklift/harness/entrypoint.sh"]

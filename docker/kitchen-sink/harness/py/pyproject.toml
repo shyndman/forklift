@@ -1,0 +1,20 @@
+[project]
+name = "forklift-harness"
+version = "0.1.0"
+description = "In-container Forklift conflict-resolution harness (in-process Pydantic AI agent)"
+requires-python = ">=3.13"
+dependencies = [
+    "pydantic-ai==1.99.0",
+    "pydantic-ai-harness[code-mode]==0.3.0",
+    "bashlex==0.18",
+    "genai-prices==0.0.66",
+    "structlog==25.5.0",
+]
+
+[build-system]
+requires = ["uv_build"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "forklift_harness"
+module-root = ""

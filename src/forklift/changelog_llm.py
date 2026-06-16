@@ -16,8 +16,6 @@ from pydantic_ai.exceptions import (
     UserError,
 )
 from pydantic_ai.usage import RunUsage
-import structlog
-from structlog.stdlib import BoundLogger
 
 from .changelog_models import (
     ConflictReviewSections,
@@ -25,9 +23,8 @@ from .changelog_models import (
     UpstreamNarrativeEvidence,
     UpstreamNarrativeSections,
 )
-from .opencode_env import OpenCodeEnv
-
-logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
+from .forklift_env import ForkliftEnv
+from .models_dev import Catalog, price_tokens
 
 
 class ChangelogLlmError(RuntimeError):
@@ -105,12 +102,9 @@ PROVIDER_ENV_MAPPINGS = (
     ("openai_api_key", "OPENAI_API_KEY"),
     ("anthropic_api_key", "ANTHROPIC_API_KEY"),
     ("openrouter_api_key", "OPENROUTER_API_KEY"),
-    ("google_generative_ai_api_key", "GOOGLE_API_KEY"),
-    ("google_generative_ai_api_key", "GEMINI_API_KEY"),
+    ("google_api_key", "GOOGLE_API_KEY"),
+    ("gemini_api_key", "GEMINI_API_KEY"),
 )
-PROVIDER_MODEL_ALIASES = {
-    "google": "google-gla",
-}
 
 
 def build_upstream_narrative_prompt(evidence: UpstreamNarrativeEvidence) -> str:
@@ -155,13 +149,13 @@ def _build_json_prompt(
     return f"{intro}\nEvidence JSON:\n```json\n{formatted}\n```"
 
 
-def resolve_agent_model(env: OpenCodeEnv) -> str:
+def resolve_agent_model(env: ForkliftEnv) -> str:
     """Resolve model identifier used for pydantic-ai changelog generation."""
 
     model = (env.model or "").strip()
     if not model:
         raise ChangelogLlmError(
-            "OPENCODE_MODEL must be set in OpenCode env for `forklift changelog` generation."
+            "FORKLIFT_MODEL must be set in the Forklift env for `forklift changelog` generation."
         )
     if ":" in model:
         return model
@@ -169,14 +163,13 @@ def resolve_agent_model(env: OpenCodeEnv) -> str:
     if "/" in model:
         provider, model_name = model.split("/", 1)
         if provider and model_name:
-            normalized_provider = PROVIDER_MODEL_ALIASES.get(provider, provider)
-            return f"{normalized_provider}:{model_name}"
+            return f"{provider}:{model_name}"
 
     return model
 
 
 @contextmanager
-def provider_env_from_opencode(env: OpenCodeEnv) -> Generator[None, None, None]:
+def provider_env_from_forklift(env: ForkliftEnv) -> Generator[None, None, None]:
     """Temporarily bridge OpenCode provider keys into env vars expected by pydantic-ai."""
 
     sentinel = object()
@@ -185,7 +178,8 @@ def provider_env_from_opencode(env: OpenCodeEnv) -> Generator[None, None, None]:
         "openai_api_key": env.openai_api_key,
         "anthropic_api_key": env.anthropic_api_key,
         "openrouter_api_key": env.openrouter_api_key,
-        "google_generative_ai_api_key": env.google_generative_ai_api_key,
+        "google_api_key": env.google_api_key,
+        "gemini_api_key": env.gemini_api_key,
     }
     for attr_name, env_name in PROVIDER_ENV_MAPPINGS:
         value = values_by_attr[attr_name]
@@ -206,15 +200,16 @@ def provider_env_from_opencode(env: OpenCodeEnv) -> Generator[None, None, None]:
 
 async def generate_upstream_narrative(
     evidence: UpstreamNarrativeEvidence,
-    env: OpenCodeEnv,
+    env: ForkliftEnv,
+    catalog: Catalog,
 ) -> UpstreamNarrativeResult:
     """Generate upstream-only section bodies plus usage totals via pydantic-ai."""
 
     call_result = await _run_markdown_generation(
         prompt=build_upstream_narrative_prompt(evidence),
         system_prompt=UPSTREAM_NARRATIVE_SYSTEM_PROMPT,
-        operation="upstream narrative",
         env=env,
+        catalog=catalog,
     )
     sections = _extract_section_bodies(
         call_result.markdown,
@@ -232,15 +227,16 @@ async def generate_upstream_narrative(
 
 async def generate_conflict_review(
     evidence: EvidenceBundle,
-    env: OpenCodeEnv,
+    env: ForkliftEnv,
+    catalog: Catalog,
 ) -> ConflictReviewResult:
     """Generate conflict-analysis section bodies plus usage totals via pydantic-ai."""
 
     call_result = await _run_markdown_generation(
         prompt=build_conflict_review_prompt(evidence),
         system_prompt=CONFLICT_REVIEW_SYSTEM_PROMPT,
-        operation="conflict review",
         env=env,
+        catalog=catalog,
     )
     sections = _extract_section_bodies(
         call_result.markdown,
@@ -269,14 +265,14 @@ async def _run_markdown_generation(
     *,
     prompt: str,
     system_prompt: str,
-    operation: str,
-    env: OpenCodeEnv,
+    env: ForkliftEnv,
+    catalog: Catalog,
 ) -> _MarkdownGenerationResult:
     """Run one pydantic-ai markdown generation call with shared env and error handling."""
 
     model_name = resolve_agent_model(env)
     try:
-        with provider_env_from_opencode(env):
+        with provider_env_from_forklift(env):
             agent: Agent[None, str] = Agent(model_name, system_prompt=system_prompt)
             result: AgentRunResult[str] = await agent.run(prompt)
     except UserError as exc:
@@ -297,21 +293,19 @@ async def _run_markdown_generation(
     output = result.output.strip()
     if not output:
         raise ChangelogLlmError("Changelog model returned empty markdown output.")
-    estimated_cost: Decimal | None = None
-    try:
-        estimated_cost = result.response.cost().total_price
-    except LookupError as exc:
-        logger.warning(
-            "Unable to estimate changelog model cost",
-            operation=operation,
-            model=model_name,
-            error=str(exc),
-        )
     raw_usage = cast(object, result.usage)
     if not isinstance(raw_usage, RunUsage):
         raise ChangelogLlmError(
             f"Changelog model returned unexpected usage payload type: {type(raw_usage).__name__}"
         )
+    estimated_cost = price_tokens(
+        catalog,
+        model_name,
+        input_tokens=raw_usage.input_tokens,
+        output_tokens=raw_usage.output_tokens,
+        cache_read_tokens=raw_usage.cache_read_tokens,
+        cache_write_tokens=raw_usage.cache_write_tokens,
+    )
     return _MarkdownGenerationResult(
         markdown=output,
         usage=raw_usage,

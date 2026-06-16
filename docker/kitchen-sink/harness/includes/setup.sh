@@ -3,8 +3,6 @@
 
 # Emit setup preflight diagnostics to simplify bootstrap failure triage.
 log_setup_diagnostics() {
-  local line_number command_line
-  line_number=1
 
   print_header "Setup Diagnostics"
   printf 'timestamp=%s\n' "$(date --iso-8601=seconds)"
@@ -18,11 +16,6 @@ log_setup_diagnostics() {
   printf 'TMPDIR=%s\n' "${TMPDIR:-<unset>}"
   printf 'TEMP=%s\n' "${TEMP:-<unset>}"
   printf 'TMP=%s\n' "${TMP:-<unset>}"
-  print_header "Setup Command (Line Numbered)"
-  while IFS= read -r command_line; do
-    printf '%4d | %s\n' "$line_number" "$command_line"
-    line_number=$((line_number + 1))
-  done <<<"$FORK_SETUP_COMMAND"
 
   log_tempdir_diagnostics
 }
@@ -86,19 +79,20 @@ configure_git_lfs_filters() {
   log_client "  git-lfs=$(git lfs version)"
 }
 
-# Mirror setup command output to its original stream, setup.log, and clientlog.
+# Record each setup line raw in setup.log and surface it once on its own stream
+# with a single [setup] tag. The host re-emits both container streams live, so
+# stderr no longer needs to be routed onto stdout to be seen.
 stream_setup_output() {
   local stream line
   stream="$1"
 
   while IFS= read -r line || [[ -n "$line" ]]; do
-    if [[ "$stream" == "stderr" ]]; then
-      printf '%s\n' "$line" >&2
-    else
-      printf '%s\n' "$line"
-    fi
     printf '%s\n' "$line" >>"$SETUP_LOG"
-    log_client "[setup] $line"
+    if [[ "$stream" == "stderr" ]]; then
+      printf '[setup] %s\n' "$line" >&2
+    else
+      printf '[setup] %s\n' "$line"
+    fi
   done
 }
 
@@ -116,13 +110,13 @@ run_setup_command() {
   {
     print_header "Setup Command"
     printf '%s\n' "$FORK_SETUP_COMMAND"
-  } | tee "$SETUP_LOG"
+  } >"$SETUP_LOG"
 
   emit_phase_message "setup" "stdout" "Setup diagnostics"
   log_setup_diagnostics | tee -a "$SETUP_LOG"
 
   emit_phase_message "setup" "stdout" "Setup output"
-  print_header "Setup Output" | tee -a "$SETUP_LOG"
+  print_header "Setup Output" >>"$SETUP_LOG"
 
   set +e
   (

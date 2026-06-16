@@ -5,7 +5,7 @@ This module is the Python port of the introspection/policy half of the legacy
 without deciding agent lifetime: real-git invocation with a scrubbed environment,
 rebase-in-progress detection, progress snapshots, clean-empty-stop detection, the
 frozen continue-check runner, paused-command classification, and the host-facing
-structured rebase events emitted over `FORKLIFT_REBASE_EVENTS_SOCK`.
+rebase progress records emitted as structlog logs over `FORKLIFT_LOG_SOCK`.
 
 Lifetime decisions (kill-and-relaunch vs reply-and-continue) live in
 `orchestrate.py`; the per-transition git shim entrypoint lives in `mediate.py`.
@@ -13,15 +13,17 @@ Lifetime decisions (kill-and-relaunch vs reply-and-continue) live in
 
 from __future__ import annotations
 
-import json
 import os
 import shutil
-import socket
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from pathlib import Path
+from typing import cast
+
+import structlog
+
+logger = cast("structlog.typing.FilteringBoundLogger", structlog.get_logger(__name__))
 
 # Read-only git subcommands the agent may run while a rebase is paused.
 ALLOWED_PAUSED_COMMANDS = frozenset(
@@ -42,8 +44,6 @@ RESET_CONFLICT_COMMAND = "reset-conflict"
 # so `git reset-conflict` can restore the step after the agent has mutated it.
 DEFAULT_CONFLICT_INDEX_SNAPSHOT = "/run/forklift/conflict-index"
 
-# Upper bound on the note/reason length forwarded over the control socket.
-MAX_NOTE_LENGTH = 4000
 
 # Trailing sentinel the harness appends to every preamble line it injects into the
 # frozen continue-check file (see includes/rebase.sh:write_rebase_continue_check_file,
@@ -51,9 +51,6 @@ MAX_NOTE_LENGTH = 4000
 # leading shebang plus any preamble line carrying this marker, so failure logs show
 # only the fork's own commands without hard-coding a preamble line count.
 CONTINUE_CHECK_PREAMBLE_MARKER = "forklift:continue-check-preamble"
-
-# Host structured-event protocol version (must match container_runner.REBASE_EVENT_VERSION).
-REBASE_EVENT_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -66,9 +63,6 @@ class HarnessConfig:
     main_branch: str
     upstream_ref: str
     continue_check_file: Path
-    client_log: Path
-    events_sock: str | None
-    control_sock: str
     agent_lifetime: str
     git_user_name: str = "Forklift Agent"
     git_user_email: str = "forklift@github.com"
@@ -90,13 +84,6 @@ class HarnessConfig:
                 str(harness_state / "rebase-continue-check.sh"),
             )
         )
-        client_log = Path(
-            os.environ.get("CLIENT_LOG", str(harness_state / "opencode-client.log"))
-        )
-        events_sock = os.environ.get("FORKLIFT_REBASE_EVENTS_SOCK") or None
-        control_sock = os.environ.get(
-            "FORKLIFT_REBASE_CONTROL_SOCK", "/run/forklift/rebase-control.sock"
-        )
         agent_lifetime = os.environ.get("FORKLIFT_AGENT_LIFETIME", "conflict")
         return cls(
             workspace_dir=workspace,
@@ -105,9 +92,6 @@ class HarnessConfig:
             main_branch=main_branch,
             upstream_ref=upstream_ref,
             continue_check_file=continue_check,
-            client_log=client_log,
-            events_sock=events_sock,
-            control_sock=control_sock,
             agent_lifetime=agent_lifetime,
             git_user_name=os.environ.get("FORKLIFT_GIT_USER_NAME", "Forklift Agent"),
             git_user_email=os.environ.get(
@@ -160,23 +144,12 @@ class PausedCommand:
     original_args: tuple[str, ...]
 
 
-def _is_dangerous_config_key(config_key: str) -> bool:
-    """Return whether a `-c key=value` override would redirect git behavior."""
-
-    lowered = config_key.lower()
-    if lowered.startswith("alias.") or lowered.startswith("pager."):
-        return True
-    return lowered in {"core.pager", "diff.external", "interactive.difffilter"}
-
-
 def _sanitize_note(value: str) -> str:
-    """Strip control characters and bound length on socket-bound note text."""
+    """Strip control characters from note/reason text bound for the report and logs."""
 
     cleaned = "".join(
         char for char in value if ord(char) >= 32 and ord(char) != 127
     ).strip()
-    if len(cleaned) > MAX_NOTE_LENGTH:
-        cleaned = cleaned[:MAX_NOTE_LENGTH]
     return cleaned
 
 
@@ -191,7 +164,6 @@ def classify_paused_rebase_command(args: list[str]) -> PausedCommand:
 
     normalized: list[str] = []
     has_config_override = False
-    has_redirect_override = False
     resolution_note: str | None = None
     reason: str | None = None
 
@@ -200,28 +172,18 @@ def classify_paused_rebase_command(args: list[str]) -> PausedCommand:
         arg = args[index]
         if arg == "-c":
             has_config_override = True
-            index += 1
-            config_value = args[index] if index < len(args) else ""
-            config_key = config_value.split("=", 1)[0]
-            if not config_key or _is_dangerous_config_key(config_key):
-                has_redirect_override = True
-        elif arg.startswith("-c") and arg != "-c":
+            index += 1  # skip the key=value token
+        elif arg.startswith("-c"):
             has_config_override = True
-            config_value = arg[2:]
-            config_key = config_value.split("=", 1)[0]
-            if not config_key or _is_dangerous_config_key(config_key):
-                has_redirect_override = True
         elif arg == "--config-env":
             has_config_override = True
-            has_redirect_override = True
-            index += 1
+            index += 1  # skip the env-var name token
         elif (
             arg.startswith("--config-env=")
             or arg == "--exec-path"
             or arg.startswith("--exec-path=")
         ):
             has_config_override = True
-            has_redirect_override = True
         elif arg == RESOLUTION_NOTE_FLAG:
             index += 1
             resolution_note = args[index] if index < len(args) else ""
@@ -246,7 +208,7 @@ def classify_paused_rebase_command(args: list[str]) -> PausedCommand:
     reason_text = _sanitize_note(reason) if reason is not None else None
     original = tuple(args)
 
-    if has_redirect_override:
+    if has_config_override:
         return PausedCommand("unsupported", note, reason_text, original)
 
     command_name = normalized[0] if normalized else ""
@@ -254,17 +216,13 @@ def classify_paused_rebase_command(args: list[str]) -> PausedCommand:
         return PausedCommand("unsupported", note, reason_text, original)
 
     if command_name == RESET_CONFLICT_COMMAND:
-        if has_config_override or len(normalized) != 1:
+        if len(normalized) != 1:
             return PausedCommand("unsupported", note, reason_text, original)
         return PausedCommand("reset", note, reason_text, original)
 
     if command_name != "rebase":
         if command_name in ALLOWED_PAUSED_COMMANDS:
             return PausedCommand("passthrough", note, reason_text, original)
-        return PausedCommand("unsupported", note, reason_text, original)
-
-    has_rebase = "rebase" in normalized
-    if has_rebase and has_config_override:
         return PausedCommand("unsupported", note, reason_text, original)
 
     if len(normalized) == 2 and normalized[0] == "rebase":
@@ -285,28 +243,17 @@ class RebaseState:
 
     # ----- logging --------------------------------------------------------
 
-    def log_client(self, message: str) -> None:
-        """Append a timestamped line to the shared client log."""
-
-        timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
-        try:
-            with self.config.client_log.open("a", encoding="utf-8") as handle:
-                _ = handle.write(f"{timestamp} {message}\n")
-        except OSError:
-            pass
-
     def emit_phase(self, phase: str, stream: str, message: str) -> None:
-        """Mirror the bash phase-message helper: console + client log."""
+        """Mirror the bash phase-message helper: print to the console stream."""
 
         target = sys.stderr if stream == "stderr" else sys.stdout
         print(f"[{phase}] {message}", file=target, flush=True)
-        self.log_client(f"[{phase}] {message}")
 
     def log_block(self, phase: str, text: str) -> None:
-        """Append a multi-line block to the client log under a phase prefix."""
+        """Print a multi-line block to stdout under a phase prefix."""
 
         for line in text.splitlines() or [""]:
-            self.log_client(f"[{phase}] {line}")
+            print(f"[{phase}] {line}", flush=True)
 
     # ----- real git -------------------------------------------------------
 
@@ -477,7 +424,7 @@ class RebaseState:
 
     # ----- host events ----------------------------------------------------
 
-    def emit_event(
+    def _emit_progress_record(
         self,
         event: str,
         step: int,
@@ -486,46 +433,36 @@ class RebaseState:
         subject: str,
         files: tuple[str, ...],
     ) -> None:
-        """Send one structured rebase event to the host events socket."""
+        """Log one rebase-progress record (authored in-container, shipped via structlog)."""
 
-        sock_path = self.config.events_sock
-        if not sock_path:
-            return
-
-        payload: dict[str, object] = {
-            "v": REBASE_EVENT_VERSION,
-            "event": event,
-            "step": step,
-            "total": total,
-        }
+        fields: dict[str, object] = {"step": step, "total": total}
         if sha:
-            payload["sha"] = sha
+            fields["sha"] = sha
         if subject:
-            payload["subject"] = subject
+            fields["subject"] = subject
         if files:
-            payload["files"] = list(files)
+            fields["files"] = list(files)
 
-        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        client.settimeout(1)
-        try:
-            client.connect(sock_path)
-            _ = client.sendall((json.dumps(payload) + "\n").encode("utf-8"))
-        except OSError as exc:
-            self.emit_phase(
-                "rebase",
-                "stderr",
-                f"Unable to emit structured rebase event {event}: {exc}",
+        if event == "conflict":
+            logger.warning(
+                f"conflict {step}/{total}", conflict_files=len(files), **fields
             )
-        finally:
-            client.close()
+        elif event == "complete":
+            logger.info("rebase complete", **fields)
+        elif event == "auto_skip":
+            logger.info(f"auto-skip {step}/{total}", **fields)
+        elif event == "reset":
+            logger.info(f"reset conflict {step}/{total}", **fields)
+        else:
+            logger.info(f"rebase {step}/{total}", **fields)
 
     def emit_event_from_snapshot(self, event: str) -> None:
-        """Emit an event built from the current progress snapshot, if any."""
+        """Emit a progress/conflict record built from the current snapshot, if any."""
 
         progress = self.read_progress()
         if progress is None:
             return
-        self.emit_event(
+        self._emit_progress_record(
             event,
             progress.step,
             progress.total,
@@ -535,7 +472,7 @@ class RebaseState:
         )
 
     def emit_paused_events(self) -> None:
-        """Emit the progress + conflict events for a freshly paused rebase.
+        """Emit the progress + conflict records for a freshly paused rebase.
 
         Also captures a pristine byte copy of the conflict index first, so a later
         `git reset-conflict` can restore this step after the agent has mutated it.
@@ -546,14 +483,14 @@ class RebaseState:
         self.emit_event_from_snapshot("conflict")
 
     def emit_complete_event(self, total: int) -> None:
-        """Emit the terminal completion event for a finished rebase."""
+        """Emit the terminal completion record for a finished rebase."""
 
         if total <= 0:
             return
-        self.emit_event("complete", total, total, "", "", ())
+        self._emit_progress_record("complete", total, total, "", "", ())
 
     def emit_post_transition_events(self, total: int) -> None:
-        """Emit paused events when still rebasing, else the completion event."""
+        """Emit paused records when still rebasing, else the completion record."""
 
         if self.rebase_in_progress():
             self.emit_paused_events()
@@ -673,10 +610,12 @@ class RebaseState:
         """
 
         total = 0
+        skipped_sha = ""
         progress = self.read_progress()
         if progress is not None:
             total = progress.total
-            self.emit_event(
+            skipped_sha = progress.sha
+            self._emit_progress_record(
                 "auto_skip",
                 progress.step,
                 progress.total,
@@ -686,6 +625,15 @@ class RebaseState:
             )
         self.emit_phase("rebase", "stdout", "Auto-skipping clean empty rebase stop")
         result = self.run_real_git("rebase", "--skip")
-        if result.returncode == 0:
+        # `git rebase --skip` exits non-zero whenever it pauses again on the next
+        # conflict -- a successful advance, not a failure -- so emit based on the
+        # resulting rebase state, not the exit code. Stay silent only when the skip
+        # did not advance (still paused on the same commit).
+        if not self.rebase_in_progress():
             self.emit_post_transition_events(total)
+        else:
+            new_identity = self.rebase_head_identity()
+            new_sha = new_identity[0] if new_identity else ""
+            if new_sha and new_sha != skipped_sha:
+                self.emit_post_transition_events(total)
         return result.returncode

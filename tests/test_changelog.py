@@ -52,6 +52,7 @@ from forklift.changelog_llm import (
     generate_conflict_review,
     generate_upstream_narrative,
 )
+from forklift.models_dev import Catalog
 from forklift.changelog_models import (
     ChangedFileStat,
     ChangelogReportSections,
@@ -69,12 +70,12 @@ from forklift.changelog_models import (
 from forklift.cli import Forklift
 from forklift.cli_runtime import DEFAULT_TARGET_POLICY
 from forklift.git import ResolvedUpstreamTarget
-from forklift.opencode_env import OpenCodeEnv
+from forklift.forklift_env import ForkliftEnv
 from forklift.changelog_renderer import (
     render_changelog_markdown,
     render_changelog_terminal,
 )
-from forklift.post_run_metrics import UsageSummary
+from forklift.usage_render import UsageSummary
 
 
 def lines(*rows: str) -> str:
@@ -355,14 +356,12 @@ class ChangelogLlmTests(unittest.TestCase):
     def test_generate_upstream_narrative_normalizes_model_and_uses_sanitized_prompt(
         self,
     ) -> None:
-        env = OpenCodeEnv(
-            api_key="opencode",
+        env = ForkliftEnv(
             model="google/gemini-3-flash-preview",
-            variant="default",
-            agent="worker",
-            server_password="pw",
-            server_port=4096,
-            google_generative_ai_api_key="google-key",
+            effort=None,
+            timeout_seconds=None,
+            google_api_key="google-key",
+            gemini_api_key="google-key",
         )
         captured: dict[str, str] = {}
 
@@ -382,9 +381,6 @@ class ChangelogLlmTests(unittest.TestCase):
                         "## Key Change Arcs\n"
                         "Upstream arc description."
                     ),
-                    response=SimpleNamespace(
-                        cost=lambda: SimpleNamespace(total_price=Decimal("0.0001875"))
-                    ),
                     usage=CallableUsage(
                         input_tokens=120,
                         output_tokens=45,
@@ -394,13 +390,24 @@ class ChangelogLlmTests(unittest.TestCase):
                     ),
                 )
 
+        catalog: Catalog = {
+            "google": {
+                "models": {
+                    "gemini-3-flash-preview": {
+                        "cost": {"input": 0.5, "output": 3.0, "cache_read": 0.05}
+                    }
+                }
+            }
+        }
         with patch.dict(os.environ, {}, clear=True):
             with patch("forklift.changelog_llm.Agent", FakeAgent):
                 output = asyncio.run(
-                    generate_upstream_narrative(self._sample_upstream_evidence(), env)
+                    generate_upstream_narrative(
+                        self._sample_upstream_evidence(), env, catalog
+                    )
                 )
 
-            self.assertEqual(captured["model"], "google-gla:gemini-3-flash-preview")
+            self.assertEqual(captured["model"], "google:gemini-3-flash-preview")
             self.assertEqual(captured["google_api_key"], "google-key")
             self.assertEqual(captured["gemini_api_key"], "google-key")
             self.assertNotIn("GOOGLE_API_KEY", os.environ)
@@ -424,16 +431,14 @@ class ChangelogLlmTests(unittest.TestCase):
         )
         self.assertEqual(output.usage.input_tokens, 120)
         self.assertEqual(output.usage.total_tokens, 165)
-        self.assertEqual(output.estimated_cost, Decimal("0.0001875"))
+        self.assertEqual(output.estimated_cost, Decimal("0.00019535"))
 
     def test_generate_conflict_review_uses_full_conflict_prompt(self) -> None:
-        env = OpenCodeEnv(
-            api_key="opencode",
+        env = ForkliftEnv(
             model="openai:gpt-5-mini",
-            variant="default",
-            agent="worker",
-            server_password="pw",
-            server_port=4096,
+            effort=None,
+            timeout_seconds=None,
+            openrouter_api_key="api",
         )
         captured: dict[str, str] = {}
 
@@ -453,9 +458,6 @@ class ChangelogLlmTests(unittest.TestCase):
                         "## Risk and Review Notes\n"
                         "- Review parser edge cases."
                     ),
-                    response=SimpleNamespace(
-                        cost=lambda: SimpleNamespace(total_price=Decimal("0.0003125"))
-                    ),
                     usage=CallableUsage(
                         input_tokens=140,
                         output_tokens=60,
@@ -466,7 +468,9 @@ class ChangelogLlmTests(unittest.TestCase):
                 )
 
         with patch("forklift.changelog_llm.Agent", FakeAgent):
-            output = asyncio.run(generate_conflict_review(self._sample_evidence(), env))
+            output = asyncio.run(
+                generate_conflict_review(self._sample_evidence(), env, {})
+            )
 
         self.assertEqual(captured["model"], "openai:gpt-5-mini")
         self.assertIn("## Conflict Pair Evaluations", captured["system_prompt"])
@@ -590,14 +594,12 @@ class ChangelogLlmTests(unittest.TestCase):
         self.assertIn("Do not leave unexplained labels", CONFLICT_REVIEW_SYSTEM_PROMPT)
 
     def test_generate_conflict_review_allows_missing_cost_lookup(self) -> None:
-        env = OpenCodeEnv(
-            api_key="opencode",
+        env = ForkliftEnv(
             model="google/gemini-3-flash-preview",
-            variant="default",
-            agent="worker",
-            server_password="pw",
-            server_port=4096,
-            google_generative_ai_api_key="google-key",
+            effort=None,
+            timeout_seconds=None,
+            google_api_key="google-key",
+            gemini_api_key="google-key",
         )
 
         class FakeAgent:
@@ -613,19 +615,13 @@ class ChangelogLlmTests(unittest.TestCase):
                         "## Risk and Review Notes\n"
                         "Review carefully."
                     ),
-                    response=SimpleNamespace(
-                        cost=lambda: (_ for _ in ()).throw(LookupError("missing price"))
-                    ),
                     usage=CallableUsage(input_tokens=1, output_tokens=1),
                 )
 
         with patch.dict(os.environ, {}, clear=True):
-            with (
-                patch("forklift.changelog_llm.Agent", FakeAgent),
-                patch("forklift.changelog_llm.logger.warning") as warning_mock,
-            ):
+            with patch("forklift.changelog_llm.Agent", FakeAgent):
                 output = asyncio.run(
-                    generate_conflict_review(self._sample_evidence(), env)
+                    generate_conflict_review(self._sample_evidence(), env, {})
                 )
 
         self.assertEqual(
@@ -636,12 +632,6 @@ class ChangelogLlmTests(unittest.TestCase):
             output.sections.risk_and_review_notes_markdown, "Review carefully."
         )
         self.assertIsNone(output.estimated_cost)
-        warning_mock.assert_called_once_with(
-            "Unable to estimate changelog model cost",
-            operation="conflict review",
-            model="google-gla:gemini-3-flash-preview",
-            error="missing price",
-        )
 
 
 class ChangelogRendererTests(unittest.TestCase):
@@ -1234,14 +1224,12 @@ class ChangelogAnalysisTests(unittest.TestCase):
 
 
 class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    def _dummy_env(self) -> OpenCodeEnv:
-        return OpenCodeEnv(
-            api_key="api",
+    def _dummy_env(self) -> ForkliftEnv:
+        return ForkliftEnv(
             model="openai:gpt-5-mini",
-            variant="default",
-            agent="worker",
-            server_password="pw",
-            server_port=4096,
+            effort=None,
+            timeout_seconds=None,
+            openrouter_api_key="api",
         )
 
     def _sample_evidence(self) -> EvidenceBundle:
@@ -1260,7 +1248,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
     def _patch_env(self, command: Changelog):
         return patch.object(
-            command, "_prepare_opencode_env", return_value=self._dummy_env()
+            command, "_prepare_forklift_env", return_value=self._dummy_env()
         )
 
     def _assert_markdown_sections(self, output: str) -> None:
@@ -1286,6 +1274,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             self._patch_env(command),
+            patch("forklift.changelog.load_catalog", return_value={}),
             patch(
                 "forklift.changelog.build_evidence_bundle",
                 return_value=self._sample_evidence(),
@@ -1383,6 +1372,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             self._patch_env(command),
+            patch("forklift.changelog.load_catalog", return_value={}),
             patch(
                 "forklift.changelog.build_evidence_bundle",
                 return_value=self._sample_evidence(),
@@ -1458,6 +1448,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             self._patch_env(command),
+            patch("forklift.changelog.load_catalog", return_value={}),
             patch(
                 "forklift.changelog.build_evidence_bundle",
                 return_value=self._sample_evidence(),
@@ -1472,7 +1463,16 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             ),
             patch(
                 "forklift.changelog.generate_conflict_review",
-                new=AsyncMock(),
+                new=AsyncMock(
+                    return_value=ConflictReviewResult(
+                        sections=ConflictReviewSections(
+                            conflict_pair_evaluations_markdown="### `src/conflict.py`\n- Fork-side intent: Review carefully.",
+                            risk_and_review_notes_markdown="- Check parser edge cases.",
+                        ),
+                        usage=RunUsage(input_tokens=2, output_tokens=2),
+                        estimated_cost=Decimal("0.0002"),
+                    )
+                ),
             ),
             patch("forklift.changelog.render_changelog_terminal") as render_mock,
             patch("forklift.changelog.render_usage_summary") as usage_mock,
@@ -1482,7 +1482,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotEqual(ctx.exception.code, 0)
         render_mock.assert_not_called()
-        usage_mock.assert_not_called()
+        usage_mock.assert_called_once()
 
     async def test_conflict_llm_failure_exits_nonzero_without_fallback_render(
         self,
@@ -1491,6 +1491,7 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
         with (
             self._patch_env(command),
+            patch("forklift.changelog.load_catalog", return_value={}),
             patch(
                 "forklift.changelog.build_evidence_bundle",
                 return_value=self._sample_evidence(),
@@ -1515,6 +1516,38 @@ class ChangelogCommandIntegrationTests(unittest.IsolatedAsyncioTestCase):
             patch(
                 "forklift.changelog.generate_conflict_review",
                 new=AsyncMock(side_effect=ChangelogLlmError("model auth failed")),
+            ),
+            patch("forklift.changelog.render_changelog_terminal") as render_mock,
+            patch("forklift.changelog.render_usage_summary") as usage_mock,
+        ):
+            with self.assertRaises(SystemExit) as ctx:
+                await command.run()
+
+        self.assertNotEqual(ctx.exception.code, 0)
+        render_mock.assert_not_called()
+        usage_mock.assert_called_once()
+
+    async def test_both_llm_failures_skip_usage_render(self) -> None:
+        command = Changelog(main_branch="main")
+
+        with (
+            self._patch_env(command),
+            patch("forklift.changelog.load_catalog", return_value={}),
+            patch(
+                "forklift.changelog.build_evidence_bundle",
+                return_value=self._sample_evidence(),
+            ),
+            patch(
+                "forklift.changelog.build_upstream_narrative_evidence",
+                return_value=build_upstream_narrative_evidence(self._sample_evidence()),
+            ),
+            patch(
+                "forklift.changelog.generate_upstream_narrative",
+                new=AsyncMock(side_effect=ChangelogLlmError("boom")),
+            ),
+            patch(
+                "forklift.changelog.generate_conflict_review",
+                new=AsyncMock(side_effect=ChangelogLlmError("boom")),
             ),
             patch("forklift.changelog.render_changelog_terminal") as render_mock,
             patch("forklift.changelog.render_usage_summary") as usage_mock,

@@ -18,11 +18,11 @@ from .changelog_analysis import (
     build_upstream_narrative_evidence,
 )
 from .changelog_llm import (
-    ChangelogLlmError,
     generate_conflict_review,
     generate_upstream_narrative,
 )
 from .changelog_models import ChangelogReportSections
+from .models_dev import load_catalog
 from .changelog_renderer import render_changelog_markdown, render_changelog_terminal
 from .cli_runtime import (
     DEFAULT_TARGET_POLICY,
@@ -30,13 +30,13 @@ from .cli_runtime import (
     resolved_main_branch,
     resolved_target_policy,
 )
-from .opencode_env import (
+from .forklift_env import (
     DEFAULT_ENV_PATH,
-    OpenCodeEnv,
-    OpenCodeEnvError,
-    load_opencode_env,
+    ForkliftEnv,
+    ForkliftEnvError,
+    load_forklift_env,
 )
-from .post_run_metrics import UsageSummary, UsageTotals, render_usage_summary
+from .usage_render import UsageSummary, UsageTotals, render_usage_summary
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 
@@ -412,13 +412,8 @@ class Changelog(Command):
         help="Upstream target policy: 'tip' or 'latest-version' (default: latest-version)",
     )
     model: str | None = arg(
-        None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/)."
-    )
-    variant: str | None = arg(
-        None, help="Override OPENCODE_VARIANT (letters, numbers, punctuation ._-/)."
-    )
-    agent: str | None = arg(
-        None, help="Override OPENCODE_AGENT (letters, numbers, punctuation ._-/)."
+        None,
+        help="Override FORKLIFT_MODEL (e.g. 'openrouter:google/gemini-2.5-flash').",
     )
 
     @override
@@ -430,7 +425,7 @@ class Changelog(Command):
         repo_path = self._resolve_repo_path()
         branch = resolved_main_branch(self.main_branch)
         target_policy = resolved_target_policy(self.target_policy)
-        env = self._prepare_opencode_env()
+        env = self._prepare_forklift_env()
         started_at = time.perf_counter()
 
         try:
@@ -442,44 +437,64 @@ class Changelog(Command):
                 exclusion_patterns=exclusion_patterns,
             )
             upstream_evidence = build_upstream_narrative_evidence(evidence)
-            upstream_result, conflict_result = await asyncio.gather(
-                generate_upstream_narrative(upstream_evidence, env),
-                generate_conflict_review(evidence, env),
-            )
-        except (ChangelogAnalysisError, ChangelogLlmError) as exc:
+        except ChangelogAnalysisError as exc:
             logger.error("forklift changelog failed", error=str(exc))
             raise SystemExit(1) from exc
 
+        catalog = load_catalog()
+        upstream_outcome, conflict_outcome = await asyncio.gather(
+            generate_upstream_narrative(upstream_evidence, env, catalog),
+            generate_conflict_review(evidence, env, catalog),
+            return_exceptions=True,
+        )
         wall_clock_ms = int((time.perf_counter() - started_at) * 1000)
-        combined_usage = combine_run_usages(
-            [
-                upstream_result.usage,
-                conflict_result.usage,
+
+        # Collect usage for every call that completed, so we always report the
+        # tokens we paid for -- even when the sibling call failed.
+        usages: list[RunUsage] = []
+        costs: list[Decimal | None] = []
+        for outcome in (upstream_outcome, conflict_outcome):
+            if not isinstance(outcome, BaseException):
+                usages.append(outcome.usage)
+                costs.append(outcome.estimated_cost)
+        usage_summary = (
+            build_changelog_usage_summary(
+                combine_run_usages(usages),
+                wall_clock_ms,
+                estimated_cost=sum_estimated_costs(costs),
+            )
+            if usages
+            else None
+        )
+
+        if isinstance(upstream_outcome, BaseException) or isinstance(
+            conflict_outcome, BaseException
+        ):
+            if usage_summary is not None:
+                render_usage_summary("changelog", usage_summary)
+            failures = [
+                outcome
+                for outcome in (upstream_outcome, conflict_outcome)
+                if isinstance(outcome, BaseException)
             ]
-        )
-        usage_summary = build_changelog_usage_summary(
-            combined_usage,
-            wall_clock_ms,
-            estimated_cost=sum_estimated_costs(
-                [
-                    upstream_result.estimated_cost,
-                    conflict_result.estimated_cost,
-                ]
-            ),
-        )
+            for failure in failures:
+                logger.error("forklift changelog failed", error=str(failure))
+            raise SystemExit(1) from failures[0]
+
         sections = ChangelogReportSections(
-            summary_markdown=upstream_result.sections.summary_markdown,
-            key_change_arcs_markdown=upstream_result.sections.key_change_arcs_markdown,
+            summary_markdown=upstream_outcome.sections.summary_markdown,
+            key_change_arcs_markdown=upstream_outcome.sections.key_change_arcs_markdown,
             conflict_pair_evaluations_markdown=(
-                conflict_result.sections.conflict_pair_evaluations_markdown
+                conflict_outcome.sections.conflict_pair_evaluations_markdown
             ),
             risk_and_review_notes_markdown=(
-                conflict_result.sections.risk_and_review_notes_markdown
+                conflict_outcome.sections.risk_and_review_notes_markdown
             ),
         )
         markdown = render_changelog_markdown(evidence, sections)
         render_changelog_terminal(markdown)
-        render_usage_summary("changelog", usage_summary)
+        if usage_summary is not None:
+            render_usage_summary("changelog", usage_summary)
 
     def _resolve_repo_path(self) -> Path:
         """Resolve repo path using current working directory when not explicitly provided."""
@@ -488,22 +503,17 @@ class Changelog(Command):
         base = Path.cwd() if raw is None else Path(raw)
         return base.expanduser().resolve()
 
-    def _prepare_opencode_env(self) -> OpenCodeEnv:
-        """Load OpenCode credentials and apply optional CLI model-routing overrides."""
+    def _prepare_forklift_env(self) -> ForkliftEnv:
+        """Load Forklift credentials and apply the optional CLI model override."""
 
         try:
-            env = load_opencode_env(DEFAULT_ENV_PATH)
-        except OpenCodeEnvError as exc:
+            env = load_forklift_env(DEFAULT_ENV_PATH)
+        except ForkliftEnvError as exc:
             logger.error(
-                "Failed to load OpenCode config for changelog command",
+                "Failed to load Forklift config for changelog command",
                 path=str(DEFAULT_ENV_PATH),
                 error=str(exc),
             )
             raise SystemExit(1) from exc
 
-        return apply_cli_overrides(
-            env,
-            model=self.model,
-            variant=self.variant,
-            agent=self.agent,
-        )
+        return apply_cli_overrides(env, model=self.model)

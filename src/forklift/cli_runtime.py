@@ -8,7 +8,7 @@ import structlog
 from structlog.stdlib import BoundLogger
 from typing import cast
 
-from .opencode_env import OpenCodeEnv, SAFE_VALUE_PATTERN
+from .forklift_env import ForkliftEnv, MODEL_VALUE_PATTERN, SAFE_VALUE_PATTERN
 
 logger: BoundLogger = cast(BoundLogger, structlog.get_logger(__name__))
 DEFAULT_TARGET_POLICY = "latest-version"
@@ -21,7 +21,7 @@ DEFAULT_RUN_TIMEOUT_SECONDS = 1500
 
 
 def build_container_env(
-    env: OpenCodeEnv,
+    env: ForkliftEnv,
     main_branch: str,
     run_id: str,
     *,
@@ -71,20 +71,14 @@ def contains_control_characters(value: str) -> bool:
 
 
 def apply_cli_overrides(
-    env: OpenCodeEnv,
+    env: ForkliftEnv,
     *,
     model: str | None,
-    variant: str | None,
-    agent: str | None,
-) -> OpenCodeEnv:
-    """Apply CLI override flags for OpenCode model/variant/agent settings."""
+) -> ForkliftEnv:
+    """Apply the CLI model-routing override for the run."""
 
     resolved_model = validated_override(model, env.model, "model")
-    resolved_variant = validated_override(variant, env.variant, "variant")
-    resolved_agent = validated_override(agent, env.agent, "agent")
-    return replace(
-        env, model=resolved_model, variant=resolved_variant, agent=resolved_agent
-    )
+    return replace(env, model=resolved_model)
 
 
 def validated_override(
@@ -92,16 +86,16 @@ def validated_override(
     current: str | None,
     label: str,
 ) -> str | None:
-    """Validate a single CLI override against the safe-value pattern."""
+    """Validate the CLI model override against the model-id pattern."""
 
     if override is None:
         return current
-    if not SAFE_VALUE_PATTERN.fullmatch(override):
+    if not MODEL_VALUE_PATTERN.fullmatch(override):
         logger.error(
             "Invalid %s value %r; expected pattern %s",
             label,
             override,
-            SAFE_VALUE_PATTERN.pattern,
+            MODEL_VALUE_PATTERN.pattern,
         )
         raise SystemExit(1)
     return override

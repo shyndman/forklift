@@ -2,18 +2,17 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from collections.abc import Sequence
 from dataclasses import replace
 from importlib import metadata
 from pathlib import Path
-from shlex import quote as shell_quote
 from typing import override
 
 import structlog
-from clypi import Command, arg, boxed
+from clypi import Command, arg
 from clypi._cli import arg_parser
 from libsh.logs import get_logger, setup_logging_from_env
-from rich.console import Console
 from rich.traceback import install as install_rich_traceback
 
 from .changelog import Changelog
@@ -52,8 +51,7 @@ from .cli_runtime import (
     resolved_main_branch,
     resolved_target_policy,
 )
-from .clientlog import Clientlog
-from .container_runner import ContainerRunner, RebaseEvent
+from .container_runner import ContainerRunner
 from .errors import (
     ContainerExitError,
     ContainerTimeoutError,
@@ -80,17 +78,13 @@ from .git import (
     run_git,
 )
 from .logs import build_renderer
-from .opencode_env import (
+from .forklift_env import (
     DEFAULT_ENV_PATH,
-    OpenCodeEnv,
-    OpenCodeEnvError,
-    load_opencode_env,
+    ForkliftEnv,
+    ForkliftEnvError,
+    load_forklift_env,
 )
-from .post_run_metrics import (
-    parse_usage_summary,
-    render_completion_report,
-    render_usage_summary,
-)
+from .run_summary import build_run_summary, emit_run_summary
 from .run_manager import RunDirectoryManager, RunPaths
 
 setup_logging_from_env()
@@ -101,9 +95,6 @@ AGENT_EMAIL = AUTHORSHIP_AGENT_EMAIL
 STASH_MESSAGE = AUTHORSHIP_STASH_MESSAGE
 FILTER_REPO_INSTALL_HELP = AUTHORSHIP_FILTER_REPO_INSTALL_HELP
 HARNESS_STATUS_FILE_NAME = "harness-status.txt"
-CLIENT_LOG_TAIL_LINES = 120
-CLIENTLOG_HINT_TITLE = "Client log tail command"
-CLIENTLOG_HINT_TEMPLATE = "forklift clientlog {run_dir_name} --follow"
 INSTRUCTION_OPTION = "--instruction"
 INSTRUCTION_VALUE_HINT = "Use --instruction='...'."
 
@@ -145,7 +136,7 @@ def outcome_label(err: ForkliftError) -> str:
 class Forklift(Command):
     """Primary entrypoint for the Forklift host orchestrator."""
 
-    subcommand: Changelog | Clientlog | Files | First | None = None
+    subcommand: Changelog | Files | First | None = None
     repo: Path | str | None = None
     main_branch: str = arg(
         "main", help="Name of the primary branch to rebase (default: main)"
@@ -161,13 +152,8 @@ class Forklift(Command):
     debug: bool = arg(False, short="d", help="Enable debug logging")
     version: bool = arg(False, short="v", help="Print version and exit")
     model: str | None = arg(
-        None, help="Override OPENCODE_MODEL (letters, numbers, punctuation ._-/)."
-    )
-    variant: str | None = arg(
-        None, help="Override OPENCODE_VARIANT (letters, numbers, punctuation ._-/)."
-    )
-    agent: str | None = arg(
-        None, help="Override OPENCODE_AGENT (letters, numbers, punctuation ._-/)."
+        None,
+        help="Override FORKLIFT_MODEL (e.g. 'openrouter:google/gemini-2.5-flash').",
     )
     forward_tz: bool = arg(False, help="Forward the host TZ variable into the sandbox")
     chown: str | None = arg(
@@ -195,7 +181,7 @@ class Forklift(Command):
         _ = run_manager.cleanup_expired_runs()
 
         run_paths: RunPaths | None = None
-        agent_log_path: Path | None = None
+        run_duration_s = 0.0
         outcome = "success"
         exit_code = 0
         try:
@@ -204,7 +190,7 @@ class Forklift(Command):
             target_policy = self._resolved_target_policy()
             agent_lifetime = self._resolved_agent_lifetime()
             extra_instructions = self._validated_instructions()
-            opencode_env = self._prepare_opencode_env()
+            forklift_env = self._prepare_forklift_env()
             chown_uid, chown_gid = self._resolve_chown_target()
 
             remotes = self._discover_required_remotes(repo_path)
@@ -259,47 +245,33 @@ class Forklift(Command):
                 run_dir=run_paths.run_dir,
                 workspace=run_paths.workspace,
                 harness_state=run_paths.harness_state,
-                opencode_logs=run_paths.opencode_logs,
                 control_dir=run_paths.control_dir,
             )
-            self._emit_clientlog_hint(run_paths.run_dir.name)
 
             timeout_seconds = self._resolved_timeout_seconds(
-                opencode_env.timeout_seconds
+                forklift_env.timeout_seconds
             )
-            container_opencode_env = replace(
-                opencode_env, timeout_seconds=timeout_seconds
+            container_forklift_env = replace(
+                forklift_env, timeout_seconds=timeout_seconds
             )
+            run_started = time.monotonic()
             container_runner = ContainerRunner(timeout_seconds=timeout_seconds)
             container_result = container_runner.run(
                 run_paths.workspace,
                 run_paths.harness_state,
-                run_paths.opencode_logs,
                 run_paths.control_dir,
                 run_paths.run_dir / "run-state.json",
                 self._build_container_env(
-                    container_opencode_env,
+                    container_forklift_env,
                     main_branch,
                     run_paths.run_id,
                     agent_lifetime,
                 ),
-                event_callback=self._log_rebase_event,
             )
-
-            agent_log_path = run_paths.harness_state / "opencode-client.log"
-            if agent_log_path.exists():
-                logger.info("Agent log transcript available", path=agent_log_path)
-            else:
-                logger.warning(
-                    "Agent log transcript missing; harness may not have emitted logs.",
-                    path=agent_log_path,
-                )
+            run_duration_s = time.monotonic() - run_started
 
             self._chown_artifact(
                 run_paths.harness_state, "harness-state", chown_uid, chown_gid
-            )
-            self._chown_artifact(
-                run_paths.opencode_logs, "opencode-logs", chown_uid, chown_gid
             )
 
             if container_result.timed_out:
@@ -324,11 +296,14 @@ class Forklift(Command):
             outcome = outcome_label(err)
             exit_code = exit_code_for(err)
 
-        if run_paths is not None and agent_log_path is not None:
-            self._render_terminal_summary(
-                outcome,
-                agent_log_path,
-                run_paths.harness_state,
+        if run_paths is not None:
+            emit_run_summary(
+                logger,
+                build_run_summary(
+                    run_paths.harness_state,
+                    outcome=outcome,
+                    duration_s=run_duration_s,
+                ),
             )
         if exit_code != 0:
             raise SystemExit(exit_code)
@@ -365,37 +340,6 @@ class Forklift(Command):
             cache_logger_on_first_use=True,
         )
         structlog.contextvars.clear_contextvars()
-
-    def _log_rebase_event(self, event: RebaseEvent) -> None:
-        fields: dict[str, object] = {"step": event.step, "total": event.total}
-        if event.sha is not None:
-            fields["sha"] = event.sha
-        if event.subject is not None:
-            fields["subject"] = event.subject
-        if event.files:
-            fields["files"] = ", ".join(event.files)
-
-        match event.event:
-            case "progress":
-                logger.info(f"Rebase {event.step}/{event.total}", **fields)
-            case "conflict":
-                logger.warning(
-                    f"Conflict {event.step}/{event.total}",
-                    conflict_files=len(event.files),
-                    **fields,
-                )
-            case "continue":
-                logger.info(f"Continue {event.step}/{event.total}", **fields)
-            case "skip":
-                logger.info(f"Skip {event.step}/{event.total}", **fields)
-            case "auto_skip":
-                logger.info(f"Auto-skip {event.step}/{event.total}", **fields)
-            case "abort":
-                logger.info(f"Abort {event.step}/{event.total}", **fields)
-            case "complete":
-                logger.info("Rebase complete", **fields)
-            case _:
-                logger.info("Rebase event", rebase_event=event.event, **fields)
 
     def _resolve_repo_path(self) -> Path:
         raw = self.repo
@@ -539,59 +483,6 @@ class Forklift(Command):
             ensure_upstream_merged_fn=ensure_upstream_merged,
         )
 
-    def _render_terminal_summary(
-        self,
-        outcome: str,
-        agent_log_path: Path,
-        harness_state: Path,
-    ) -> None:
-        """Emit the terminal-end usage summary and completion report exactly once."""
-
-        summary = parse_usage_summary(agent_log_path, harness_state=harness_state)
-        console = Console()
-        render_usage_summary(outcome, summary, console=console)
-        _ = render_completion_report(harness_state=harness_state, console=console)
-
-    def _log_client_failure_details(self, harness_state: Path) -> None:
-        """Emit the agent client log tail so harness failures are visible in host logs."""
-
-        self._log_harness_log_tail(
-            harness_state / "opencode-client.log",
-            label="Agent log tail",
-            tail_lines=CLIENT_LOG_TAIL_LINES,
-        )
-
-    def _log_harness_log_tail(
-        self, log_path: Path, *, label: str, tail_lines: int
-    ) -> None:
-        """Emit a bounded tail from a harness artifact when runs fail."""
-
-        if not log_path.exists():
-            return
-
-        try:
-            log_text = log_path.read_text(encoding="utf-8")
-        except OSError as exc:
-            logger.warning(
-                "Unable to read harness log after failed run",
-                path=log_path,
-                error=str(exc),
-            )
-            return
-
-        if not log_text.strip():
-            return
-
-        lines = log_text.splitlines()
-        log_tail = "\n".join(lines[-tail_lines:])
-        logger.error(
-            label,
-            path=log_path,
-            total_lines=len(lines),
-            tail_lines=min(len(lines), tail_lines),
-            output=log_tail,
-        )
-
     def _require_successful_harness_completion(self, harness_state: Path) -> None:
         """Fail closed unless the harness explicitly reports successful completion."""
 
@@ -607,7 +498,6 @@ class Forklift(Command):
             phase=status.get("phase"),
             message=status.get("message"),
         )
-        self._log_client_failure_details(harness_state)
         raise HarnessIncompleteError("harness did not report successful completion")
 
     def _read_harness_status(self, status_path: Path) -> dict[str, str]:
@@ -644,12 +534,6 @@ class Forklift(Command):
     def _workspace_has_changes(self, workspace: Path) -> bool:
         return workspace_has_changes(workspace)
 
-    def _emit_clientlog_hint(self, run_dir_name: str) -> None:
-        """Print a boxed command for tailing the current run's client transcript."""
-
-        command = CLIENTLOG_HINT_TEMPLATE.format(run_dir_name=shell_quote(run_dir_name))
-        print(boxed(command, title=CLIENTLOG_HINT_TITLE), flush=True)
-
     def _rewrite_and_publish_local(
         self,
         repo_path: Path,
@@ -679,28 +563,27 @@ class Forklift(Command):
     ) -> None:
         log_rewrite_summary(repo_path, result)
 
-    def _prepare_opencode_env(self) -> OpenCodeEnv:
+    def _prepare_forklift_env(self) -> ForkliftEnv:
         try:
-            env = load_opencode_env(DEFAULT_ENV_PATH)
-        except OpenCodeEnvError as exc:
+            env = load_forklift_env(DEFAULT_ENV_PATH)
+        except ForkliftEnvError as exc:
             logger.exception(
-                "Failed to load OpenCode config from %s: %s",
+                "Failed to load Forklift config from %s: %s",
                 DEFAULT_ENV_PATH,
                 exc,
             )
-            raise SetupError("OpenCode env load failed") from exc
-        logger.info("Loaded OpenCode env", path=DEFAULT_ENV_PATH)
+            raise SetupError("Forklift env load failed") from exc
+        logger.info("Loaded Forklift env", path=DEFAULT_ENV_PATH)
         logger.debug(
-            "Forwarding OpenCode configuration: model=%s variant=%s agent=%s",
+            "Forwarding Forklift configuration: model=%s effort=%s",
             env.model or "(default)",
-            env.variant,
-            env.agent,
+            env.effort or "(default)",
         )
         return self._apply_cli_overrides(env)
 
     def _build_container_env(
         self,
-        env: OpenCodeEnv,
+        env: ForkliftEnv,
         main_branch: str,
         run_id: str,
         agent_lifetime: str,
@@ -713,12 +596,10 @@ class Forklift(Command):
             agent_lifetime=agent_lifetime,
         )
 
-    def _apply_cli_overrides(self, env: OpenCodeEnv) -> OpenCodeEnv:
+    def _apply_cli_overrides(self, env: ForkliftEnv) -> ForkliftEnv:
         return apply_cli_overrides(
             env,
             model=self.model,
-            variant=self.variant,
-            agent=self.agent,
         )
 
     def _resolved_main_branch(self) -> str:

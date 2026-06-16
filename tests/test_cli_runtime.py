@@ -1,16 +1,13 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
 from contextlib import ExitStack
-from io import StringIO
 from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
 from typing import cast
 
-from rich.console import Console
 
 from forklift.cli import Forklift, HARNESS_STATUS_FILE_NAME, parse_forklift_args
 from forklift.cli import exit_code_for, outcome_label
@@ -24,7 +21,10 @@ from forklift.errors import (
     UpstreamNotMergedError,
 )
 from forklift.cli_authorship import OperatorIdentity
+from dataclasses import replace
+
 from forklift.cli_runtime import (
+    apply_cli_overrides,
     DEFAULT_TARGET_POLICY,
     DEFAULT_RUN_TIMEOUT_SECONDS,
     HOST_GID_ENV,
@@ -36,13 +36,10 @@ from forklift.cli_runtime import (
     resolved_timeout_seconds,
     resolved_target_policy,
 )
-from forklift.container_runner import ContainerRunResult, RebaseEvent
+from forklift.container_runner import ContainerRunResult
 from forklift.git import ResolvedUpstreamTarget
-from forklift.opencode_env import OpenCodeEnv
-from forklift.post_run_metrics import (
-    UsageSummary,
-    render_usage_summary as real_render_usage_summary,
-)
+from forklift.forklift_env import ForkliftEnv
+from forklift.run_summary import RunSummary
 from forklift.run_manager import RunPaths
 
 
@@ -61,13 +58,11 @@ class CliRuntimeHelperTests(unittest.TestCase):
         self.assertEqual(gid, 456)
 
     def test_build_container_env_includes_required_keys(self) -> None:
-        env = OpenCodeEnv(
-            api_key="abc",
+        env = ForkliftEnv(
             model="model-x",
-            variant="default",
-            agent="worker",
-            server_password="pw",
-            server_port=4096,
+            effort=None,
+            timeout_seconds=None,
+            openrouter_api_key="api",
         )
         with (
             patch.dict(os.environ, {"TZ": "America/Vancouver"}, clear=False),
@@ -169,32 +164,26 @@ class CliRuntimeHelperTests(unittest.TestCase):
 
 
 class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    def _dummy_env(self, *, timeout_seconds: int | None = None) -> OpenCodeEnv:
-        return OpenCodeEnv(
-            api_key="api",
+    def _dummy_env(self, *, timeout_seconds: int | None = None) -> ForkliftEnv:
+        return ForkliftEnv(
             model=None,
-            variant="default",
-            agent="worker",
+            effort=None,
             timeout_seconds=timeout_seconds,
-            server_password="pw",
-            server_port=4096,
+            openrouter_api_key="api",
         )
 
     def _run_paths(self, root: Path) -> RunPaths:
         run_dir = root / "run"
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
-        opencode_logs = run_dir / "opencode-logs"
         control_dir = run_dir / "control"
         workspace.mkdir(parents=True, exist_ok=True)
         harness_state.mkdir(parents=True, exist_ok=True)
-        opencode_logs.mkdir(parents=True, exist_ok=True)
         control_dir.mkdir(parents=True, exist_ok=True)
         return RunPaths(
             run_dir=run_dir,
             workspace=workspace,
             harness_state=harness_state,
-            opencode_logs=opencode_logs,
             control_dir=control_dir,
             run_id="R123",
         )
@@ -203,7 +192,6 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self,
         *,
         container_result: ContainerRunResult,
-        container_events: list[RebaseEvent] | None = None,
         instructions: list[str] | None = None,
         post_run_side_effect: Exception | None = None,
         monitor_logger_after_footer: bool = False,
@@ -221,7 +209,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     harness_status_content,
                     encoding="utf-8",
                 )
-            footer_output = StringIO()
+            captured_outcome: str | None = None
             logger_events: list[tuple[str, bool, str | None]] = []
             footer_started = False
 
@@ -232,41 +220,26 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
 
                 return _record
 
-            def render_with_marker(
-                outcome: str,
-                summary: UsageSummary,
-                *,
-                console: Console | None = None,
-            ) -> None:
-                nonlocal footer_started
+            def capture_summary(_logger: object, summary: RunSummary) -> None:
+                nonlocal footer_started, captured_outcome
                 footer_started = True
-                real_render_usage_summary(outcome, summary, console=console)
+                captured_outcome = summary.outcome
 
             class _ContainerRunnerStub:
                 _result: ContainerRunResult
-                _events: list[RebaseEvent]
                 timeout_seconds: int
 
                 def __init__(
                     self,
                     result: ContainerRunResult,
                     timeout: int | None,
-                    events: list[RebaseEvent] | None,
                 ) -> None:
                     self._result = result
-                    self._events = list(events or [])
                     self.timeout_seconds = (
                         timeout if timeout is not None else DEFAULT_RUN_TIMEOUT_SECONDS
                     )
 
                 def run(self, *_args: object, **_kwargs: object) -> ContainerRunResult:
-                    event_callback = cast(
-                        Callable[[RebaseEvent], None] | None,
-                        _kwargs.get("event_callback"),
-                    )
-                    if event_callback is not None:
-                        for event in self._events:
-                            event_callback(event)
                     return self._result
 
             forklift = Forklift()
@@ -316,7 +289,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 _ = stack.enter_context(
                     patch.object(
                         Forklift,
-                        "_prepare_opencode_env",
+                        "_prepare_forklift_env",
                         return_value=self._dummy_env(
                             timeout_seconds=env_timeout_seconds
                         ),
@@ -359,9 +332,6 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     patch.object(Forklift, "_chown_artifact", return_value=None)
                 )
                 _ = stack.enter_context(
-                    patch.object(Forklift, "_emit_clientlog_hint", return_value=None)
-                )
-                _ = stack.enter_context(
                     patch(
                         "forklift.cli.RunDirectoryManager.cleanup_expired_runs",
                         return_value=None,
@@ -386,29 +356,11 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 container_runner_cls.return_value = _ContainerRunnerStub(
                     container_result,
                     effective_timeout,
-                    container_events,
                 )
                 _ = stack.enter_context(
                     patch(
-                        "forklift.cli.parse_usage_summary",
-                        return_value=UsageSummary.unavailable("no usage events found"),
-                    )
-                )
-                _ = stack.enter_context(
-                    patch(
-                        "forklift.cli.render_usage_summary",
-                        side_effect=render_with_marker,
-                    )
-                )
-                _ = stack.enter_context(
-                    patch(
-                        "forklift.cli.Console",
-                        return_value=Console(
-                            file=footer_output,
-                            force_terminal=False,
-                            color_system=None,
-                            width=80,
-                        ),
+                        "forklift.cli.emit_run_summary",
+                        side_effect=capture_summary,
                     )
                 )
                 _ = stack.enter_context(post_run_patch)
@@ -427,12 +379,12 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         env_arg = cast(
                             object, build_container_env_mock.call_args.args[0]
                         )
-                        if isinstance(env_arg, OpenCodeEnv):
+                        if isinstance(env_arg, ForkliftEnv):
                             constructor_kwargs["build_env_timeout_seconds"] = (
                                 env_arg.timeout_seconds
                             )
                     return (
-                        footer_output.getvalue(),
+                        captured_outcome or "",
                         self._exit_code(exc.code),
                         logger_events,
                         constructor_kwargs,
@@ -445,11 +397,11 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
             if build_container_env_mock.call_args is not None:
                 env_arg = cast(object, build_container_env_mock.call_args.args[0])
-                if isinstance(env_arg, OpenCodeEnv):
+                if isinstance(env_arg, ForkliftEnv):
                     constructor_kwargs["build_env_timeout_seconds"] = (
                         env_arg.timeout_seconds
                     )
-            return footer_output.getvalue(), None, logger_events, constructor_kwargs
+            return captured_outcome or "", None, logger_events, constructor_kwargs
 
     def _exit_code(self, code: object) -> int:
         if isinstance(code, bool):
@@ -470,7 +422,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
         )
         self.assertIsNone(success_code)
-        self.assertIn("Run complete: success", success_output)
+        self.assertEqual(success_output, "success")
 
         failure_output, failure_code, _, _ = await self._run_cli(
             container_result=ContainerRunResult(
@@ -482,7 +434,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             )
         )
         self.assertEqual(failure_code, 9)
-        self.assertIn("Run complete: failure", failure_output)
+        self.assertEqual(failure_output, "failure")
 
     async def test_cli_timeout_override_is_forwarded_to_container_runner(self) -> None:
         _, exit_code, _, constructor_kwargs = await self._run_cli(
@@ -501,7 +453,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(constructor_kwargs.get("timeout_seconds"), 37)
         self.assertEqual(constructor_kwargs.get("build_env_timeout_seconds"), 37)
 
-    async def test_opencode_env_timeout_is_used_when_cli_timeout_missing(self) -> None:
+    async def test_forklift_env_timeout_is_used_when_cli_timeout_missing(self) -> None:
         _, exit_code, _, constructor_kwargs = await self._run_cli(
             container_result=ContainerRunResult(
                 exit_code=0,
@@ -569,7 +521,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(exit_code, 2)
-        self.assertIn("Run complete: timed out", output)
+        self.assertEqual(output, "timed out")
 
     async def test_missing_harness_completion_marker_fails_closed(self) -> None:
         output, exit_code, _, _ = await self._run_cli(
@@ -584,7 +536,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("Run complete: failure", output)
+        self.assertEqual(output, "failure")
 
     async def test_failed_harness_marker_blocks_post_run_verification(self) -> None:
         output, exit_code, _, _ = await self._run_cli(
@@ -600,7 +552,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(exit_code, 1)
-        self.assertIn("Run complete: failure", output)
+        self.assertEqual(output, "failure")
 
     async def test_logger_calls_stop_after_footer_begins(self) -> None:
         output, exit_code, logger_events, _ = await self._run_cli(
@@ -615,7 +567,7 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(exit_code, 5)
-        self.assertIn("Run complete: failure", output)
+        self.assertEqual(output, "failure")
         self.assertTrue(logger_events)
         self.assertFalse(any(after_footer for _, after_footer, _ in logger_events))
 
@@ -637,112 +589,6 @@ class CliRuntimeFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("Container stdout", logged_messages)
         self.assertNotIn("Container stderr", logged_messages)
 
-    async def test_rebase_events_render_front_loaded_ordinals(self) -> None:
-        captured: list[tuple[str, str, dict[str, object]]] = []
-
-        def record(level: str):
-            def _record(message: str, **kwargs: object) -> None:
-                captured.append((level, message, dict(kwargs)))
-
-            return _record
-
-        with (
-            patch("forklift.cli.logger.info", side_effect=record("info")),
-            patch("forklift.cli.logger.warning", side_effect=record("warning")),
-        ):
-            _, exit_code, _, _ = await self._run_cli(
-                container_result=ContainerRunResult(
-                    exit_code=0,
-                    timed_out=False,
-                    stdout="",
-                    stderr="",
-                    container_name="forklift-test",
-                ),
-                container_events=[
-                    RebaseEvent(
-                        event="progress",
-                        step=5,
-                        total=31,
-                        sha="abc123",
-                        subject="Rename auth middleware",
-                    ),
-                    RebaseEvent(
-                        event="conflict",
-                        step=5,
-                        total=31,
-                        sha="abc123",
-                        subject="Rename auth middleware",
-                        files=("src/auth.py", "tests/test_auth.py"),
-                    ),
-                    RebaseEvent(event="complete", step=31, total=31),
-                ],
-                harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
-            )
-
-        self.assertIsNone(exit_code)
-        self.assertIn(
-            (
-                "info",
-                "Rebase 5/31",
-                {
-                    "step": 5,
-                    "total": 31,
-                    "sha": "abc123",
-                    "subject": "Rename auth middleware",
-                },
-            ),
-            captured,
-        )
-        self.assertIn(
-            (
-                "warning",
-                "Conflict 5/31",
-                {
-                    "step": 5,
-                    "total": 31,
-                    "sha": "abc123",
-                    "subject": "Rename auth middleware",
-                    "files": "src/auth.py, tests/test_auth.py",
-                    "conflict_files": 2,
-                },
-            ),
-            captured,
-        )
-        self.assertIn(
-            ("info", "Rebase complete", {"step": 31, "total": 31}),
-            captured,
-        )
-
-    async def test_cli_degrades_cleanly_when_no_rebase_events_arrive(self) -> None:
-        captured: list[tuple[str, str]] = []
-
-        def record(level: str):
-            def _record(message: str, **_kwargs: object) -> None:
-                captured.append((level, message))
-
-            return _record
-
-        with (
-            patch("forklift.cli.logger.info", side_effect=record("info")),
-            patch("forklift.cli.logger.warning", side_effect=record("warning")),
-        ):
-            _, exit_code, _, _ = await self._run_cli(
-                container_result=ContainerRunResult(
-                    exit_code=0,
-                    timed_out=False,
-                    stdout="",
-                    stderr="",
-                    container_name="forklift-test",
-                ),
-                harness_status_content=HARNESS_COMPLETED_DURING_REBASE,
-            )
-
-        self.assertIsNone(exit_code)
-        self.assertFalse(any(message.startswith("Rebase ") for _, message in captured))
-        self.assertFalse(
-            any(message.startswith("Conflict ") for _, message in captured)
-        )
-
 
 class ExitCodeMappingTests(unittest.TestCase):
     def test_exit_code_for_each_error(self) -> None:
@@ -758,6 +604,32 @@ class ExitCodeMappingTests(unittest.TestCase):
         self.assertEqual(outcome_label(ContainerTimeoutError()), "timed out")
         self.assertEqual(outcome_label(RebaseStuckError()), "stuck")
         self.assertEqual(outcome_label(ContainerExitError(5)), "failure")
+
+
+class ApplyCliOverridesTests(unittest.TestCase):
+    def _base_env(self) -> ForkliftEnv:
+        return ForkliftEnv(
+            model=None,
+            effort=None,
+            timeout_seconds=None,
+            gemini_api_key="test-key",
+        )
+
+    def test_provider_prefixed_model_override_is_accepted(self) -> None:
+        # Model ids are ``provider:model``; the colon must pass validation.
+        result = apply_cli_overrides(self._base_env(), model="google:gemini-2.5-flash")
+        self.assertEqual(result.model, "google:gemini-2.5-flash")
+
+    def test_none_override_preserves_configured_model(self) -> None:
+        env = replace(
+            self._base_env(), model="openrouter:google/gemini-3-flash-preview"
+        )
+        result = apply_cli_overrides(env, model=None)
+        self.assertEqual(result.model, "openrouter:google/gemini-3-flash-preview")
+
+    def test_model_override_with_illegal_characters_is_rejected(self) -> None:
+        with self.assertRaises(SystemExit):
+            _ = apply_cli_overrides(self._base_env(), model="bad model id")
 
 
 if __name__ == "__main__":

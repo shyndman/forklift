@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from io import StringIO
 import subprocess
 import tempfile
 import unittest
@@ -9,7 +8,6 @@ from pathlib import Path
 from typing import cast
 from unittest.mock import patch
 
-from rich.console import Console
 
 from forklift.cli import Forklift
 from forklift.cli_authorship import OperatorIdentity
@@ -17,11 +15,8 @@ from forklift.cli_post_run import fail_if_stuck
 from forklift.container_runner import ContainerRunResult
 from forklift.errors import RebaseStuckError
 from forklift.git import GitError, ResolvedUpstreamTarget
-from forklift.opencode_env import OpenCodeEnv
-from forklift.post_run_metrics import (
-    UsageSummary,
-    render_usage_summary as real_render_usage_summary,
-)
+from forklift.forklift_env import ForkliftEnv
+from forklift.run_summary import RunSummary
 from forklift.run_manager import RunPaths
 
 
@@ -51,17 +46,14 @@ class ForkliftPostRunTests(unittest.TestCase):
         run_dir = root / "run"
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
-        opencode_logs = run_dir / "opencode-logs"
         control_dir = run_dir / "control"
         workspace.mkdir(parents=True)
         harness_state.mkdir(parents=True)
-        opencode_logs.mkdir(parents=True)
         control_dir.mkdir(parents=True)
         return RunPaths(
             run_dir=run_dir,
             workspace=workspace,
             harness_state=harness_state,
-            opencode_logs=opencode_logs,
             control_dir=control_dir,
             run_id="ABCD",
         )
@@ -493,31 +485,26 @@ class ForkliftPostRunTests(unittest.TestCase):
 
 
 class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
-    def _dummy_env(self) -> OpenCodeEnv:
-        return OpenCodeEnv(
-            api_key="api",
+    def _dummy_env(self) -> ForkliftEnv:
+        return ForkliftEnv(
             model=None,
-            variant="default",
-            agent="worker",
-            server_password="pw",
-            server_port=4096,
+            effort=None,
+            timeout_seconds=None,
+            openrouter_api_key="api",
         )
 
     def _run_paths(self, root: Path) -> RunPaths:
         run_dir = root / "run"
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
-        opencode_logs = run_dir / "opencode-logs"
         control_dir = run_dir / "control"
         workspace.mkdir(parents=True, exist_ok=True)
         harness_state.mkdir(parents=True, exist_ok=True)
-        opencode_logs.mkdir(parents=True, exist_ok=True)
         control_dir.mkdir(parents=True, exist_ok=True)
         return RunPaths(
             run_dir=run_dir,
             workspace=workspace,
             harness_state=harness_state,
-            opencode_logs=opencode_logs,
             control_dir=control_dir,
             run_id="STUCK1",
         )
@@ -531,17 +518,10 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
             _ = (run_paths.harness_state / "harness-status.txt").write_text(
                 "status=completed\n", encoding="utf-8"
             )
-            output = StringIO()
             footer_outcomes: list[str] = []
 
-            def render_with_capture(
-                outcome: str,
-                summary: UsageSummary,
-                *,
-                console: Console | None = None,
-            ) -> None:
-                footer_outcomes.append(outcome)
-                real_render_usage_summary(outcome, summary, console=console)
+            def capture_summary(_logger: object, summary: RunSummary) -> None:
+                footer_outcomes.append(summary.outcome)
 
             forklift = Forklift()
             forklift.repo = repo
@@ -558,7 +538,7 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
                 patch.object(
-                    Forklift, "_prepare_opencode_env", return_value=self._dummy_env()
+                    Forklift, "_prepare_forklift_env", return_value=self._dummy_env()
                 ),
                 patch.object(
                     Forklift, "_resolve_chown_target", return_value=(1000, 1000)
@@ -580,7 +560,6 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                 ),
                 patch.object(Forklift, "_build_container_env", return_value={}),
                 patch.object(Forklift, "_chown_artifact", return_value=None),
-                patch.object(Forklift, "_emit_clientlog_hint", return_value=None),
                 patch(
                     "forklift.cli.RunDirectoryManager.cleanup_expired_runs",
                     return_value=None,
@@ -604,29 +583,13 @@ class ForkliftStuckFooterIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     "_post_container_results",
                     side_effect=RebaseStuckError(),
                 ),
-                patch(
-                    "forklift.cli.parse_usage_summary",
-                    return_value=UsageSummary.unavailable("no usage events found"),
-                ),
-                patch(
-                    "forklift.cli.render_usage_summary", side_effect=render_with_capture
-                ),
-                patch(
-                    "forklift.cli.Console",
-                    return_value=Console(
-                        file=output,
-                        force_terminal=False,
-                        color_system=None,
-                        width=80,
-                    ),
-                ),
+                patch("forklift.cli.emit_run_summary", side_effect=capture_summary),
             ):
                 with self.assertRaises(SystemExit) as ctx:
                     await forklift.run()
 
         self.assertEqual(ctx.exception.code, 4)
         self.assertEqual(footer_outcomes, ["stuck"])
-        self.assertIn("Run complete: stuck", output.getvalue())
 
 
 class FailIfStuckTests(unittest.TestCase):

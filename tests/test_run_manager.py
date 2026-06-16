@@ -126,7 +126,6 @@ class RunManagerForkContextTests(unittest.TestCase):
             self.assertIn(run_paths.control_dir, chowned_paths)
             self.assertIn(run_paths.workspace, chowned_paths)
             self.assertIn(run_paths.harness_state, chowned_paths)
-            self.assertIn(run_paths.opencode_logs, chowned_paths)
 
     def test_prepare_persists_extra_run_instructions_for_harness_and_metadata(
         self,

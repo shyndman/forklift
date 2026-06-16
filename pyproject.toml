@@ -8,11 +8,12 @@ authors = [
 ]
 requires-python = ">=3.13"
 dependencies = [
+    "bashlex>=0.18",
     "clypi==1.8.2",
-    "genai-prices>=0.0.61,<0.1",
     "libsh>=0.2.0",
     "pydantic==2.12.5",
     "pydantic-ai==1.99.0",
+    "pydantic-ai-harness[code-mode]==0.3.0",
     "rich~=14.3",
     "structlog~=25.5",
 ]
@@ -28,9 +29,6 @@ build-backend = "uv_build"
 typeCheckingMode = "recommended"
 extraPaths = ["docker/kitchen-sink/harness/py"]
 reportExplicitAny = "error"
-
-[tool.uv.sources]
-genai-prices = { git = "https://github.com/pydantic/genai-prices", subdirectory = "packages/python/" }
 
 [dependency-groups]
 dev = [

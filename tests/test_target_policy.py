@@ -10,7 +10,7 @@ from forklift.cli import Forklift
 from forklift.cli_authorship import OperatorIdentity
 from forklift.container_runner import ContainerRunResult
 from forklift.git import GitError, ResolvedUpstreamTarget, resolve_upstream_target
-from forklift.opencode_env import OpenCodeEnv
+from forklift.forklift_env import ForkliftEnv
 from forklift.run_manager import RunPaths
 
 
@@ -181,31 +181,26 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
         forklift.target_policy = "latest-version"
         return forklift
 
-    def _dummy_env(self) -> OpenCodeEnv:
-        return OpenCodeEnv(
-            api_key="api",
+    def _dummy_env(self) -> ForkliftEnv:
+        return ForkliftEnv(
             model=None,
-            variant="default",
-            agent="worker",
-            server_password="pw",
-            server_port=4096,
+            effort=None,
+            timeout_seconds=None,
+            openrouter_api_key="api",
         )
 
     def _run_paths(self, root: Path) -> RunPaths:
         run_dir = root / "run"
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
-        opencode_logs = run_dir / "opencode-logs"
         control_dir = run_dir / "control"
         workspace.mkdir(parents=True, exist_ok=True)
         harness_state.mkdir(parents=True, exist_ok=True)
-        opencode_logs.mkdir(parents=True, exist_ok=True)
         control_dir.mkdir(parents=True, exist_ok=True)
         return RunPaths(
             run_dir=run_dir,
             workspace=workspace,
             harness_state=harness_state,
-            opencode_logs=opencode_logs,
             control_dir=control_dir,
             run_id="TEST1",
         )
@@ -225,7 +220,7 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
                 patch.object(
-                    Forklift, "_prepare_opencode_env", return_value=self._dummy_env()
+                    Forklift, "_prepare_forklift_env", return_value=self._dummy_env()
                 ),
                 patch.object(
                     Forklift, "_resolve_chown_target", return_value=(1000, 1000)
@@ -280,7 +275,7 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
                 patch.object(
-                    Forklift, "_prepare_opencode_env", return_value=self._dummy_env()
+                    Forklift, "_prepare_forklift_env", return_value=self._dummy_env()
                 ),
                 patch.object(
                     Forklift, "_resolve_chown_target", return_value=(1000, 1000)
@@ -323,19 +318,12 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                         container_name="forklift-test",
                     ),
                 ) as container_run_mock,
-                patch("forklift.cli.boxed", return_value="boxed output") as boxed_mock,
-                patch("builtins.print") as print_mock,
             ):
                 await forklift.run()
 
             cleanup_mock.assert_called_once()
             prepare_mock.assert_called_once()
             container_run_mock.assert_called_once()
-            boxed_mock.assert_called_once_with(
-                "forklift clientlog run --follow",
-                title="Client log tail command",
-            )
-            print_mock.assert_called_once_with("boxed output", flush=True)
 
     async def test_failed_container_exits_with_container_code(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -356,7 +344,7 @@ class ForkliftPreRunIntegrationTests(unittest.IsolatedAsyncioTestCase):
                     ),
                 ),
                 patch.object(
-                    Forklift, "_prepare_opencode_env", return_value=self._dummy_env()
+                    Forklift, "_prepare_forklift_env", return_value=self._dummy_env()
                 ),
                 patch.object(
                     Forklift, "_resolve_chown_target", return_value=(1000, 1000)

@@ -1,0 +1,9 @@
+class node:
+    kind: str
+    word: str
+    parts: list[node]
+    def __init__(self, **kwargs: object) -> None: ...
+
+class nodevisitor:
+    def visit(self, n: node) -> None: ...
+    def visitcommand(self, n: node, parts: list[node]) -> bool | None: ...

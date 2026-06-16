@@ -64,7 +64,6 @@ class RunPaths:
     run_dir: Path
     workspace: Path
     harness_state: Path
-    opencode_logs: Path
     control_dir: Path
     run_id: str
 
@@ -181,14 +180,12 @@ class RunDirectoryManager:
         run_dir = self._runs_root / f"{project}_{timestamp}"
         workspace = run_dir / "workspace"
         harness_state = run_dir / "harness-state"
-        opencode_logs = run_dir / "opencode-logs"
         control_dir = run_dir / "control"
         run_id = self._generate_run_id()
 
         logger.info("Creating run directory", run_dir=run_dir)
         workspace.parent.mkdir(parents=True, exist_ok=True)
         harness_state.mkdir(parents=True, exist_ok=True)
-        opencode_logs.mkdir(parents=True, exist_ok=True)
         control_dir.mkdir(parents=True, exist_ok=True)
 
         self._clone_repo(source_repo, workspace)
@@ -208,13 +205,12 @@ class RunDirectoryManager:
         _ = initialize_run_state(run_dir, run_id)
         self._remove_remotes(workspace)
         self._seed_upstream_ref(workspace, seed_upstream_sha, main_branch)
-        self._ensure_permissions(workspace, harness_state, opencode_logs, control_dir)
+        self._ensure_permissions(workspace, harness_state, control_dir)
 
         return RunPaths(
             run_dir=run_dir,
             workspace=workspace,
             harness_state=harness_state,
-            opencode_logs=opencode_logs,
             control_dir=control_dir,
             run_id=run_id,
         )
