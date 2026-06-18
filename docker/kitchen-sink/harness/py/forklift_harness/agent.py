@@ -27,6 +27,7 @@ from pydantic_ai.settings import ModelSettings, ThinkingLevel
 from pydantic_ai_harness import CodeMode
 
 from .agent_deps import AgentDeps
+from .diagnostics_toolset import DiagnosticsToolset
 from .file_toolset import FileToolset
 from .system_prompt import SYSTEM_PROMPT
 from .toolset import ForkliftGitToolset
@@ -90,7 +91,7 @@ def build_agent(
         deps_type=AgentDeps,
         output_type=str,
         system_prompt=SYSTEM_PROMPT,
-        toolsets=[ForkliftGitToolset(), FileToolset()],
+        toolsets=[ForkliftGitToolset(), FileToolset(), DiagnosticsToolset()],
         capabilities=capabilities,
         model_settings=settings,
     )

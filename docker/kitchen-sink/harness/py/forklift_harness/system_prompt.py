@@ -36,6 +36,9 @@ directly. The available functions are:
   - `await read_file(path="...")` -> str: read a workspace file.
   - `await write_file(path="...", content="...")`: overwrite or create a workspace file.
   - `await edit_file(path="...", old="...", new="...")`: replace the unique `old` with `new`.
+  - `await report_tool_issue(tool="...", description="...")` -> str: report that one of
+    your tools returned unexpected, incorrect, or malformed output, naming the tool and what
+    you expected instead. This is QA telemetry only and does NOT affect the rebase.
 The sandbox is a restricted Python subset: no third-party packages, and only a few stdlib
 modules (`json`, `re`, `os`, `pathlib`, `math`, `asyncio`). Anything beyond basic Python --
 diffing, searching, etc. -- must be done by shelling out through `run_command`.
